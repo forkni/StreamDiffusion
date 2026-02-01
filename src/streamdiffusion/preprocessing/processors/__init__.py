@@ -191,4 +191,98 @@ if MEDIAPIPE_POSE_AVAILABLE:
     __all__.append("MediaPipePosePreprocessor")
 
 if MEDIAPIPE_SEGMENTATION_AVAILABLE:
-    __all__.append("MediaPipeSegmentationPreprocessor") 
+    __all__.append("MediaPipeSegmentationPreprocessor")
+
+
+# region Custom Processor Discovery
+import logging
+import os
+import importlib.util
+import inspect
+from pathlib import Path
+
+_logger = logging.getLogger(__name__)
+
+def _discover_custom_processors():
+    """Auto-discover custom processors from repo_root/custom_processors/ folder."""
+    if os.getenv("STREAMDIFFUSION_DISABLE_CUSTOM_PROCESSORS") == "1":
+        _logger.info("Custom processor discovery disabled via environment variable")
+        return
+    try:
+        repo_root = Path(__file__).parent.parent.parent.parent.parent
+        custom_dir = repo_root / "custom_processors"
+        if not custom_dir.exists():
+            _logger.debug("custom_processors/ folder not found, skipping discovery")
+            return
+        _logger.info("Scanning custom_processors/ for custom processors...")
+        for item in custom_dir.iterdir():
+            if not item.is_dir() or item.name.startswith(('.', '_')):
+                continue
+            manifest_file = item / "processors.yaml"
+            if manifest_file.exists():
+                _load_processor_collection(item, manifest_file)
+            else:
+                _load_processor_folder_auto(item)
+    except Exception as e:
+        _logger.error(f"Custom processor discovery failed: {e}")
+
+def _load_processor_collection(collection_dir, manifest_file):
+    """Load processors from a collection with processors.yaml manifest."""
+    import yaml
+    try:
+        with open(manifest_file, 'r') as f:
+            manifest = yaml.safe_load(f)
+        processor_files = manifest.get('processors', [])
+        if not processor_files:
+            _logger.warning(f"Collection '{collection_dir.name}' has empty processors list")
+            return
+        _logger.info(f"Loading collection '{collection_dir.name}' ({len(processor_files)} processors)")
+        for proc_file in processor_files:
+            if isinstance(proc_file, dict):
+                filename, enabled = proc_file.get('file'), proc_file.get('enabled', True)
+                if not enabled:
+                    continue
+            else:
+                filename = proc_file
+            proc_path = collection_dir / filename
+            if proc_path.exists():
+                _load_processor_from_file(proc_path, proc_path.stem)
+            else:
+                _logger.warning(f"  Processor file not found: {filename}")
+    except Exception as e:
+        _logger.error(f"Failed to load collection {collection_dir.name}: {e}")
+
+def _load_processor_folder_auto(folder):
+    """Auto-discover processors by scanning for .py files (no manifest)."""
+    _logger.info(f"Auto-scanning folder: {folder.name}")
+    for py_file in folder.glob("*.py"):
+        if py_file.name.startswith('_') or py_file.name in ['base.py', 'setup.py']:
+            continue
+        _load_processor_from_file(py_file, py_file.stem)
+
+def _load_processor_from_file(file_path, proc_name):
+    """Load and register a processor class from a Python file."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            f"custom_processors.{file_path.parent.name}.{file_path.stem}", file_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        found_classes = [
+            (name, obj) for name, obj in inspect.getmembers(module, inspect.isclass)
+            if issubclass(obj, (BasePreprocessor, PipelineAwareProcessor))
+            and obj not in [BasePreprocessor, PipelineAwareProcessor]
+        ]
+        if not found_classes:
+            _logger.warning(f"  No valid processor class in {file_path.name}")
+            return
+        if proc_name in _preprocessor_registry:
+            _logger.error(f"  Name conflict: '{proc_name}' already exists, skipping")
+            return
+        register_preprocessor(proc_name, found_classes[0][1])
+        _logger.info(f"  Registered: {proc_name} ({found_classes[0][0]})")
+    except Exception as e:
+        _logger.error(f"  Failed to load {file_path.name}: {e}")
+
+_discover_custom_processors()
+# endregion
