@@ -153,6 +153,20 @@ class IPAdapterModule(OrchestratorUser):
         ipadapter = IPAdapter(**ip_kwargs)
         self.ipadapter = ipadapter
 
+        # Fix kvo_cache incompatibility: diffusers_ipadapter sets old AttnProcessor on
+        # self-attention blocks (attn1) that doesn't accept the kvo_cache kwarg passed by
+        # newer diffusers Attention.forward(). Replace them with diffusers' native
+        # AttnProcessor2_0 which accepts kvo_cache and returns (hidden_states, kvo_cache).
+        try:
+            from diffusers.models.attention_processor import AttnProcessor2_0 as NativeAttnProcessor2_0
+            attn_procs = stream.pipe.unet.attn_processors
+            for name in attn_procs:
+                if name.endswith("attn1.processor"):
+                    attn_procs[name] = NativeAttnProcessor2_0()
+            stream.pipe.unet.set_attn_processor(attn_procs)
+        except Exception as e:
+            logger.warning(f"IPAdapterModule.install: kvo_cache processor patch failed: {e}")
+
         # Register embedding preprocessor for this style key
         # Use FaceID preprocessor if applicable
         if self.config.type == IPAdapterType.FACEID:

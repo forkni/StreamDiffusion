@@ -28,7 +28,7 @@ class ControlNetTRT(BaseModel):
             **kwargs
         )
         self.unet_dim = unet_dim
-        self.conditioning_channels = conditioning_channels
+        self.conditioning_channels = conditioning_channels if conditioning_channels is not None else 3
         self.name = "ControlNet"
         
     def get_input_names(self) -> List[str]:

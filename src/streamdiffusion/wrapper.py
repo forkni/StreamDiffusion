@@ -1224,19 +1224,15 @@ class StreamDiffusionWrapper:
                 self.use_lcm_lora = None
                 logger.info(f"use_lcm_lora has been removed from self")
 
+        # Get kvo_cache_structure before stream init (needed for TRT export wrapper).
+        # Actual cache tensors are created AFTER stream init so we can use
+        # stream.trt_unet_batch_size, which accounts for scheduler overrides
+        # (e.g. TCD sets trt_unet_batch_size = frame_buffer_size, not denoising_steps * frame_buffer_size).
         if use_cached_attn:
-            from streamdiffusion.acceleration.tensorrt.models.utils import create_kvo_cache
-            kvo_cache, kvo_cache_structure = create_kvo_cache(pipe.unet,
-                                                            batch_size=self.batch_size,
-                                                            cache_maxframes=cache_maxframes,
-                                                            height=self.height,
-                                                            width=self.width,
-                                                            device=self.device,
-                                                            dtype=self.dtype)
+            from streamdiffusion.acceleration.tensorrt.models.utils import get_kvo_cache_info
+            _, kvo_cache_structure, _ = get_kvo_cache_info(pipe.unet, self.height, self.width)
         else:
-            kvo_cache = []
             kvo_cache_structure = []
-
 
         stream = StreamDiffusion(
             pipe=pipe,
@@ -1254,10 +1250,24 @@ class StreamDiffusionWrapper:
             normalize_seed_weights=normalize_seed_weights,
             scheduler=scheduler,
             sampler=sampler,
-            kvo_cache=kvo_cache,
+            kvo_cache=[],  # Set below after stream init with the correct batch size
             cache_interval=cache_interval,
             cache_maxframes=cache_maxframes,
         )
+
+        # Create KVO cache tensors using the pipeline's actual runtime batch size.
+        # pipeline.py overrides trt_unet_batch_size for TCD (= frame_buffer_size),
+        # so this must happen after StreamDiffusion.__init__ to get the correct value.
+        if use_cached_attn:
+            from streamdiffusion.acceleration.tensorrt.models.utils import create_kvo_cache
+            kvo_cache, _ = create_kvo_cache(pipe.unet,
+                                            batch_size=stream.trt_unet_batch_size,
+                                            cache_maxframes=cache_maxframes,
+                                            height=self.height,
+                                            width=self.width,
+                                            device=self.device,
+                                            dtype=self.dtype)
+            stream.kvo_cache = kvo_cache
 
         
         # Load and properly merge LoRA weights using the standard diffusers approach
@@ -1421,7 +1431,7 @@ class StreamDiffusionWrapper:
 
                 # Use the engine_dir parameter passed to this function, with fallback to instance variable
                 engine_dir = engine_dir if engine_dir else getattr(self, '_engine_dir', 'engines')
-                
+
                 # Resolve IP-Adapter runtime params from config
                 # Strength is now a runtime input, so we do NOT bake scale into engine identity
                 ipadapter_scale = None
@@ -1445,6 +1455,7 @@ class StreamDiffusionWrapper:
                     ipadapter_tokens=ipadapter_tokens,
                     is_faceid=is_faceid if use_ipadapter_trt else None,
                     use_cached_attn=use_cached_attn,
+                    use_controlnet=use_controlnet_trt,
                 )
                 vae_encoder_path = engine_manager.get_engine_path(
                     EngineType.VAE_ENCODER,
@@ -1524,7 +1535,11 @@ class StreamDiffusionWrapper:
                     try:
                         from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig, IPAdapterType
                         logger.info("Installing IPAdapter module before TensorRT compilation...")
-                        
+
+                        # Snapshot processors before install — IPAdapter.set_ip_adapter() replaces them
+                        # before load_state_dict(), so a failure leaves the UNet in corrupted state
+                        _saved_unet_processors = {name: proc for name, proc in stream.unet.attn_processors.items()}
+
                         # Use first config if list provided
                         cfg = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
                         ip_cfg = IPAdapterConfig(
@@ -1553,7 +1568,33 @@ class StreamDiffusionWrapper:
                         logger.error(f"CUDA Out of Memory during early IPAdapter installation: {oom_error}")
                         logger.error("Try reducing batch size, using smaller models, or increasing GPU memory")
                         raise RuntimeError("Insufficient VRAM for IPAdapter installation. Consider using a GPU with more memory or reducing model complexity.")
-                        
+
+                    except RuntimeError as rt_error:
+                        if "size mismatch" in str(rt_error):
+                            unet_dim = getattr(getattr(stream, 'unet', None), 'config', None)
+                            unet_cross_attn = getattr(unet_dim, 'cross_attention_dim', 'unknown') if unet_dim else 'unknown'
+                            logger.warning(
+                                f"IP-Adapter weights are incompatible with this model "
+                                f"(UNet cross_attention_dim={unet_cross_attn}). "
+                                f"Checkpoint dimension does not match. "
+                                f"SD-Turbo is SD2.1-based (dim=1024) — use h94/IP-Adapter/models/ip-adapter_sd21.bin "
+                                f"or disable IP-Adapter in td_config.yaml. "
+                                f"Skipping IP-Adapter and continuing without it."
+                            )
+                            # Restore original processors — IPAdapter.set_ip_adapter() already replaced
+                            # them before load_state_dict() failed, leaving the UNet in a corrupted state
+                            try:
+                                stream.unet.set_attn_processor(_saved_unet_processors)
+                                logger.info("Restored original UNet attention processors after IP-Adapter failure.")
+                            except Exception as restore_err:
+                                logger.warning(f"Could not restore UNet processors: {restore_err}")
+                            use_ipadapter_trt = False
+                        else:
+                            import traceback
+                            traceback.print_exc()
+                            logger.error("Failed to install IPAdapterModule before TensorRT compilation")
+                            raise
+
                     except Exception:
                         import traceback
                         traceback.print_exc()
@@ -1626,12 +1667,13 @@ class StreamDiffusionWrapper:
 
                 if use_cached_attn:
                     from .acceleration.tensorrt.models.attention_processors import CachedSTAttnProcessor2_0
-                    from diffusers.models.attention_processor import AttnProcessor2_0
                     processors = stream.unet.attn_processors
                     for name, processor in processors.items():
-                        if isinstance(processor, AttnProcessor2_0):
-                            processor = CachedSTAttnProcessor2_0()
-                            processors[name] = processor
+                        # Target self-attention layers (attn1) by name — kvo_cache is only passed
+                        # to self-attention. Replace any processor that isn't already the cached variant,
+                        # regardless of type (handles cases where IPA install left IPAttnProcessor residue).
+                        if name.endswith("attn1.processor") and not isinstance(processor, CachedSTAttnProcessor2_0):
+                            processors[name] = CachedSTAttnProcessor2_0()
                     stream.unet.set_attn_processor(processors)
 
                 # Compile VAE decoder engine using EngineManager
@@ -1656,6 +1698,7 @@ class StreamDiffusionWrapper:
                         'build_dynamic_shape': True,
                         'min_image_resolution': 384,
                         'max_image_resolution': 1024,
+                        'build_all_tactics': True,
                     }
                 )
 
@@ -1681,6 +1724,7 @@ class StreamDiffusionWrapper:
                         'build_dynamic_shape': True,
                         'min_image_resolution': 384,
                         'max_image_resolution': 1024,
+                        'build_all_tactics': True,
                     }
                 )
 
@@ -1707,6 +1751,7 @@ class StreamDiffusionWrapper:
                         engine_build_options={
                             'opt_image_height': self.height,
                             'opt_image_width': self.width,
+                            'build_all_tactics': True,
                         }
                     )
                     if load_engine:
@@ -1924,15 +1969,17 @@ class StreamDiffusionWrapper:
 
         # IPAdapter module installation has been moved to before TensorRT compilation (see lines 1307-1345)
         # This ensures processors are properly baked into the TensorRT engines
-        if use_ipadapter and ipadapter_config and not hasattr(stream, '_ipadapter_module'):
+        # After TRT compilation, stream.unet is a UNet2DConditionModelEngine with no attn_processors —
+        # skip IP-Adapter install entirely in that case.
+        if use_ipadapter and ipadapter_config and not hasattr(stream, '_ipadapter_module') and hasattr(stream.unet, 'attn_processors'):
             try:
                 from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig, IPAdapterType
                 # Use first config if list provided
                 cfg = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
-                
-                # Get adapter type from config  
+
+                # Get adapter type from config
                 ipadapter_type = IPAdapterType(cfg['type'])
-                
+
                 ip_cfg = IPAdapterConfig(
                     style_image_key=cfg.get('style_image_key') or 'ipadapter_main',
                     num_image_tokens=cfg.get('num_image_tokens', 4),
@@ -1944,9 +1991,30 @@ class StreamDiffusionWrapper:
                     insightface_model_name=cfg.get('insightface_model_name'),
                 )
                 ip_module = IPAdapterModule(ip_cfg)
+                _saved_unet_processors_post = {name: proc for name, proc in stream.unet.attn_processors.items()}
                 ip_module.install(stream)
                 # Expose for later updates
                 stream._ipadapter_module = ip_module
+
+            except RuntimeError as rt_error:
+                if "size mismatch" in str(rt_error):
+                    unet_dim = getattr(getattr(stream, 'unet', None), 'config', None)
+                    unet_cross_attn = getattr(unet_dim, 'cross_attention_dim', 'unknown') if unet_dim else 'unknown'
+                    logger.warning(
+                        f"IP-Adapter weights are incompatible with this model "
+                        f"(UNet cross_attention_dim={unet_cross_attn}). "
+                        f"Skipping post-TRT IP-Adapter installation and continuing without it."
+                    )
+                    try:
+                        stream.unet.set_attn_processor(_saved_unet_processors_post)
+                    except Exception as restore_err:
+                        logger.warning(f"Could not restore UNet processors: {restore_err}")
+                else:
+                    import traceback
+                    traceback.print_exc()
+                    logger.error("Failed to install IPAdapterModule")
+                    raise
+
             except Exception:
                 import traceback
                 traceback.print_exc()

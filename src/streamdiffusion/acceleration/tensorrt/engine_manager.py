@@ -93,7 +93,7 @@ class EngineManager:
         h = hashlib.sha1(canon.encode("utf-8")).hexdigest()[:10]
         return f"{len(lora_dict)}-{h}"
 
-    def get_engine_path(self, 
+    def get_engine_path(self,
                        engine_type: EngineType,
                        model_id_or_path: str,
                        max_batch_size: int,
@@ -105,7 +105,8 @@ class EngineManager:
                        ipadapter_tokens: Optional[int] = None,
                        controlnet_model_id: Optional[str] = None,
                        is_faceid: Optional[bool] = None,
-                       use_cached_attn: bool = False
+                       use_cached_attn: bool = False,
+                       use_controlnet: bool = False
                        ) -> Path:
         """
         Generate engine path using wrapper.py's current logic.
@@ -148,7 +149,9 @@ class EngineManager:
 
             if engine_type == EngineType.UNET:
                 prefix += f"--use_cached_attn-{use_cached_attn}"
-            
+                if use_controlnet:
+                    prefix += "--controlnet"
+
             prefix += f"--mode-{mode}"
             
             return self.engine_dir / prefix / filename
@@ -209,6 +212,7 @@ class EngineManager:
             'min_image_resolution': 384,
             'max_image_resolution': 1024,
             'build_static_batch': False,
+            'build_all_tactics': True,
         }
     
     def compile_and_load_engine(self, 

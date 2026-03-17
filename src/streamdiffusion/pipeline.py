@@ -318,7 +318,7 @@ class StreamDiffusion:
     def disable_similar_image_filter(self) -> None:
         self.similar_image_filter = False
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def prepare(
         self,
         prompt: str,
@@ -555,7 +555,7 @@ class StreamDiffusion:
             c_out = torch.tensor(1.0, device=self.device, dtype=self.dtype)
             return c_skip, c_out
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def update_prompt(self, prompt: str) -> None:
         self._param_updater.update_stream_params(
             prompt_list=[(prompt, 1.0)],
@@ -870,16 +870,16 @@ class StreamDiffusion:
 
         for i, new_kv in enumerate(kvo_cache_out):
             if self.kvo_cache[i].shape[1] > 1:
-                self.kvo_cache[i] = torch.roll(self.kvo_cache[i], shifts=-1, dims=1)
-            self.kvo_cache[i][:, -1] = new_kv.squeeze(1)
+                self.kvo_cache[i][:, :-1].copy_(self.kvo_cache[i][:, 1:].clone())
+            self.kvo_cache[i][:, -1].copy_(new_kv.squeeze(1))
 
     def encode_image(self, image_tensors: torch.Tensor) -> torch.Tensor:
         image_tensors = image_tensors.to(
             device=self.device,
             dtype=self.vae.dtype,
         )
-        
-        img_latent = retrieve_latents(self.vae.encode(image_tensors), self.generator)
+        with torch.autocast("cuda", dtype=torch.float16):
+            img_latent = retrieve_latents(self.vae.encode(image_tensors), self.generator)
         
         img_latent = img_latent * self.vae.config.scaling_factor
         
@@ -888,11 +888,9 @@ class StreamDiffusion:
         return x_t_latent
 
     def decode_image(self, x_0_pred_out: torch.Tensor) -> torch.Tensor:
-        
         scaled_latent = x_0_pred_out / self.vae.config.scaling_factor
-        
-        output_latent = self.vae.decode(scaled_latent, return_dict=False)[0]
-        
+        with torch.autocast("cuda", dtype=torch.float16):
+            output_latent = self.vae.decode(scaled_latent, return_dict=False)[0]
         return output_latent
 
     def predict_x0_batch(self, x_t_latent: torch.Tensor) -> torch.Tensor:
@@ -963,7 +961,7 @@ class StreamDiffusion:
             x_0_pred_out = sample
         return x_0_pred_out
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def __call__(
         self, x: Union[torch.Tensor, PIL.Image.Image, np.ndarray] = None
     ) -> torch.Tensor:
@@ -1001,10 +999,10 @@ class StreamDiffusion:
         x_0_pred_out = self._apply_latent_postprocessing_hooks(x_0_pred_out)
         
         # Store latent result for latent feedback processors
-        self.prev_latent_result = x_0_pred_out.detach().clone()
+        self.prev_latent_result = x_0_pred_out.clone()
 
         
-        x_output = self.decode_image(x_0_pred_out).detach().clone()
+        x_output = self.decode_image(x_0_pred_out).clone()
         
         # IMAGE POSTPROCESSING HOOKS: After VAE decoding, before final output
         x_output = self._apply_image_postprocessing_hooks(x_output)
@@ -1081,7 +1079,7 @@ class StreamDiffusion:
         
         return latent_ctx.latent
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def txt2img(self, batch_size: int = 1) -> torch.Tensor:
         x_0_pred_out = self.predict_x0_batch(
             torch.randn((batch_size, 4, self.latent_height, self.latent_width)).to(
@@ -1093,16 +1091,17 @@ class StreamDiffusion:
         x_0_pred_out = self._apply_latent_postprocessing_hooks(x_0_pred_out)
         
         # Store latent result for latent feedback processors
-        self.prev_latent_result = x_0_pred_out.detach().clone()
+        self.prev_latent_result = x_0_pred_out.clone()
 
         
-        x_output = self.decode_image(x_0_pred_out).detach().clone()
+        x_output = self.decode_image(x_0_pred_out).clone()
         
         # IMAGE POSTPROCESSING HOOKS: After VAE decoding, before final output
         x_output = self._apply_image_postprocessing_hooks(x_output)
         
         return x_output
 
+    @torch.inference_mode()
     def txt2img_sd_turbo(self, batch_size: int = 1) -> torch.Tensor:
         x_t_latent = torch.randn(
             (batch_size, 4, self.latent_height, self.latent_width),
@@ -1150,7 +1149,7 @@ class StreamDiffusion:
         x_0_pred_out = self._apply_latent_postprocessing_hooks(x_0_pred_out)
         
         # Store latent result for latent feedback processors
-        self.prev_latent_result = x_0_pred_out.detach().clone()
+        self.prev_latent_result = x_0_pred_out.clone()
 
         
         x_output = self.decode_image(x_0_pred_out)

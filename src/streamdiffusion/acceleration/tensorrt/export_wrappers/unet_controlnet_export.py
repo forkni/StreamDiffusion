@@ -97,7 +97,17 @@ class ControlNetUNetExportWrapper(torch.nn.Module):
         
         # Pass through all additional kwargs (for SDXL models)
         unet_kwargs.update(kwargs)
-        
+
+        # Auto-generate SDXL conditioning if missing and UNet requires it
+        if 'added_cond_kwargs' not in unet_kwargs or unet_kwargs.get('added_cond_kwargs') is None:
+            if (hasattr(self.unet, 'config') and
+                    getattr(self.unet.config, 'addition_embed_type', None) == 'text_time'):
+                batch_size = sample.shape[0]
+                unet_kwargs['added_cond_kwargs'] = {
+                    'text_embeds': torch.zeros(batch_size, 1280, device=sample.device, dtype=sample.dtype),
+                    'time_ids': torch.zeros(batch_size, 6, device=sample.device, dtype=sample.dtype),
+                }
+
         if down_block_controls:
             # Adapt control tensor shapes for SDXL if needed
             adapted_controls = self._adapt_control_tensors(down_block_controls, sample)

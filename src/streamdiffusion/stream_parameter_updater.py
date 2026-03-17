@@ -233,7 +233,7 @@ class StreamParameterUpdater(OrchestratorUser):
                 new_cache[cache_idx - 1] = cache_data
         return new_cache
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def update_stream_params(
         self,
         num_inference_steps: Optional[int] = None,
@@ -391,7 +391,7 @@ class StreamParameterUpdater(OrchestratorUser):
                     else:
                         logger.info(f"update_stream_params: Cache maxframes set to {cache_maxframes}")
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def update_prompt_weights(
         self,
         prompt_weights: List[float],
@@ -416,7 +416,7 @@ class StreamParameterUpdater(OrchestratorUser):
         # Recompute blended embeddings with new weights
         self._apply_prompt_blending(prompt_interpolation_method)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def update_seed_weights(
         self,
         seed_weights: List[float],
@@ -441,7 +441,7 @@ class StreamParameterUpdater(OrchestratorUser):
         # Recompute blended noise with new weights
         self._apply_seed_blending(interpolation_method)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def _update_blended_prompts(
         self,
         prompt_list: List[Tuple[str, float]],
@@ -476,6 +476,10 @@ class StreamParameterUpdater(OrchestratorUser):
                     do_classifier_free_guidance=False,
                     negative_prompt=negative_prompt,
                 )
+                # Evict oldest entry if cache is full
+                if len(self._prompt_cache) >= 32:
+                    oldest_key = next(iter(self._prompt_cache))
+                    del self._prompt_cache[oldest_key]
                 self._prompt_cache[idx] = {
                     'embed': encoder_output[0],
                     'text': prompt_text
@@ -596,7 +600,7 @@ class StreamParameterUpdater(OrchestratorUser):
 
         return result.view(original_shape)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def _update_blended_seeds(
         self,
         seed_list: List[Tuple[int, float]],
@@ -912,7 +916,7 @@ class StreamParameterUpdater(OrchestratorUser):
         """This method is no longer used - resolution updates now restart the pipeline"""
         pass
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def update_prompt_at_index(
         self,
         index: int,
@@ -961,12 +965,12 @@ class StreamParameterUpdater(OrchestratorUser):
         # Recompute blended embeddings with updated prompt
         self._apply_prompt_blending(prompt_interpolation_method)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def get_current_prompts(self) -> List[Tuple[str, float]]:
         """Get the current prompt list with weights."""
         return self._current_prompt_list.copy()
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def add_prompt(
         self,
         prompt: str,
@@ -995,7 +999,7 @@ class StreamParameterUpdater(OrchestratorUser):
         # Recompute blended embeddings
         self._apply_prompt_blending(prompt_interpolation_method)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def remove_prompt_at_index(
         self,
         index: int,
@@ -1022,7 +1026,7 @@ class StreamParameterUpdater(OrchestratorUser):
         # Recompute blended embeddings
         self._apply_prompt_blending(prompt_interpolation_method)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def update_seed_at_index(
         self,
         index: int,
@@ -1075,12 +1079,12 @@ class StreamParameterUpdater(OrchestratorUser):
         # Recompute blended noise with updated seed
         self._apply_seed_blending(interpolation_method)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def get_current_seeds(self) -> List[Tuple[int, float]]:
         """Get the current seed list with weights."""
         return self._current_seed_list.copy()
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def add_seed(
         self,
         seed: int,
@@ -1113,7 +1117,7 @@ class StreamParameterUpdater(OrchestratorUser):
         # Recompute blended noise
         self._apply_seed_blending(interpolation_method)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def remove_seed_at_index(
         self,
         index: int,
@@ -1151,7 +1155,7 @@ class StreamParameterUpdater(OrchestratorUser):
         # Find the ControlNet pipeline/module (module-aware)
         controlnet_pipeline = self._get_controlnet_pipeline()
         if not controlnet_pipeline:
-            logger.warning(f"_update_controlnet_config: No ControlNet pipeline found")
+            logger.debug("_update_controlnet_config: No ControlNet pipeline found (expected when ControlNet not loaded)")
             return
         
         current_config = self._get_current_controlnet_config()

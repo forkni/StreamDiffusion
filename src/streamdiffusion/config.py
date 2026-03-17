@@ -314,10 +314,11 @@ def _validate_pipeline_hook_configs(config: Dict[str, Any]) -> None:
                         if not isinstance(order, int):
                             raise ValueError(f"_validate_config: '{hook_type}.processors[{i}].order' must be an integer")
                     
-                    # Validate params field (optional)
+                    # Validate params field (optional, coerce None to empty dict)
                     if 'params' in processor:
-                        params = processor['params']
-                        if not isinstance(params, dict):
+                        if processor['params'] is None:
+                            processor['params'] = {}
+                        elif not isinstance(processor['params'], dict):
                             raise ValueError(f"_validate_config: '{hook_type}.processors[{i}].params' must be a dictionary")
 
 

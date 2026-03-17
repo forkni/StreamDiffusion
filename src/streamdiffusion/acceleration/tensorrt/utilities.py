@@ -247,12 +247,15 @@ class Engine:
         if workspace_size > 0:
             config_kwargs["memory_pool_limits"] = {trt.MemoryPoolType.WORKSPACE: workspace_size}
         if not enable_all_tactics:
-            config_kwargs["tactic_sources"] = []
+            config_kwargs["tactic_sources"] = [
+                1 << int(trt.TacticSource.CUBLAS),
+                1 << int(trt.TacticSource.CUBLAS_LT),
+            ]
 
         engine = engine_from_network(
             network_from_onnx_path(onnx_path, flags=[trt.OnnxParserFlag.NATIVE_INSTANCENORM]),
             config=CreateConfig(
-                fp16=fp16, refittable=enable_refit, profiles=[p], load_timing_cache=timing_cache, **config_kwargs
+                fp16=fp16, tf32=True, refittable=enable_refit, profiles=[p], load_timing_cache=timing_cache, **config_kwargs
             ),
             save_timing_cache=timing_cache,
         )
@@ -300,6 +303,9 @@ class Engine:
             if mode == trt.TensorIOMode.INPUT:
                 self.context.set_input_shape(name, shape)
 
+            if any(s < 0 for s in shape):
+                import logging as _logging
+                _logging.getLogger(__name__).error(f"allocate_buffers: tensor '{name}' has negative shape {shape} — not in shape_dict. shape_dict keys: {list(shape_dict.keys()) if shape_dict else []}")
             tensor = torch.empty(tuple(shape),
                                  dtype=numpy_to_torch_dtype_dict[dtype_np]) \
                           .to(device=device)
@@ -502,10 +508,11 @@ def build_engine(
     _, free_mem, _ = cudart.cudaMemGetInfo()
     GiB = 2**30
     if free_mem > 6 * GiB:
-        activation_carveout = 4 * GiB
-        max_workspace_size = free_mem - activation_carveout
+        activation_carveout = 2 * GiB
+        max_workspace_size = min(free_mem - activation_carveout, 8 * GiB)
     else:
         max_workspace_size = 0
+    logger.info(f"TRT workspace: free_mem={free_mem/GiB:.1f}GiB, max_workspace={max_workspace_size/GiB:.1f}GiB")
     engine = Engine(engine_path)
     input_profile = model_data.get_input_profile(
         opt_batch_size,
@@ -570,7 +577,11 @@ def export_onnx(
     wrapped_model = model  # Default: use model as-is
     
     # Apply SDXL wrapper for SDXL models (in practice, always UnifiedExportWrapper)
-    if is_sdxl and not is_controlnet:
+    # Skip SDXLExportWrapper if model is already a UnifiedExportWrapper — it handles
+    # SDXL conditioning internally and has strict positional arg requirements (e.g.
+    # ipadapter_scale) that SDXLExportWrapper's forward-test probe would violate.
+    from .export_wrappers.unet_unified_export import UnifiedExportWrapper
+    if is_sdxl and not is_controlnet and not isinstance(model, UnifiedExportWrapper):
         embedding_dim = getattr(model_data, 'embedding_dim', 'unknown')
         logger.info(f"Detected SDXL model (embedding_dim={embedding_dim}), using wrapper for ONNX export...")
         from .export_wrappers.unet_sdxl_export import SDXLExportWrapper

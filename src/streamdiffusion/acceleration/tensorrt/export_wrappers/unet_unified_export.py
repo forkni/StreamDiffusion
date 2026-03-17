@@ -48,6 +48,17 @@ class UnifiedExportWrapper(torch.nn.Module):
         if len(kvo_cache) > 0:
             formatted_kvo_cache = convert_list_to_structure(kvo_cache, self.kvo_cache_structure)
 
+        # Auto-generate SDXL conditioning if missing and UNet requires it
+        if 'added_cond_kwargs' not in kwargs or kwargs.get('added_cond_kwargs') is None:
+            base_unet = self.unet
+            if (hasattr(base_unet, 'config') and
+                    getattr(base_unet.config, 'addition_embed_type', None) == 'text_time'):
+                batch_size = sample.shape[0]
+                kwargs['added_cond_kwargs'] = {
+                    'text_embeds': torch.zeros(batch_size, 1280, device=sample.device, dtype=sample.dtype),
+                    'time_ids': torch.zeros(batch_size, 6, device=sample.device, dtype=sample.dtype),
+                }
+
         unet_kwargs = {
             'sample': sample,
             'timestep': timestep,
