@@ -1314,11 +1314,11 @@ class StreamDiffusionWrapper:
 
         if use_tiny_vae:
             if vae_id is not None:
-                stream.vae = AutoencoderTiny.from_pretrained(vae_id).to(dtype=pipe.dtype, device=self.device)
+                stream.vae = AutoencoderTiny.from_pretrained(vae_id).to(device=self.device, dtype=self.dtype)
             else:
                 # Use TAESD XL for SDXL models, regular TAESD for SD 1.5
                 taesd_model = "madebyollin/taesdxl" if is_sdxl else "madebyollin/taesd"
-                stream.vae = AutoencoderTiny.from_pretrained(taesd_model).to(dtype=pipe.dtype, device=self.device)
+                stream.vae = AutoencoderTiny.from_pretrained(taesd_model).to(device=self.device, dtype=self.dtype)
         elif acceleration != "tensorrt":
             # For non-TensorRT acceleration, ensure VAE is on device if it wasn't moved earlier
             if hasattr(pipe, "vae") and pipe.vae is not None:
