@@ -90,6 +90,7 @@ class StreamDiffusionWrapper:
         enable_similar_image_filter: bool = False,
         similar_image_filter_threshold: float = 0.98,
         similar_image_filter_max_skip_frame: int = 10,
+        similar_filter_sleep_fraction: float = 0.025,
         use_denoising_batch: bool = True,
         cfg_type: Literal["none", "full", "self", "initialize"] = "self",
         seed: int = 2,
@@ -365,6 +366,7 @@ class StreamDiffusionWrapper:
             self.stream.enable_similar_image_filter(
                 similar_image_filter_threshold, similar_image_filter_max_skip_frame
             )
+        self.stream.similar_filter_sleep_fraction = similar_filter_sleep_fraction
 
     def prepare(
         self,

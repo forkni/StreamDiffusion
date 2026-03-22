@@ -112,6 +112,7 @@ class StreamDiffusion:
         self.vae = pipe.vae
 
         self.inference_time_ema = 0
+        self.similar_filter_sleep_fraction = 0.025
 
         # Initialize SDXL-specific attributes
         if self.is_sdxl:
@@ -982,7 +983,7 @@ class StreamDiffusion:
             if self.similar_image_filter:
                 x = self.similar_filter(x)
                 if x is None:
-                    time.sleep(self.inference_time_ema)
+                    time.sleep(self.inference_time_ema * self.similar_filter_sleep_fraction)
                     return self.prev_image_result
             
             x_t_latent = self.encode_image(x)

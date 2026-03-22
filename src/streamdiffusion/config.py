@@ -115,6 +115,7 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         'enable_similar_image_filter': config.get('enable_similar_image_filter', False),
         'similar_image_filter_threshold': config.get('similar_image_filter_threshold', 0.98),
         'similar_image_filter_max_skip_frame': config.get('similar_image_filter_max_skip_frame', 10),
+        'similar_filter_sleep_fraction': config.get('similar_filter_sleep_fraction', 0.025),
         'use_denoising_batch': config.get('use_denoising_batch', True),
         'cfg_type': config.get('cfg_type', 'self'),
         'seed': config.get('seed', 2),
