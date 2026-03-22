@@ -100,6 +100,8 @@ class Engine:
         # Buffer reuse optimization tracking
         self._last_shape_dict = None
         self._last_device = None
+        # Cached set of input tensor names — immutable after engine build
+        self._allowed_inputs = None
 
     def __del__(self):
         # Check if AttributeError: 'Engine' object has no attribute 'buffers'
@@ -367,27 +369,28 @@ class Engine:
 
     def infer(self, feed_dict, stream, use_cuda_graph=False):
         # Filter inputs to only those the engine actually exposes to avoid binding errors
-        try:
-            allowed_inputs = set()
-            for idx in range(self.engine.num_io_tensors):
-                name = self.engine.get_tensor_name(idx)
-                if self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
-                    allowed_inputs.add(name)
+        # _allowed_inputs is cached on first call — IO tensor names are immutable after engine build
+        if self._allowed_inputs is None:
+            try:
+                self._allowed_inputs = set()
+                for idx in range(self.engine.num_io_tensors):
+                    name = self.engine.get_tensor_name(idx)
+                    if self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
+                        self._allowed_inputs.add(name)
+            except Exception:
+                self._allowed_inputs = None  # Will retry next call
 
+        if self._allowed_inputs:
             # Drop any extra keys (e.g., text_embeds/time_ids) that the engine was not built to accept
-            if allowed_inputs:
-                filtered_feed_dict = {k: v for k, v in feed_dict.items() if k in allowed_inputs}
-                if len(filtered_feed_dict) != len(feed_dict):
-                    missing = [k for k in feed_dict.keys() if k not in allowed_inputs]
-                    if missing:
-                        logger.debug(
-                            "TensorRT Engine: filtering unsupported inputs %s (allowed=%s)",
-                            missing, sorted(list(allowed_inputs))
-                        )
-                feed_dict = filtered_feed_dict
-        except Exception:
-            # Be permissive if engine query fails; proceed with original dict
-            pass
+            filtered_feed_dict = {k: v for k, v in feed_dict.items() if k in self._allowed_inputs}
+            if len(filtered_feed_dict) != len(feed_dict):
+                missing = [k for k in feed_dict.keys() if k not in self._allowed_inputs]
+                if missing:
+                    logger.debug(
+                        "TensorRT Engine: filtering unsupported inputs %s (allowed=%s)",
+                        missing, sorted(list(self._allowed_inputs))
+                    )
+            feed_dict = filtered_feed_dict
         
         for name, buf in feed_dict.items():
             self.tensors[name].copy_(buf)

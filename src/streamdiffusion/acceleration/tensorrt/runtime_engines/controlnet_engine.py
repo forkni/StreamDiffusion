@@ -115,9 +115,10 @@ class ControlNetModelEngine:
             self.stream,
             use_cuda_graph=self.use_cuda_graph,
         )
-        
-        self.stream.synchronize()
-        
+        # No stream.synchronize() needed — ControlNet and UNet share the same CUDA stream.
+        # Stream ordering guarantees ControlNet kernels complete before UNet reads the outputs.
+        # _extract_controlnet_outputs only slices the tensor dict (no GPU work), so no sync required.
+
         down_blocks, mid_block = self._extract_controlnet_outputs(outputs)
         
         return down_blocks, mid_block

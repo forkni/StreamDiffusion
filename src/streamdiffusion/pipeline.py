@@ -868,10 +868,12 @@ class StreamDiffusion:
         if self.frame_idx % self.cache_interval != 0:
             return
 
+        # Circular buffer: overwrite the oldest slot without shifting or cloning.
+        # The attention processor reads all slots as an unordered K/V bag, so slot order is irrelevant.
         for i, new_kv in enumerate(kvo_cache_out):
-            if self.kvo_cache[i].shape[1] > 1:
-                self.kvo_cache[i][:, :-1].copy_(self.kvo_cache[i][:, 1:].clone())
-            self.kvo_cache[i][:, -1].copy_(new_kv.squeeze(1))
+            cache_size = self.kvo_cache[i].shape[1]
+            write_slot = (self.frame_idx // self.cache_interval - 1) % cache_size
+            self.kvo_cache[i][:, write_slot].copy_(new_kv.squeeze(1))
 
     def encode_image(self, image_tensors: torch.Tensor) -> torch.Tensor:
         image_tensors = image_tensors.to(
@@ -1002,14 +1004,15 @@ class StreamDiffusion:
         self.prev_latent_result = x_0_pred_out.clone()
 
         
-        x_output = self.decode_image(x_0_pred_out).clone()
-        
+        x_output = self.decode_image(x_0_pred_out)
+
         # IMAGE POSTPROCESSING HOOKS: After VAE decoding, before final output
         x_output = self._apply_image_postprocessing_hooks(x_output)
 
-        self.prev_image_result = x_output
+        # Clone for skip-frame cache — TRT VAE buffer is reused on next decode call
+        self.prev_image_result = x_output.clone()
         end.record()
-        torch.cuda.synchronize()
+        end.synchronize()  # Wait only for this event, not all streams globally
         inference_time = start.elapsed_time(end) / 1000
         self.inference_time_ema = 0.9 * self.inference_time_ema + 0.1 * inference_time
         
@@ -1094,11 +1097,11 @@ class StreamDiffusion:
         self.prev_latent_result = x_0_pred_out.clone()
 
         
-        x_output = self.decode_image(x_0_pred_out).clone()
-        
+        x_output = self.decode_image(x_0_pred_out)
+
         # IMAGE POSTPROCESSING HOOKS: After VAE decoding, before final output
         x_output = self._apply_image_postprocessing_hooks(x_output)
-        
+
         return x_output
 
     @torch.inference_mode()
