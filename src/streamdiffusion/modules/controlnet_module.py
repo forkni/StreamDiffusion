@@ -627,8 +627,7 @@ class ControlNetModule(OrchestratorUser):
                 pass
             return controlnet
         except Exception as e:
-            import logging, traceback
-            logger = logging.getLogger(__name__)
+            import traceback
             logger.error(f"ControlNetModule: failed to load model '{model_id}': {e}")
             logger.error(traceback.format_exc())
             raise
