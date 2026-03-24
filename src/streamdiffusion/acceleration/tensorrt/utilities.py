@@ -627,12 +627,11 @@ def export_onnx(
         # Convert to external data format for large models (SDXL)
         if is_large_model:
             import os
-            
-            # Load the exported model
-            onnx_model = onnx.load(onnx_path)
-            
-            # Check if model is large enough to need external data
-            if onnx_model.ByteSize() > 2147483648:  # 2GB
+
+            # Check file size on disk (avoids protobuf 2GB serialization limit in ByteSize())
+            if os.path.getsize(onnx_path) > 2147483648:  # 2GB
+                # Load the exported model for re-saving
+                onnx_model = onnx.load(onnx_path)
                 # Create directory for external data
                 onnx_dir = os.path.dirname(onnx_path)
                 
@@ -646,8 +645,7 @@ def export_onnx(
                     convert_attribute=False,
                 )
                 logger.info(f"Converted to external data format with weights in weights.pb")
-            
-            del onnx_model
+                del onnx_model
     del wrapped_model
     gc.collect()
     torch.cuda.empty_cache()

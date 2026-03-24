@@ -862,7 +862,7 @@ class StreamDiffusion:
         return denoised_batch, model_pred
 
     def update_kvo_cache(self, kvo_cache_out: List[torch.Tensor]) -> None:
-        if not self.kvo_cache:
+        if self.kvo_cache is None or len(self.kvo_cache) == 0:
             return
 
         self.frame_idx += 1

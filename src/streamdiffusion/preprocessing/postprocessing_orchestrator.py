@@ -50,14 +50,23 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
     def _should_use_sync_processing(self, *args, **kwargs) -> bool:
         """
         Determine if synchronous processing should be used instead of pipelined.
-        
-        For postprocessing, we typically don't need sync processing since most
-        postprocessors are stateless and don't have temporal feedback requirements.
-        
+
+        Checks if any postprocessor has requires_sync_processing=True attribute.
+        Postprocessors that affect temporal coherence (e.g. when their output is
+        stored as prev_image_result and read by feedback loops) need synchronous
+        processing to avoid frame-lag oscillation.
+
         Returns:
-            False - postprocessing can typically always use pipelined processing
+            True if any postprocessor requires sync processing, False otherwise
         """
-        # Future: Could check for specific postprocessor types that need sync processing
+        if len(args) < 1:
+            return False
+        processors = args[0]
+        if not processors:
+            return False
+        for proc in processors:
+            if proc is not None and getattr(proc, 'requires_sync_processing', False):
+                return True
         return False
     
     def process_sync(self, 
