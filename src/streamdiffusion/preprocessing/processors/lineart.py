@@ -1,13 +1,15 @@
+import logging
 import numpy as np
 from PIL import Image
 from typing import Union, Optional
 import time
 from .base import BasePreprocessor
 
+logger = logging.getLogger(__name__)
+
 try:
     from controlnet_aux import LineartDetector, LineartAnimeDetector
     CONTROLNET_AUX_AVAILABLE = True
-    print("LineartPreprocessor: controlnet_aux successfully imported")
 except ImportError:
     CONTROLNET_AUX_AVAILABLE = False
     raise ImportError("LineartPreprocessor: controlnet_aux is required for real-time optimization. Install with: pip install controlnet_aux")
@@ -58,8 +60,6 @@ class LineartPreprocessor(BasePreprocessor):
             anime_style: Whether to use anime-style line art detection
             **kwargs: Additional parameters
         """
-        print(f"LineartPreprocessor.__init__: Initializing with detect_resolution={detect_resolution}, image_resolution={image_resolution}, coarse={coarse}, anime_style={anime_style}")
-        
         super().__init__(
             detect_resolution=detect_resolution,
             image_resolution=image_resolution,
@@ -67,9 +67,8 @@ class LineartPreprocessor(BasePreprocessor):
             anime_style=anime_style,
             **kwargs
         )
-        
+
         self._detector = None
-        print("LineartPreprocessor.__init__: Initialization complete")
     
     @property
     def detector(self):
@@ -78,17 +77,13 @@ class LineartPreprocessor(BasePreprocessor):
             start_time = time.time()
             anime_style = self.params.get('anime_style', False)
             
-            print(f"LineartPreprocessor.detector: Loading {'Anime' if anime_style else 'Realistic'} Lineart detector from controlnet_aux")
-            
             if anime_style:
                 self._detector = LineartAnimeDetector.from_pretrained('lllyasviel/Annotators')
-                print("LineartPreprocessor.detector: LineartAnimeDetector loaded successfully")
             else:
                 self._detector = LineartDetector.from_pretrained('lllyasviel/Annotators')
-                print("LineartPreprocessor.detector: LineartDetector loaded successfully")
-            
+
             load_time = time.time() - start_time
-            print(f"LineartPreprocessor.detector: Detector loaded in {load_time:.3f}s")
+            logger.info(f"Lineart detector loaded in {load_time:.3f}s")
             
         return self._detector
     
@@ -96,36 +91,19 @@ class LineartPreprocessor(BasePreprocessor):
         """
         Apply line art detection to the input image
         """
-        start_time = time.time()
-        print("LineartPreprocessor.process: Starting line art detection")
-        
         detect_resolution = self.params.get('detect_resolution', 512)
         coarse = self.params.get('coarse', False)
-        
-        print(f"LineartPreprocessor.process: Using detect_resolution={detect_resolution}, coarse={coarse}")
-        
+
         if image.size != (detect_resolution, detect_resolution):
             image_resized = image.resize((detect_resolution, detect_resolution), Image.LANCZOS)
-            resize_time = time.time()
-            print(f"LineartPreprocessor.process: Image resized from {image.size} to {image_resized.size} in {resize_time - start_time:.3f}s")
         else:
             image_resized = image
-            print("LineartPreprocessor.process: No resizing needed")
-        
-        detection_start = time.time()
-        print("LineartPreprocessor.process: Starting controlnet_aux line art detection")
-        
+
         lineart_image = self.detector(
             image_resized,
             detect_resolution=detect_resolution,
             image_resolution=detect_resolution,
             coarse=coarse
         )
-        
-        detection_time = time.time() - detection_start
-        print(f"LineartPreprocessor.process: Line art detection completed in {detection_time:.3f}s")
-        
-        total_time = time.time() - start_time
-        print(f"LineartPreprocessor.process: Total processing time: {total_time:.3f}s")
-        
-        return lineart_image 
+
+        return lineart_image

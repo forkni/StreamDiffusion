@@ -129,7 +129,6 @@ class ControlNetUNetExportWrapper(torch.nn.Module):
             else:
                 return res[0]
         except Exception as e:
-            print(f"❌ DEBUG: UNet forward failed: {e}")
             raise
     
     def _adapt_control_tensors(self, control_tensors, sample):
