@@ -350,6 +350,11 @@ class StreamDiffusionWrapper:
             seed=seed,
         )
 
+        # Offload text encoders to CPU after initial encoding to free ~1.6 GB VRAM (SDXL).
+        # They are reloaded on-demand before each prompt re-encoding call.
+        if acceleration == "tensorrt":
+            self._offload_text_encoders()
+
         # Set wrapper reference on parameter updater so it can access pipeline structure
         self.stream._param_updater.wrapper = self
 
@@ -413,13 +418,17 @@ class StreamDiffusionWrapper:
         # Handle both single prompt and prompt blending
         if isinstance(prompt, str):
             # Single prompt mode (legacy interface)
-            self.stream.prepare(
-                prompt,
-                negative_prompt,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                delta=delta,
-            )
+            self._reload_text_encoders()
+            try:
+                self.stream.prepare(
+                    prompt,
+                    negative_prompt,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    delta=delta,
+                )
+            finally:
+                self._offload_text_encoders()
 
             # Apply seed blending if provided
             if seed_list is not None:
@@ -435,15 +444,20 @@ class StreamDiffusionWrapper:
 
             # Prepare with first prompt to initialize the pipeline
             first_prompt = prompt[0][0]
-            self.stream.prepare(
-                first_prompt,
-                negative_prompt,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                delta=delta,
-            )
+            self._reload_text_encoders()
+            try:
+                self.stream.prepare(
+                    first_prompt,
+                    negative_prompt,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    delta=delta,
+                )
+            finally:
+                self._offload_text_encoders()
 
             # Then apply prompt blending (and seed blending if provided)
+            # update_stream_params handles its own reload/offload
             self.update_stream_params(
                 prompt_list=prompt,
                 negative_prompt=negative_prompt,
@@ -454,6 +468,31 @@ class StreamDiffusionWrapper:
 
         else:
             raise TypeError(f"prepare: prompt must be str or List[Tuple[str, float]], got {type(prompt)}")
+
+    def _offload_text_encoders(self) -> None:
+        """Move text encoders to CPU to free VRAM (~1.6 GB for SDXL).
+
+        Called automatically after initial prepare() when using TRT acceleration.
+        Text encoders are reloaded to GPU before each prompt re-encoding call.
+        """
+        pipe = self.stream.pipe
+        if hasattr(pipe, "text_encoder") and pipe.text_encoder is not None:
+            if next(pipe.text_encoder.parameters(), None) is not None:
+                pipe.text_encoder = pipe.text_encoder.to("cpu")
+        if hasattr(pipe, "text_encoder_2") and pipe.text_encoder_2 is not None:
+            if next(pipe.text_encoder_2.parameters(), None) is not None:
+                pipe.text_encoder_2 = pipe.text_encoder_2.to("cpu")
+        torch.cuda.empty_cache()
+        logger.debug("[VRAM] Text encoders offloaded to CPU")
+
+    def _reload_text_encoders(self) -> None:
+        """Move text encoders back to GPU before prompt re-encoding."""
+        pipe = self.stream.pipe
+        if hasattr(pipe, "text_encoder") and pipe.text_encoder is not None:
+            pipe.text_encoder = pipe.text_encoder.to(self.device)
+        if hasattr(pipe, "text_encoder_2") and pipe.text_encoder_2 is not None:
+            pipe.text_encoder_2 = pipe.text_encoder_2.to(self.device)
+        logger.debug("[VRAM] Text encoders reloaded to GPU")
 
     def update_prompt(
         self,
@@ -501,8 +540,12 @@ class StreamDiffusionWrapper:
                 # Clear the blending caches to avoid conflicts
                 self.stream._param_updater.clear_caches()
 
-            # Use the legacy single prompt update
-            self.stream.update_prompt(prompt)
+            # Reload text encoders to GPU for re-encoding, then offload when done.
+            self._reload_text_encoders()
+            try:
+                self.stream.update_prompt(prompt)
+            finally:
+                self._offload_text_encoders()
 
         elif isinstance(prompt, list):
             # Prompt blending mode
@@ -513,7 +556,7 @@ class StreamDiffusionWrapper:
             if len(current_prompts) <= 1 and warn_about_conflicts:
                 logger.warning("update_prompt: Switching from single prompt to prompt blending mode.")
 
-            # Apply prompt blending
+            # Apply prompt blending (update_stream_params handles reload/offload internally)
             self.update_stream_params(
                 prompt_list=prompt,
                 negative_prompt=negative_prompt,
@@ -598,29 +641,37 @@ class StreamDiffusionWrapper:
         safety_checker_threshold : Optional[float]
             The threshold for the safety checker.
         """
-        # Handle all parameters via parameter updater (including ControlNet)
-        self.stream._param_updater.update_stream_params(
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            delta=delta,
-            t_index_list=t_index_list,
-            seed=seed,
-            prompt_list=prompt_list,
-            negative_prompt=negative_prompt,
-            prompt_interpolation_method=prompt_interpolation_method,
-            seed_list=seed_list,
-            seed_interpolation_method=seed_interpolation_method,
-            normalize_prompt_weights=normalize_prompt_weights,
-            normalize_seed_weights=normalize_seed_weights,
-            controlnet_config=controlnet_config,
-            ipadapter_config=ipadapter_config,
-            image_preprocessing_config=image_preprocessing_config,
-            image_postprocessing_config=image_postprocessing_config,
-            latent_preprocessing_config=latent_preprocessing_config,
-            latent_postprocessing_config=latent_postprocessing_config,
-            cache_maxframes=cache_maxframes,
-            cache_interval=cache_interval,
-        )
+        # Reload text encoders to GPU if a new prompt needs encoding.
+        needs_encoding = prompt_list is not None or negative_prompt is not None
+        if needs_encoding:
+            self._reload_text_encoders()
+        try:
+            # Handle all parameters via parameter updater (including ControlNet)
+            self.stream._param_updater.update_stream_params(
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                delta=delta,
+                t_index_list=t_index_list,
+                seed=seed,
+                prompt_list=prompt_list,
+                negative_prompt=negative_prompt,
+                prompt_interpolation_method=prompt_interpolation_method,
+                seed_list=seed_list,
+                seed_interpolation_method=seed_interpolation_method,
+                normalize_prompt_weights=normalize_prompt_weights,
+                normalize_seed_weights=normalize_seed_weights,
+                controlnet_config=controlnet_config,
+                ipadapter_config=ipadapter_config,
+                image_preprocessing_config=image_preprocessing_config,
+                image_postprocessing_config=image_postprocessing_config,
+                latent_preprocessing_config=latent_preprocessing_config,
+                latent_postprocessing_config=latent_postprocessing_config,
+                cache_maxframes=cache_maxframes,
+                cache_interval=cache_interval,
+            )
+        finally:
+            if needs_encoding:
+                self._offload_text_encoders()
         if use_safety_checker is not None:
             self.use_safety_checker = use_safety_checker and (self._acceleration == "tensorrt")
         if safety_checker_threshold is not None:
@@ -1202,7 +1253,15 @@ class StreamDiffusionWrapper:
         self._is_sdxl = is_sdxl
         
         logger.info(f"_load_model: Detected model type: {model_type} (confidence: {confidence:.2f})")
-        
+
+        # Auto-resolve IP-Adapter model/encoder paths for detected architecture.
+        # Runs once here so both pre-TRT and post-TRT installation paths see the resolved cfg.
+        if use_ipadapter and ipadapter_config:
+            from streamdiffusion.modules.ipadapter_module import resolve_ipadapter_paths
+            _ip_cfgs = ipadapter_config if isinstance(ipadapter_config, list) else [ipadapter_config]
+            for _ip_cfg in _ip_cfgs:
+                resolve_ipadapter_paths(_ip_cfg, model_type, is_sdxl)
+
         # DEPRECATED: THIS WILL LOAD LCM_LORA IF USE_LCM_LORA IS TRUE
         # Validate backwards compatibility LCM LoRA selection using proper model detection
         if hasattr(self, 'use_lcm_lora') and self.use_lcm_lora is not None:
@@ -1534,74 +1593,90 @@ class StreamDiffusionWrapper:
                 
                 # CRITICAL: Install IPAdapter module BEFORE TensorRT compilation to ensure processors are baked into engines
                 if use_ipadapter and ipadapter_config and not hasattr(stream, '_ipadapter_module'):
-                    try:
-                        from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig, IPAdapterType
-                        logger.info("Installing IPAdapter module before TensorRT compilation...")
-
-                        # Snapshot processors before install — IPAdapter.set_ip_adapter() replaces them
-                        # before load_state_dict(), so a failure leaves the UNet in corrupted state
-                        _saved_unet_processors = {name: proc for name, proc in stream.unet.attn_processors.items()}
-
-                        # Use first config if list provided
-                        cfg = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
-                        ip_cfg = IPAdapterConfig(
-                            style_image_key=cfg.get('style_image_key') or 'ipadapter_main',
-                            num_image_tokens=cfg.get('num_image_tokens', 4),
-                            ipadapter_model_path=cfg['ipadapter_model_path'],
-                            image_encoder_path=cfg['image_encoder_path'],
-                            style_image=cfg.get('style_image'),
-                            scale=cfg.get('scale', 1.0),
-                            type=IPAdapterType(cfg.get('type', "regular")),
-                            insightface_model_name=cfg.get('insightface_model_name'),
+                    # Check if auto-resolution disabled IP-Adapter (e.g. no adapter released for this arch)
+                    _cfg_check = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
+                    if _cfg_check.get('enabled', True) is False:
+                        logger.info(
+                            "IP-Adapter disabled by auto-resolution (no compatible adapter for this model). Skipping."
                         )
-                        ip_module = IPAdapterModule(ip_cfg)
-                        ip_module.install(stream)
-                        # Expose for later updates
-                        stream._ipadapter_module = ip_module
-                        logger.info("IPAdapter module installed successfully before TensorRT compilation")
-                        
-                        # Cleanup after IPAdapter installation
-                        import gc
-                        gc.collect()
-                        torch.cuda.empty_cache()
-                        torch.cuda.synchronize()
-                        
-                    except torch.cuda.OutOfMemoryError as oom_error:
-                        logger.error(f"CUDA Out of Memory during early IPAdapter installation: {oom_error}")
-                        logger.error("Try reducing batch size, using smaller models, or increasing GPU memory")
-                        raise RuntimeError("Insufficient VRAM for IPAdapter installation. Consider using a GPU with more memory or reducing model complexity.")
+                        use_ipadapter_trt = False
+                    else:
+                        try:
+                            from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig, IPAdapterType
+                            logger.info("Installing IPAdapter module before TensorRT compilation...")
 
-                    except RuntimeError as rt_error:
-                        if "size mismatch" in str(rt_error):
-                            unet_dim = getattr(getattr(stream, 'unet', None), 'config', None)
-                            unet_cross_attn = getattr(unet_dim, 'cross_attention_dim', 'unknown') if unet_dim else 'unknown'
-                            logger.warning(
-                                f"IP-Adapter weights are incompatible with this model "
-                                f"(UNet cross_attention_dim={unet_cross_attn}). "
-                                f"Checkpoint dimension does not match. "
-                                f"SD-Turbo is SD2.1-based (dim=1024) — use h94/IP-Adapter/models/ip-adapter_sd21.bin "
-                                f"or disable IP-Adapter in td_config.yaml. "
-                                f"Skipping IP-Adapter and continuing without it."
+                            # Snapshot processors before install — IPAdapter.set_ip_adapter() replaces them
+                            # before load_state_dict(), so a failure leaves the UNet in corrupted state
+                            _saved_unet_processors = {name: proc for name, proc in stream.unet.attn_processors.items()}
+
+                            # Use first config if list provided
+                            cfg = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
+                            ip_cfg = IPAdapterConfig(
+                                style_image_key=cfg.get('style_image_key') or 'ipadapter_main',
+                                num_image_tokens=cfg.get('num_image_tokens', 4),
+                                ipadapter_model_path=cfg['ipadapter_model_path'],
+                                image_encoder_path=cfg['image_encoder_path'],
+                                style_image=cfg.get('style_image'),
+                                scale=cfg.get('scale', 1.0),
+                                type=IPAdapterType(cfg.get('type', "regular")),
+                                insightface_model_name=cfg.get('insightface_model_name'),
                             )
-                            # Restore original processors — IPAdapter.set_ip_adapter() already replaced
-                            # them before load_state_dict() failed, leaving the UNet in a corrupted state
+                            ip_module = IPAdapterModule(ip_cfg)
+                            ip_module.install(stream)
+                            # Expose for later updates
+                            stream._ipadapter_module = ip_module
+                            logger.info("IPAdapter module installed successfully before TensorRT compilation")
+
+                            # Cleanup after IPAdapter installation
+                            import gc
+                            gc.collect()
+                            torch.cuda.empty_cache()
+                            torch.cuda.synchronize()
+
+                        except torch.cuda.OutOfMemoryError as oom_error:
+                            logger.error(f"CUDA Out of Memory during early IPAdapter installation: {oom_error}")
+                            logger.error("Try reducing batch size, using smaller models, or increasing GPU memory")
+                            raise RuntimeError("Insufficient VRAM for IPAdapter installation. Consider using a GPU with more memory or reducing model complexity.")
+
+                        except RuntimeError as rt_error:
+                            if "size mismatch" in str(rt_error):
+                                unet_dim = getattr(getattr(stream, 'unet', None), 'config', None)
+                                unet_cross_attn = getattr(unet_dim, 'cross_attention_dim', 'unknown') if unet_dim else 'unknown'
+                                logger.warning(
+                                    f"IP-Adapter weights are incompatible with this model "
+                                    f"(UNet cross_attention_dim={unet_cross_attn}). "
+                                    f"Checkpoint dimension does not match — this may be a custom model path "
+                                    f"that could not be auto-resolved. "
+                                    f"Check ipadapter_model_path in td_config.yaml. "
+                                    f"Skipping IP-Adapter and continuing without it."
+                                )
+                                # Restore original processors — IPAdapter.set_ip_adapter() already replaced
+                                # them before load_state_dict() failed, leaving the UNet in a corrupted state
+                                try:
+                                    stream.unet.set_attn_processor(_saved_unet_processors)
+                                    logger.info("Restored original UNet attention processors after IP-Adapter failure.")
+                                except Exception as restore_err:
+                                    logger.warning(f"Could not restore UNet processors: {restore_err}")
+                                use_ipadapter_trt = False
+                            else:
+                                import traceback
+                                traceback.print_exc()
+                                logger.error("Failed to install IPAdapterModule before TensorRT compilation")
+                                raise
+
+                        except Exception as e:
+                            import traceback
+                            traceback.print_exc()
+                            logger.warning(
+                                f"Failed to install IPAdapterModule: {e}. "
+                                f"Continuing without IP-Adapter."
+                            )
                             try:
                                 stream.unet.set_attn_processor(_saved_unet_processors)
                                 logger.info("Restored original UNet attention processors after IP-Adapter failure.")
                             except Exception as restore_err:
                                 logger.warning(f"Could not restore UNet processors: {restore_err}")
                             use_ipadapter_trt = False
-                        else:
-                            import traceback
-                            traceback.print_exc()
-                            logger.error("Failed to install IPAdapterModule before TensorRT compilation")
-                            raise
-
-                    except Exception:
-                        import traceback
-                        traceback.print_exc()
-                        logger.error("Failed to install IPAdapterModule before TensorRT compilation")
-                        raise
 
                 # NOTE: When IPAdapter is enabled, we must pass num_ip_layers. We cannot know it until after
                 # installing processors in the export wrapper. We construct the wrapper first to discover it,
