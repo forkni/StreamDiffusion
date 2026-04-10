@@ -17,7 +17,6 @@ uv = shutil.which("uv")
 def _check_torch_installed():
     try:
         import torch
-        import torchvision  # type: ignore
     except Exception:
         msg = (
             "Missing required pre-installed packages: torch, torchvision\n"

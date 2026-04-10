@@ -29,7 +29,7 @@ def install(cu: Optional[Literal["11", "12"]] = get_cuda_major()):
 
     if not is_installed("polygraphy"):
         run_pip(
-            "install polygraphy==0.49.24 --extra-index-url https://pypi.ngc.nvidia.com"
+            "install polygraphy==0.49.26 --extra-index-url https://pypi.ngc.nvidia.com"
         )
     if not is_installed("onnx_graphsurgeon"):
         run_pip(
@@ -37,11 +37,25 @@ def install(cu: Optional[Literal["11", "12"]] = get_cuda_major()):
         )
     if platform.system() == 'Windows' and not is_installed("pywin32"):
         run_pip(
-            "install pywin32==306"
+            "install pywin32==311"
         )
     if platform.system() == 'Windows' and not is_installed("triton"):
         run_pip(
             "install triton-windows==3.4.0.post21"
+        )
+
+    # Pin onnx 1.18 + onnxruntime-gpu 1.24 together:
+    #   - onnx 1.18 exports IR 11; modelopt needs FLOAT4E2M1 added in 1.18
+    #   - onnx 1.19+ exports IR 12 (ORT 1.24 max) and removes float32_to_bfloat16 (onnx-gs needs it)
+    #   - onnxruntime-gpu 1.24 supports IR 11; never co-install CPU onnxruntime (shared files conflict)
+    run_pip("install onnx==1.18.0 onnxruntime-gpu==1.24.4 --no-cache-dir")
+
+    # FP8 quantization dependencies (CUDA 12 only)
+    # nvidia-modelopt requires cupy; pin cupy 13.x + numpy<2 for mediapipe compat
+    if cu == "12":
+        run_pip(
+            'install "nvidia-modelopt[onnx]" "cupy-cuda12x==13.6.0" "numpy==1.26.4"'
+            " --no-cache-dir"
         )
 
 
