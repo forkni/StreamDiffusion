@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 torch.set_grad_enabled(False)
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.benchmark = True
 
 
 class StreamDiffusionWrapper:
@@ -353,10 +354,6 @@ class StreamDiffusionWrapper:
             seed=seed,
         )
 
-        # Offload text encoders to CPU after initial encoding to free ~1.6 GB VRAM (SDXL).
-        # They are reloaded on-demand before each prompt re-encoding call.
-        if acceleration == "tensorrt":
-            self._offload_text_encoders()
 
         # Set wrapper reference on parameter updater so it can access pipeline structure
         self.stream._param_updater.wrapper = self
@@ -364,6 +361,10 @@ class StreamDiffusionWrapper:
         # Store acceleration settings for ControlNet integration
         self._acceleration = acceleration
         self._engine_dir = engine_dir
+
+        # Prompt change tracking: skip text encoder reload when text is identical
+        self._last_prompt_texts: Optional[List[str]] = None
+        self._last_negative_prompt: Optional[str] = None
 
         if device_ids is not None:
             self.stream.unet = torch.nn.DataParallel(
@@ -473,10 +474,23 @@ class StreamDiffusionWrapper:
             raise TypeError(f"prepare: prompt must be str or List[Tuple[str, float]], got {type(prompt)}")
 
     def _offload_text_encoders(self) -> None:
-        """Move text encoders to CPU to free VRAM (~1.6 GB for SDXL).
+        """No-op during inference: text encoders kept on GPU.
 
-        Called automatically after initial prepare() when using TRT acceleration.
-        Text encoders are reloaded to GPU before each prompt re-encoding call.
+        Prompts change during inference while UNet/VAE/ControlNet are constant.
+        The ~1.6GB text encoder VRAM fits comfortably alongside other components
+        on a 24GB GPU, so the offload-reload cycle is pure overhead.
+        For maximum-VRAM scenarios (engine building, FP8 quantization),
+        use _force_offload_text_encoders() explicitly instead.
+        """
+
+    def _reload_text_encoders(self) -> None:
+        """No-op: text encoders remain on GPU (never offloaded during inference)."""
+
+    def _force_offload_text_encoders(self) -> None:
+        """Force-offload text encoders to CPU. Use during engine building or FP8 quantization only.
+
+        Frees ~1.6GB VRAM for maximum headroom during one-time build processes.
+        Call _force_reload_text_encoders() afterwards to restore state.
         """
         pipe = self.stream.pipe
         if hasattr(pipe, "text_encoder") and pipe.text_encoder is not None:
@@ -486,16 +500,16 @@ class StreamDiffusionWrapper:
             if next(pipe.text_encoder_2.parameters(), None) is not None:
                 pipe.text_encoder_2 = pipe.text_encoder_2.to("cpu")
         torch.cuda.empty_cache()
-        logger.debug("[VRAM] Text encoders offloaded to CPU")
+        logger.debug("[VRAM] Text encoders force-offloaded to CPU (engine build/quantization)")
 
-    def _reload_text_encoders(self) -> None:
-        """Move text encoders back to GPU before prompt re-encoding."""
+    def _force_reload_text_encoders(self) -> None:
+        """Force-reload text encoders to GPU after engine building or FP8 quantization."""
         pipe = self.stream.pipe
         if hasattr(pipe, "text_encoder") and pipe.text_encoder is not None:
             pipe.text_encoder = pipe.text_encoder.to(self.device)
         if hasattr(pipe, "text_encoder_2") and pipe.text_encoder_2 is not None:
             pipe.text_encoder_2 = pipe.text_encoder_2.to(self.device)
-        logger.debug("[VRAM] Text encoders reloaded to GPU")
+        logger.debug("[VRAM] Text encoders force-reloaded to GPU")
 
     def update_prompt(
         self,
@@ -644,9 +658,26 @@ class StreamDiffusionWrapper:
         safety_checker_threshold : Optional[float]
             The threshold for the safety checker.
         """
-        # Reload text encoders to GPU if a new prompt needs encoding.
-        needs_encoding = prompt_list is not None or negative_prompt is not None
+        # Reload text encoders to GPU only when prompt text actually changed.
+        # OSC sends prompt updates at ~60 Hz even with identical text, so comparing
+        # against the last encoded texts avoids repeated ~1.6 GB CPU↔GPU transfers.
+        _new_prompt_texts = (
+            [p for p, _w in prompt_list] if prompt_list is not None else None
+        )
+        _texts_changed = (
+            _new_prompt_texts is not None
+            and _new_prompt_texts != self._last_prompt_texts
+        )
+        _neg_changed = (
+            negative_prompt is not None
+            and negative_prompt != self._last_negative_prompt
+        )
+        needs_encoding = _texts_changed or _neg_changed
         if needs_encoding:
+            if _new_prompt_texts is not None:
+                self._last_prompt_texts = _new_prompt_texts
+            if negative_prompt is not None:
+                self._last_negative_prompt = negative_prompt
             self._reload_text_encoders()
         try:
             # Handle all parameters via parameter updater (including ControlNet)
