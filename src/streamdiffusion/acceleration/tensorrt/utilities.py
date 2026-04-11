@@ -564,6 +564,7 @@ class Engine:
         fp16,
         input_profile=None,
         enable_refit=False,
+        enable_all_tactics=False,
         timing_cache=None,
         workspace_size=0,
         fp8=False,
@@ -1082,10 +1083,35 @@ def build_engine(
     build_static_batch: bool = False,
     build_dynamic_shape: bool = False,
     build_enable_refit: bool = False,
+    build_all_tactics: bool = False,
     fp8: bool = False,
+    builder_optimization_level: Optional[int] = None,
 ):
     # --- Step 0: Detect GPU and select hardware-optimal build parameters ---
     gpu_profile = detect_gpu_profile(device=torch.cuda.current_device())
+
+    # Allow caller to override the GPU-profile's optimization level (e.g. 3 for
+    # faster builds at ~2-5% inference cost, or 5 for exhaustive tactic search).
+    if builder_optimization_level is not None:
+        logger.info(
+            f"[TRT Build] builder_optimization_level override: "
+            f"{gpu_profile.builder_optimization_level} -> {builder_optimization_level}"
+        )
+        gpu_profile = GPUBuildProfile(
+            gpu_name=gpu_profile.gpu_name,
+            compute_capability=gpu_profile.compute_capability,
+            l2_cache_bytes=gpu_profile.l2_cache_bytes,
+            vram_bytes=gpu_profile.vram_bytes,
+            sm_count=gpu_profile.sm_count,
+            tier=gpu_profile.tier,
+            builder_optimization_level=builder_optimization_level,
+            tiling_optimization_level=gpu_profile.tiling_optimization_level,
+            l2_limit_for_tiling=gpu_profile.l2_limit_for_tiling,
+            max_aux_streams=gpu_profile.max_aux_streams,
+            sparse_weights=gpu_profile.sparse_weights,
+            enable_runtime_activation_resize=gpu_profile.enable_runtime_activation_resize,
+            max_workspace_cap_bytes=gpu_profile.max_workspace_cap_bytes,
+        )
 
     # --- Workspace sizing: leave 2 GiB for activations, cap per GPU tier ---
     _, free_mem, _ = cudart.cudaMemGetInfo()
@@ -1122,6 +1148,7 @@ def build_engine(
         fp16=True,
         input_profile=input_profile,
         enable_refit=build_enable_refit,
+        enable_all_tactics=build_all_tactics,
         timing_cache=timing_cache_path,
         workspace_size=max_workspace_size,
         fp8=fp8,

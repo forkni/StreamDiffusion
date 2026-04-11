@@ -66,12 +66,14 @@ class EngineBuilder:
         build_enable_refit: bool = False,
         build_static_batch: bool = False,
         build_dynamic_shape: bool = True,
+        build_all_tactics: bool = False,
         onnx_opset: int = 17,
         force_engine_build: bool = False,
         force_onnx_export: bool = False,
         force_onnx_optimize: bool = False,
         fp8: bool = False,
         calibration_data_fn=None,
+        builder_optimization_level: int = None,
     ):
         build_total_start = time.perf_counter()
         engine_name = Path(engine_path).parent.name
@@ -205,7 +207,9 @@ class EngineBuilder:
                 build_static_batch=build_static_batch,
                 build_dynamic_shape=build_dynamic_shape,
                 build_enable_refit=build_enable_refit,
+                build_all_tactics=build_all_tactics,
                 fp8=fp8_trt,
+                builder_optimization_level=builder_optimization_level,
             )
             elapsed = time.perf_counter() - t0
             stats["stages"]["trt_build"] = {"status": "built", "elapsed_s": round(elapsed, 2)}

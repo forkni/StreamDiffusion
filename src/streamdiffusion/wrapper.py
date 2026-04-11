@@ -127,6 +127,7 @@ class StreamDiffusionWrapper:
         max_cache_maxframes: int = 4,
         fp8: bool = False,
         static_shapes: bool = False,
+        builder_optimization_level: Optional[int] = None,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -293,6 +294,7 @@ class StreamDiffusionWrapper:
         self.safety_checker_threshold = safety_checker_threshold
         self.fp8 = fp8
         self.static_shapes = static_shapes
+        self.builder_optimization_level = builder_optimization_level
 
         self.stream: StreamDiffusion = self._load_model(
             model_id_or_path=model_id_or_path,
@@ -1794,6 +1796,7 @@ class StreamDiffusionWrapper:
                         "build_dynamic_shape": not self.static_shapes,
                         "build_static_batch": self.static_shapes,
                         **({"min_image_resolution": 384, "max_image_resolution": 1024, "build_all_tactics": True} if not self.static_shapes else {}),
+                        **({"builder_optimization_level": self.builder_optimization_level} if self.builder_optimization_level is not None else {}),
                     },
                 )
 
@@ -1819,6 +1822,7 @@ class StreamDiffusionWrapper:
                         "build_dynamic_shape": not self.static_shapes,
                         "build_static_batch": self.static_shapes,
                         **({"min_image_resolution": 384, "max_image_resolution": 1024, "build_all_tactics": True} if not self.static_shapes else {}),
+                        **({"builder_optimization_level": self.builder_optimization_level} if self.builder_optimization_level is not None else {}),
                     },
                 )
 
@@ -1836,6 +1840,8 @@ class StreamDiffusionWrapper:
                         "build_dynamic_shape": False,
                         "build_static_batch": True,
                     }
+                    if self.builder_optimization_level is not None:
+                        _unet_build_opts["builder_optimization_level"] = self.builder_optimization_level
                     if fp8:
                         from streamdiffusion.acceleration.tensorrt.fp8_quantize import (
                             generate_unet_calibration_data,
@@ -2015,11 +2021,11 @@ class StreamDiffusionWrapper:
                 )
 
                 stream = accelerate_with_stable_fast(stream)
-        except Exception:
+        except Exception as e:
             import traceback
 
             traceback.print_exc()
-            raise Exception("Acceleration has failed.")
+            raise Exception(f"Acceleration has failed: {e}") from e
 
         # Install modules via hooks instead of patching (wrapper keeps forwarding updates only)
         if use_controlnet:

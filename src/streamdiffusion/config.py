@@ -127,6 +127,9 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         'scheduler': config.get('scheduler', 'lcm'),
         'sampler': config.get('sampler', 'normal'),
         'compile_engines_only': config.get('compile_engines_only', False),
+        'static_shapes': config.get('static_shapes', False),
+        'fp8': config.get('fp8', False),
+        'builder_optimization_level': config.get('builder_optimization_level'),
     }
     if 'controlnets' in config and config['controlnets']:
         param_map['use_controlnet'] = True
