@@ -66,6 +66,7 @@ class EngineBuilder:
         build_enable_refit: bool = False,
         build_static_batch: bool = False,
         build_dynamic_shape: bool = True,
+        build_all_tactics: bool = False,
         onnx_opset: int = 17,
         force_engine_build: bool = False,
         force_onnx_export: bool = False,
@@ -83,6 +84,7 @@ class EngineBuilder:
             "opt_resolution": f"{opt_image_width}x{opt_image_height}",
             "dynamic_range": f"{min_image_resolution}-{max_image_resolution}" if build_dynamic_shape else "static",
             "batch_size": opt_batch_size,
+            "build_all_tactics": build_all_tactics,
             "stages": {},
         }
 
@@ -154,9 +156,10 @@ class EngineBuilder:
         if fp8:
             onnx_fp8_path = onnx_opt_path.replace(".opt.onnx", ".fp8.onnx")
             if not os.path.exists(onnx_fp8_path):
-                _build_logger.warning(f"[BUILD] FP8 quantization starting...")
+                _build_logger.warning("[BUILD] FP8 quantization starting...")
                 t0 = time.perf_counter()
                 from .fp8_quantize import quantize_onnx_fp8
+
                 try:
                     quantize_onnx_fp8(
                         onnx_opt_path,
@@ -204,6 +207,7 @@ class EngineBuilder:
                 opt_batch_size=opt_batch_size,
                 build_static_batch=build_static_batch,
                 build_dynamic_shape=build_dynamic_shape,
+                build_all_tactics=build_all_tactics,
                 build_enable_refit=build_enable_refit,
                 fp8=fp8_trt,
             )
@@ -253,7 +257,9 @@ class EngineBuilder:
                         os.remove(fpath)
                     except OSError as cleanup_err:
                         _still_failed.append(os.path.basename(fpath))
-                        _build_logger.warning(f"[BUILD] Could not delete temp file {os.path.basename(fpath)}: {cleanup_err}")
+                        _build_logger.warning(
+                            f"[BUILD] Could not delete temp file {os.path.basename(fpath)}: {cleanup_err}"
+                        )
                 if _still_failed:
                     _build_logger.warning(
                         f"[BUILD] {len(_still_failed)} intermediate files could not be cleaned. "
