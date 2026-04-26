@@ -10,6 +10,7 @@ RTX 5090 has 128MB L2, compute 12.0 — full support.
 Environment variables:
     SDTD_L2_PERSIST=1         Enable L2 persistence (default: 1)
     SDTD_L2_PERSIST_MB=64     MB of L2 to reserve for persistent data (default: 64)
+    SDTD_L2_PERSIST_TIER2=0   Enable per-tensor access policy window (default: 0, nn.Module UNet only)
     SDTD_L2_PERSIST_LAYERS=   Comma-separated layer names for access policy (default: auto)
 
 Expected impact: 5-16% on memory-bandwidth-bound layers (normalization, small GEMMs).
@@ -30,6 +31,9 @@ import torch
 
 L2_PERSIST_ENABLED = os.environ.get("SDTD_L2_PERSIST", "1") == "1"
 L2_PERSIST_MB = int(os.environ.get("SDTD_L2_PERSIST_MB", "64"))
+# Tier 2 (per-tensor access policy window) is opt-in: only works for PyTorch nn.Module
+# UNets (not TRT engines), and only the single largest tensor window is active per stream.
+L2_PERSIST_TIER2 = os.environ.get("SDTD_L2_PERSIST_TIER2", "0") == "1"
 
 # Hot layer prefixes — these contain the most attention + FF hook computation.
 # mid_block: 1 transformer block, seq_len=1024, 16 FF hooks
@@ -112,17 +116,11 @@ def _get_cudart() -> Optional[ctypes.CDLL]:
 
     # Option 1: PyTorch ships cudart in torch/lib/
     torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
-    candidates = sorted(
-        glob.glob(os.path.join(torch_lib, "cudart64_*.dll")), reverse=True
-    )
+    candidates = sorted(glob.glob(os.path.join(torch_lib, "cudart64_*.dll")), reverse=True)
 
     # Option 2: CUDA toolkit installation
-    cuda_path = os.environ.get(
-        "CUDA_PATH", r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
-    )
-    candidates += sorted(
-        glob.glob(os.path.join(cuda_path, "bin", "cudart64_*.dll")), reverse=True
-    )
+    cuda_path = os.environ.get("CUDA_PATH", r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8")
+    candidates += sorted(glob.glob(os.path.join(cuda_path, "bin", "cudart64_*.dll")), reverse=True)
 
     for dll_path in candidates:
         try:
@@ -162,9 +160,7 @@ def reserve_l2_persisting_cache(persist_mb: int = L2_PERSIST_MB) -> bool:
     props = torch.cuda.get_device_properties(device)
     major, minor = props.major, props.minor
     if major < 8:
-        print(
-            f"[L2] L2 persistence skipped — compute {major}.{minor} < 8.0 (Ampere required)"
-        )
+        print(f"[L2] L2 persistence skipped — compute {major}.{minor} < 8.0 (Ampere required)")
         return False
 
     l2_total_mb = props.L2_cache_size // (1024 * 1024)
@@ -296,20 +292,26 @@ def pin_hot_unet_weights(
     persist_mb: int = L2_PERSIST_MB,
 ) -> int:
     """
-    Mark hot UNet layer weights as L2-persistent.
+    Mark the single largest hot UNet attention weight as L2-persistent.
 
-    Identifies attention Q/K/V/out projection weights in the hottest layers
-    (mid_block, up_blocks.1) and requests they persist in L2 cache.
+    CUDA allows only one cudaAccessPolicyWindow per stream at a time — registering
+    multiple tensors silently replaces the previous window.  This function correctly
+    picks the single largest hot attention weight (by byte size) and registers exactly
+    one window for it.
 
     Args:
-        unet: The UNet model (already on CUDA).
+        unet: The UNet model (already on CUDA, must be torch.nn.Module).
         hot_prefixes: Layer name prefixes to target. Defaults to mid_block + up_blocks.1.
         persist_mb: MB of L2 to reserve (passed to reserve_l2_persisting_cache).
 
     Returns:
-        Number of weight tensors successfully pinned.
+        1 if a tensor was pinned, 0 otherwise.
     """
     if not L2_PERSIST_ENABLED:
+        return 0
+
+    if not isinstance(unet, torch.nn.Module):
+        print("[L2] Tier 2 skipped — model is not nn.Module (e.g. TRT engine). Use Tier 1 only.")
         return 0
 
     if hot_prefixes is None:
@@ -321,12 +323,14 @@ def pin_hot_unet_weights(
         if not tier1_ok:
             return 0
 
-    # Tier 2: Set access policy on hot attention weights
-    # Target: to_q, to_k, to_v, to_out weights in hot transformer blocks.
-    # These are small-to-medium GEMMs that benefit most from L2 hits.
+    # Tier 2: Find the single largest hot attention weight.
+    # CUDA allows only one cudaAccessPolicyWindow per stream — registering N tensors
+    # results in only the Nth window being active (each call replaces the previous).
+    # Pinning the largest tensor maximises L2 utilization for the one permitted window.
     _hot_weight_keywords = ["to_q", "to_k", "to_v", "to_out"]
-    pinned_count = 0
-    pinned_bytes = 0
+    best_tensor = None
+    best_bytes = 0
+    candidate_count = 0
 
     for name, param in unet.named_parameters():
         if not param.is_cuda:
@@ -334,21 +338,21 @@ def pin_hot_unet_weights(
         is_hot = any(prefix in name for prefix in hot_prefixes)
         is_attn_weight = any(kw in name for kw in _hot_weight_keywords)
         if is_hot and is_attn_weight:
-            if set_tensor_persisting(param.data):
-                pinned_count += 1
-                pinned_bytes += param.data.nbytes
+            candidate_count += 1
+            if param.data.nbytes > best_bytes:
+                best_bytes = param.data.nbytes
+                best_tensor = param.data
 
-    if pinned_count > 0:
+    if best_tensor is not None and set_tensor_persisting(best_tensor):
         print(
-            f"[L2] Pinned {pinned_count} attention weight tensors "
-            f"({pinned_bytes / 1024 / 1024:.1f}MB) in L2 persisting cache"
+            f"[L2] Pinned 1 of {candidate_count} hot tensors (largest, "
+            f"{best_bytes / 1024 / 1024:.1f}MB) — single-window CUDA limit applies"
         )
-    else:
-        print(
-            "[L2] No tensors pinned (params may require_grad=True before compile — call after freeze)"
-        )
+        return 1
 
-    return pinned_count
+    if candidate_count == 0:
+        print("[L2] No tensors pinned (params may require_grad=True before compile — call after freeze)")
+    return 0
 
 
 def setup_l2_persistence(unet: torch.nn.Module) -> bool:
@@ -358,8 +362,15 @@ def setup_l2_persistence(unet: torch.nn.Module) -> bool:
     Call this AFTER model is loaded and BEFORE torch.compile.
     For best results with frozen weights, call AFTER torch.compile with freezing=True.
 
+    Tier 1 (L2 set-aside via cudaDeviceSetLimit) is always attempted — this reserves
+    a portion of L2 for hot data and is correct for all GPU modes including TRT engines.
+
+    Tier 2 (per-tensor access policy window) is opt-in via SDTD_L2_PERSIST_TIER2=1.
+    It only works for PyTorch nn.Module UNets (not TRT engines), and CUDA allows only
+    one window per stream — this function registers only the single largest hot tensor.
+
     Args:
-        unet: The UNet model on CUDA.
+        unet: The UNet model on CUDA (nn.Module for Tier-2 to apply; TRT Engine for Tier-1 only).
 
     Returns:
         True if at least Tier 1 (L2 reservation) succeeded.
@@ -367,21 +378,18 @@ def setup_l2_persistence(unet: torch.nn.Module) -> bool:
     if not L2_PERSIST_ENABLED:
         return False
 
-    print(
-        f"\n[L2] Setting up L2 cache persistence "
-        f"(SDTD_L2_PERSIST_MB={L2_PERSIST_MB})..."
-    )
+    print(f"\n[L2] Setting up L2 cache persistence (SDTD_L2_PERSIST_MB={L2_PERSIST_MB})...")
 
-    # Tier 1 is the reliable baseline — always attempt
+    # Tier 1: Reserve L2 persisting region — works for all GPU modes, always attempt.
     tier1_ok = reserve_l2_persisting_cache(L2_PERSIST_MB)
 
     if tier1_ok:
-        # Tier 2: per-tensor access policy (best-effort)
-        pinned = pin_hot_unet_weights(unet, persist_mb=0)  # Tier 1 already reserved
-        if pinned == 0:
+        if L2_PERSIST_TIER2:
+            # Tier 2: per-tensor access policy window — opt-in, nn.Module only.
+            pin_hot_unet_weights(unet, persist_mb=0)  # Tier 1 already reserved above
+        else:
             print(
-                "[L2] Tier 2 access policy skipped (call pin_hot_unet_weights() "
-                "after compile+freeze for per-tensor control)"
+                "[L2] Tier 2 access policy disabled (set SDTD_L2_PERSIST_TIER2=1 to enable; nn.Module UNet required)"
             )
 
     return tier1_ok

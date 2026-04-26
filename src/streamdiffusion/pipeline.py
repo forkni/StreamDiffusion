@@ -25,6 +25,7 @@ from streamdiffusion.hooks import (
 from streamdiffusion.image_filter import SimilarImageFilter
 from streamdiffusion.model_detection import detect_model
 from streamdiffusion.stream_parameter_updater import StreamParameterUpdater
+from streamdiffusion.tools.gpu_profiler import profiler
 
 
 logging.basicConfig(level=logging.INFO)
@@ -56,6 +57,7 @@ class StreamDiffusion:
         self.device = torch.device(device)
         self.dtype = torch_dtype
         self.generator = None
+        self._input_staging: Optional[torch.Tensor] = None
 
         self.height = height
         self.width = width
@@ -112,11 +114,11 @@ class StreamDiffusion:
         self._prev_image_buf = None  # pre-allocated buffer for skip-frame image cache
         self._combined_latent_buf = None  # pre-allocated: avoids torch.cat in predict_x0_batch
         self._alpha_next = None  # pre-computed: cat([alpha_prod_t_sqrt[1:], ones[0:1]])
-        self._beta_next = None   # pre-computed: cat([beta_prod_t_sqrt[1:], ones[0:1]])
+        self._beta_next = None  # pre-computed: cat([beta_prod_t_sqrt[1:], ones[0:1]])
         self._init_noise_rotated = None  # pre-computed: cat([init_noise[1:], init_noise[0:1]])
         self._unet_kwargs: dict = {"return_dict": False}  # pre-allocated: avoids per-frame dict creation
         self._cfg_latent_buf = None  # pre-allocated: avoids torch.concat for CFG latent doubling
-        self._cfg_t_buf = None       # pre-allocated: avoids torch.concat for CFG timestep doubling
+        self._cfg_t_buf = None  # pre-allocated: avoids torch.concat for CFG timestep doubling
 
         self.pipe = pipe
         self.image_processor = VaeImageProcessor(pipe.vae_scale_factor)
@@ -161,9 +163,15 @@ class StreamDiffusion:
         self._cached_guidance_scale: Optional[float] = None
 
         self.kvo_cache = kvo_cache
+        self._kvo_buckets = None
+        self._kvo_outputs_by_bucket = None
         self.cache_interval = cache_interval
         self.cache_maxframes = cache_maxframes
         self.frame_idx = 0
+
+        # Pre-allocated CUDA timing events — reused every frame via .record()
+        self._timing_start = torch.cuda.Event(enable_timing=True)
+        self._timing_end = torch.cuda.Event(enable_timing=True)
 
     def _initialize_scheduler(self, scheduler_type: str, sampler_type: str, config):
         """Initialize scheduler based on type and sampler configuration."""
@@ -346,6 +354,13 @@ class StreamDiffusion:
         self.generator = generator
         self.generator.manual_seed(seed)
         self.current_seed = seed
+
+        # Pinned CPU staging buffer for async H2D DMA via non_blocking=True.
+        # Pageable memory silently falls back to synchronous double-buffered staging (~½ bandwidth).
+        # dtype=self.dtype: avoids a transient GPU fp32 buffer that PyTorch would allocate
+        # when casting pageable float32 input to fp16 on the device.
+        self._input_staging = torch.zeros(1, 3, self.height, self.width, dtype=self.dtype).pin_memory()
+
         # initialize x_t_latent (it can be any random tensor)
         if self.denoising_steps_num > 1:
             self.x_t_latent_buffer = torch.zeros(
@@ -675,11 +690,11 @@ class StreamDiffusion:
             self._cfg_t_buf[1:].copy_(t_list)
             t_list = self._cfg_t_buf
         elif self.guidance_scale > 1.0 and (self.cfg_type == "full"):
-            self._cfg_latent_buf[:len(x_t_latent)].copy_(x_t_latent)
-            self._cfg_latent_buf[len(x_t_latent):].copy_(x_t_latent)
+            self._cfg_latent_buf[: len(x_t_latent)].copy_(x_t_latent)
+            self._cfg_latent_buf[len(x_t_latent) :].copy_(x_t_latent)
             x_t_latent_plus_uc = self._cfg_latent_buf
-            self._cfg_t_buf[:len(t_list)].copy_(t_list)
-            self._cfg_t_buf[len(t_list):].copy_(t_list)
+            self._cfg_t_buf[: len(t_list)].copy_(t_list)
+            self._cfg_t_buf[len(t_list) :].copy_(t_list)
             t_list = self._cfg_t_buf
         else:
             x_t_latent_plus_uc = x_t_latent
@@ -717,39 +732,40 @@ class StreamDiffusion:
                 unet_kwargs["added_cond_kwargs"] = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
 
         # Allow modules to contribute additional UNet kwargs via hooks
-        try:
-            step_ctx = StepCtx(
-                x_t_latent=x_t_latent_plus_uc,
-                t_list=t_list,
-                step_index=idx if isinstance(idx, int) else (int(idx) if idx is not None else None),
-                guidance_mode=self.cfg_type if self.guidance_scale > 1.0 else "none",
-                sdxl_cond=unet_kwargs.get("added_cond_kwargs", None),
-            )
-            extra_from_hooks = {}
-            for hook in self.unet_hooks:
-                delta: UnetKwargsDelta = hook(step_ctx)
-                if delta is None:
-                    continue
-                if delta.down_block_additional_residuals is not None:
-                    unet_kwargs["down_block_additional_residuals"] = delta.down_block_additional_residuals
-                if delta.mid_block_additional_residual is not None:
-                    unet_kwargs["mid_block_additional_residual"] = delta.mid_block_additional_residual
-                if delta.added_cond_kwargs is not None:
-                    # Merge SDXL cond if both exist
-                    base_added = unet_kwargs.get("added_cond_kwargs", {})
-                    base_added.update(delta.added_cond_kwargs)
-                    unet_kwargs["added_cond_kwargs"] = base_added
-                if getattr(delta, "extra_unet_kwargs", None):
-                    # Merge extra kwargs from hooks (e.g., ipadapter_scale)
-                    try:
-                        extra_from_hooks.update(delta.extra_unet_kwargs)
-                    except Exception:
-                        pass
-            if extra_from_hooks:
-                unet_kwargs["extra_unet_kwargs"] = extra_from_hooks
-        except Exception as e:
-            logger.error(f"unet_step: unet hook failed: {e}")
-            raise
+        if self.unet_hooks:
+            try:
+                step_ctx = StepCtx(
+                    x_t_latent=x_t_latent_plus_uc,
+                    t_list=t_list,
+                    step_index=idx if isinstance(idx, int) else (int(idx) if idx is not None else None),
+                    guidance_mode=self.cfg_type if self.guidance_scale > 1.0 else "none",
+                    sdxl_cond=unet_kwargs.get("added_cond_kwargs", None),
+                )
+                extra_from_hooks = {}
+                for hook in self.unet_hooks:
+                    delta: UnetKwargsDelta = hook(step_ctx)
+                    if delta is None:
+                        continue
+                    if delta.down_block_additional_residuals is not None:
+                        unet_kwargs["down_block_additional_residuals"] = delta.down_block_additional_residuals
+                    if delta.mid_block_additional_residual is not None:
+                        unet_kwargs["mid_block_additional_residual"] = delta.mid_block_additional_residual
+                    if delta.added_cond_kwargs is not None:
+                        # Merge SDXL cond if both exist
+                        base_added = unet_kwargs.get("added_cond_kwargs", {})
+                        base_added.update(delta.added_cond_kwargs)
+                        unet_kwargs["added_cond_kwargs"] = base_added
+                    if getattr(delta, "extra_unet_kwargs", None):
+                        # Merge extra kwargs from hooks (e.g., ipadapter_scale)
+                        try:
+                            extra_from_hooks.update(delta.extra_unet_kwargs)
+                        except Exception:
+                            pass
+                if extra_from_hooks:
+                    unet_kwargs["extra_unet_kwargs"] = extra_from_hooks
+            except Exception as e:
+                logger.error(f"unet_step: unet hook failed: {e}")
+                raise
 
         # Extract potential ControlNet residual kwargs and generic extra kwargs (e.g., ipadapter_scale)
         hook_down_res = unet_kwargs.get("down_block_additional_residuals", None)
@@ -881,116 +897,146 @@ class StreamDiffusion:
         # The attention processor reads all slots as an unordered K/V bag, so slot order is irrelevant.
         # Use self.cache_maxframes (not tensor shape) so that when the buffer is allocated at
         # max_cache_maxframes but the logical window is smaller, writes stay within the active range.
-        for i, new_kv in enumerate(kvo_cache_out):
-            cache_size = self.cache_maxframes
-            write_slot = (self.frame_idx // self.cache_interval - 1) % cache_size
-            self.kvo_cache[i][:, write_slot].copy_(new_kv.squeeze(1))
+        write_slot = (self.frame_idx // self.cache_interval - 1) % self.cache_maxframes
+
+        if self._kvo_buckets is not None:
+            # Bucketed path: N stacks + N copies (N≈3) instead of ~70 individual copies.
+            # Each kvo_cache_out[i] arrives shape (2, 1, B, S, H); squeeze(1) → (2, B, S, H).
+            for bucket_idx, output_indices in enumerate(self._kvo_outputs_by_bucket):
+                stacked = torch.stack([kvo_cache_out[i].squeeze(1) for i in output_indices], dim=0)
+                self._kvo_buckets[bucket_idx][:, :, write_slot].copy_(stacked)
+        else:
+            # Fallback path — used when buckets were dropped after a kvo_cache resize
+            # (stream_parameter_updater rebinds kvo_cache[i] to standalone tensors).
+            for i, new_kv in enumerate(kvo_cache_out):
+                self.kvo_cache[i][:, write_slot].copy_(new_kv.squeeze(1))
 
     def encode_image(self, image_tensors: torch.Tensor) -> torch.Tensor:
-        image_tensors = image_tensors.to(
-            device=self.device,
-            dtype=self.vae.dtype,
-        )
-        with torch.autocast("cuda", dtype=self.dtype):
-            img_latent = retrieve_latents(self.vae.encode(image_tensors), self.generator)
+        with profiler.region("encode_image"):
+            image_tensors = image_tensors.to(
+                device=self.device,
+                dtype=self.vae.dtype,
+                non_blocking=True,
+            )
+            with torch.autocast("cuda", dtype=self.dtype):
+                img_latent = retrieve_latents(self.vae.encode(image_tensors), self.generator)
 
-        img_latent = img_latent * self.vae.config.scaling_factor
+            img_latent = img_latent * self.vae.config.scaling_factor
 
-        x_t_latent = self.add_noise(img_latent, self.init_noise[0], 0)
-
-        return x_t_latent
+            x_t_latent = self.add_noise(img_latent, self.init_noise[0], 0)
+            return x_t_latent
 
     def decode_image(self, x_0_pred_out: torch.Tensor) -> torch.Tensor:
-        scaled_latent = x_0_pred_out / self.vae.config.scaling_factor
-        with torch.autocast("cuda", dtype=self.dtype):
-            output_latent = self.vae.decode(scaled_latent, return_dict=False)[0]
-        return output_latent
+        with profiler.region("decode_image"):
+            scaled_latent = x_0_pred_out / self.vae.config.scaling_factor
+            with torch.autocast("cuda", dtype=self.dtype):
+                output_latent = self.vae.decode(scaled_latent, return_dict=False)[0]
+            return output_latent
 
     def predict_x0_batch(self, x_t_latent: torch.Tensor) -> torch.Tensor:
-        prev_latent_batch = self.x_t_latent_buffer
+        with profiler.region("predict_x0_batch"):
+            prev_latent_batch = self.x_t_latent_buffer
 
-        # LCM supports our denoising-batch trick. TCD must use standard scheduler.step() sequentially
-        # but now properly processes ControlNet hooks through unet_step()
-        if self.use_denoising_batch and isinstance(self.scheduler, LCMScheduler):
-            t_list = self.sub_timesteps_tensor
-            if self.denoising_steps_num > 1:
-                # Copy into pre-allocated buffer: eliminates 1 malloc + copy kernel vs torch.cat
-                self._combined_latent_buf[:self.frame_bff_size].copy_(x_t_latent)
-                self._combined_latent_buf[self.frame_bff_size:].copy_(prev_latent_batch)
-                x_t_latent = self._combined_latent_buf
-                self.stock_noise = torch.cat((self.init_noise[0:1], self.stock_noise[:-1]), dim=0)
-            x_0_pred_batch, model_pred = self.unet_step(x_t_latent, t_list)
+            # LCM supports our denoising-batch trick. TCD must use standard scheduler.step() sequentially
+            # but now properly processes ControlNet hooks through unet_step()
+            if self.use_denoising_batch and isinstance(self.scheduler, LCMScheduler):
+                t_list = self.sub_timesteps_tensor
+                if self.denoising_steps_num > 1:
+                    # Copy into pre-allocated buffer: eliminates 1 malloc + copy kernel vs torch.cat
+                    self._combined_latent_buf[: self.frame_bff_size].copy_(x_t_latent)
+                    self._combined_latent_buf[self.frame_bff_size :].copy_(prev_latent_batch)
+                    x_t_latent = self._combined_latent_buf
+                    self.stock_noise = torch.cat((self.init_noise[0:1], self.stock_noise[:-1]), dim=0)
+                with profiler.region("unet_step"):
+                    x_0_pred_batch, model_pred = self.unet_step(x_t_latent, t_list)
 
-            if self.denoising_steps_num > 1:
-                x_0_pred_out = x_0_pred_batch[-1].unsqueeze(0)
-                if self.do_add_noise:
-                    self.x_t_latent_buffer = (
-                        self.alpha_prod_t_sqrt[1:] * x_0_pred_batch[:-1]
-                        + self.beta_prod_t_sqrt[1:] * self.init_noise[1:]
-                    )
-                else:
-                    self.x_t_latent_buffer = self.alpha_prod_t_sqrt[1:] * x_0_pred_batch[:-1]
-            else:
-                x_0_pred_out = x_0_pred_batch
-                self.x_t_latent_buffer = None
-        else:
-            # Standard scheduler loop for TCD and non-batched LCM
-            sample = x_t_latent
-            for idx, timestep in enumerate(self.sub_timesteps_tensor):
-                # Ensure timestep tensor on device with correct dtype
-                if not isinstance(timestep, torch.Tensor):
-                    t = torch.tensor(timestep, device=self.device, dtype=torch.long)
-                else:
-                    t = timestep.to(self.device)
-
-                # For TCD, use the same UNet calling logic as LCM to ensure ControlNet hooks are processed
-                if isinstance(self.scheduler, TCDScheduler):
-                    # Use unet_step to process ControlNet hooks and get proper noise prediction
-                    t_expanded = t.view(
-                        1,
-                    ).repeat(
-                        self.frame_bff_size,
-                    )
-                    x_0_pred, model_pred = self.unet_step(sample, t_expanded, idx)
-
-                    # Apply TCD scheduler step to the guided noise prediction
-                    step_out = self.scheduler.step(model_pred, t, sample)
-                    sample = getattr(
-                        step_out, "prev_sample", step_out[0] if isinstance(step_out, (tuple, list)) else step_out
-                    )
-                else:
-                    # Original LCM logic for non-batched mode
-                    t = t.view(
-                        1,
-                    ).repeat(
-                        self.frame_bff_size,
-                    )
-                    x_0_pred, model_pred = self.unet_step(sample, t, idx)
-                    if idx < len(self.sub_timesteps_tensor) - 1:
-                        if self.do_add_noise:
-                            if self._noise_buf is None:
-                                self._noise_buf = torch.empty_like(x_0_pred)
-                            self._noise_buf.normal_()
-                            sample = (
-                                self.alpha_prod_t_sqrt[idx + 1] * x_0_pred
-                                + self.beta_prod_t_sqrt[idx + 1] * self._noise_buf
-                            )
-                        else:
-                            sample = self.alpha_prod_t_sqrt[idx + 1] * x_0_pred
+                if self.denoising_steps_num > 1:
+                    x_0_pred_out = x_0_pred_batch[-1].unsqueeze(0)
+                    if self.do_add_noise:
+                        self.x_t_latent_buffer = (
+                            self.alpha_prod_t_sqrt[1:] * x_0_pred_batch[:-1]
+                            + self.beta_prod_t_sqrt[1:] * self.init_noise[1:]
+                        )
                     else:
-                        sample = x_0_pred
+                        self.x_t_latent_buffer = self.alpha_prod_t_sqrt[1:] * x_0_pred_batch[:-1]
+                else:
+                    x_0_pred_out = x_0_pred_batch
+                    self.x_t_latent_buffer = None
+            else:
+                # Standard scheduler loop for TCD and non-batched LCM
+                sample = x_t_latent
+                for idx, timestep in enumerate(self.sub_timesteps_tensor):
+                    # Ensure timestep tensor on device with correct dtype
+                    if not isinstance(timestep, torch.Tensor):
+                        t = torch.tensor(timestep, device=self.device, dtype=torch.long)
+                    else:
+                        t = timestep.to(self.device)
 
-            x_0_pred_out = sample
-        return x_0_pred_out
+                    # For TCD, use the same UNet calling logic as LCM to ensure ControlNet hooks are processed
+                    if isinstance(self.scheduler, TCDScheduler):
+                        # Use unet_step to process ControlNet hooks and get proper noise prediction
+                        t_expanded = t.view(
+                            1,
+                        ).repeat(
+                            self.frame_bff_size,
+                        )
+                        with profiler.region("unet_step"):
+                            x_0_pred, model_pred = self.unet_step(sample, t_expanded, idx)
+
+                        # Apply TCD scheduler step to the guided noise prediction
+                        with profiler.region("scheduler_step"):
+                            step_out = self.scheduler.step(model_pred, t, sample)
+                        sample = getattr(
+                            step_out, "prev_sample", step_out[0] if isinstance(step_out, (tuple, list)) else step_out
+                        )
+                    else:
+                        # Original LCM logic for non-batched mode
+                        t = t.view(
+                            1,
+                        ).repeat(
+                            self.frame_bff_size,
+                        )
+                        with profiler.region("unet_step"):
+                            x_0_pred, model_pred = self.unet_step(sample, t, idx)
+                        if idx < len(self.sub_timesteps_tensor) - 1:
+                            if self.do_add_noise:
+                                if self._noise_buf is None:
+                                    self._noise_buf = torch.empty_like(x_0_pred)
+                                self._noise_buf.normal_()
+                                sample = (
+                                    self.alpha_prod_t_sqrt[idx + 1] * x_0_pred
+                                    + self.beta_prod_t_sqrt[idx + 1] * self._noise_buf
+                                )
+                            else:
+                                sample = self.alpha_prod_t_sqrt[idx + 1] * x_0_pred
+                        else:
+                            sample = x_0_pred
+
+                x_0_pred_out = sample
+            return x_0_pred_out
 
     @torch.inference_mode()
     def __call__(self, x: Union[torch.Tensor, PIL.Image.Image, np.ndarray] = None) -> torch.Tensor:
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
+        start = self._timing_start
+        end = self._timing_end
         start.record()
 
         if x is not None:
-            x = self.image_processor.preprocess(x, self.height, self.width).to(device=self.device, dtype=self.dtype)
+            # Fast path: already a normalized GPU tensor with the right shape/dtype.
+            # Skips image_processor.preprocess (and its per-frame image.min() GPU scan).
+            # PIL/numpy inputs still take the full preprocessing path below.
+            if not (
+                isinstance(x, torch.Tensor)
+                and x.is_cuda
+                and x.dtype == self.dtype
+                and x.shape[-2:] == (self.height, self.width)
+            ):
+                _raw = self.image_processor.preprocess(x, self.height, self.width)
+                if not _raw.is_cuda and self._input_staging is not None and _raw.shape == self._input_staging.shape:
+                    self._input_staging.copy_(_raw)  # CPU fp32→dtype cast into pinned memory
+                    x = self._input_staging.to(device=self.device, non_blocking=True)
+                else:
+                    x = _raw.to(device=self.device, dtype=self.dtype, non_blocking=True)
 
             # IMAGE PREPROCESSING HOOKS: After built-in preprocessing, before filtering
             x = self._apply_image_preprocessing_hooks(x)
@@ -1182,7 +1228,9 @@ class StreamDiffusion:
                 return_dict=False,
             )
 
-        x_0_pred_out = (x_t_latent - self.beta_prod_t_sqrt * model_pred) / self.alpha_prod_t_sqrt
+        x_0_pred_out = ((x_t_latent - self.beta_prod_t_sqrt * model_pred).float() / self.alpha_prod_t_sqrt.float()).to(
+            x_t_latent.dtype
+        )
 
         # LATENT POSTPROCESSING HOOKS: After diffusion, before VAE decoding
         x_0_pred_out = self._apply_latent_postprocessing_hooks(x_0_pred_out)

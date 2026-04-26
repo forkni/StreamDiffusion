@@ -17,10 +17,15 @@
 # limitations under the License.
 #
 
+import logging
+
 import onnx_graphsurgeon as gs
 import torch
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
 from onnx import shape_inference
+
+
+logger = logging.getLogger(__name__)
 from polygraphy.backend.onnx.loader import fold_constants
 
 
@@ -67,6 +72,71 @@ class Optimizer:
         self.graph = gs.import_onnx(onnx_graph)
         if return_onnx:
             return onnx_graph
+
+    def fix_layernorm_dtypes(self, return_onnx=False):
+        """
+        Fix LN dtype mismatch in FP8-quantized UNet without breaking Q/DQ adjacency.
+
+        nvidia-modelopt DequantizeLinear outputs FP32; LN scale/bias stay FP16
+        from the original weights. STRONGLY_TYPED rejects the mismatch
+        (TRT 10.x: "INormalizationLayer 'input' and 'scale' must have identical types").
+
+        Fix: promote scale/bias FP16→FP32 to match the FP32 input, and promote
+        the LN output dtype to FP32 so consumers see consistent types.
+
+        Earlier versions also inserted a Cast(FP32→FP16) on each LN output.
+        That Cast pollutes Q/DQ adjacency — TRT's quantization fusion expects
+        the LN→Q edge to be direct. The Cast made the engine *build* (Q/DQ
+        count looked healthy, ~3082) but the DQ scale was applied to the
+        post-Cast tensor instead of the actually-quantized tensor → numerically
+        broken → pure noise at inference. Per SDXL UNet structure every LN
+        output feeds only QuantizeLinear (qkv/ff projections) which accepts
+        FP32 directly, so the Cast was unnecessary.
+        """
+        import numpy as np
+
+        promoted = 0
+        out_promoted = 0
+        non_q_consumers_seen = 0
+
+        for node in self.graph.nodes:
+            if node.op != "LayerNormalization":
+                continue
+            if not node.inputs:
+                continue
+
+            for param in node.inputs[1:]:  # scale, then optional bias
+                if param is None or not hasattr(param, "values") or param.values is None:
+                    continue
+                if param.values.dtype == np.float16:
+                    param.values = param.values.astype(np.float32)
+                    promoted += 1
+
+            out_var = node.outputs[0]
+            if hasattr(out_var, "dtype") and out_var.dtype == np.float16:
+                out_var.dtype = np.float32
+                out_promoted += 1
+
+            # Sanity: warn if any LN feeds something other than QuantizeLinear,
+            # since FP32 promotion of the output edge could then introduce a
+            # downstream type mismatch the original Cast was masking.
+            for consumer in self.graph.nodes:
+                if out_var in consumer.inputs and consumer.op != "QuantizeLinear":
+                    non_q_consumers_seen += 1
+
+        if promoted or out_promoted:
+            logger.info(
+                f"[Optimizer] fix_layernorm_dtypes: promoted {promoted} initializer(s) "
+                f"and {out_promoted} LN output dtype(s) FP16→FP32 (no Cast insertion)"
+            )
+        if non_q_consumers_seen:
+            logger.warning(
+                f"[Optimizer] fix_layernorm_dtypes: {non_q_consumers_seen} non-QuantizeLinear "
+                f"LN consumer(s) detected — FP32 LN output may need a downstream Cast for "
+                f"STRONGLY_TYPED build to succeed. Standard SDXL UNet should report 0."
+            )
+        if return_onnx:
+            return gs.export_onnx(self.graph)
 
 
 class BaseModel:
@@ -125,6 +195,9 @@ class BaseModel:
         opt.info(self.name + ": fold constants")
         opt.infer_shapes()
         opt.info(self.name + ": shape inference")
+        if any(n.op in ("QuantizeLinear", "DequantizeLinear") for n in opt.graph.nodes):
+            opt.fix_layernorm_dtypes()
+            opt.info(self.name + ": fp8 LN dtype fix")
         onnx_opt_graph = opt.cleanup(return_onnx=True)
         opt.info(self.name + ": finished")
         return onnx_opt_graph
@@ -142,7 +215,9 @@ class BaseModel:
         assert batch_size >= effective_min_batch and batch_size <= effective_max_batch, (
             f"Batch size {batch_size} not in range [{effective_min_batch}, {effective_max_batch}]"
         )
-        assert image_height % 8 == 0 or image_width % 8 == 0
+        assert image_height % 8 == 0 and image_width % 8 == 0, (
+            f"image_height ({image_height}) and image_width ({image_width}) must both be divisible by 8"
+        )
         latent_height = image_height // 8
         latent_width = image_width // 8
         assert latent_height >= self.min_latent_shape and latent_height <= self.max_latent_shape
@@ -733,14 +808,20 @@ class UNet(BaseModel):
         export_batch_size = min(batch_size, 1)  # Use batch size 1 for ONNX export to save memory
 
         base_inputs = [
+            # sample dtype matches self.fp16 so the ONNX `sample` input is FP16 when
+            # the unet runs FP16 — eliminates an FP32→FP16 Cast at conv_in, and
+            # avoids a dtype mismatch when modelopt's ORT inference probe (used in
+            # FP8 calibration) feeds FP16 captures into the graph.
             torch.randn(
                 2 * export_batch_size,
                 self.unet_dim,
                 latent_height,
                 latent_width,
-                dtype=torch.float32,
+                dtype=dtype,
                 device=self.device,
             ),
+            # timestep stays FP32 — diffusers' sinusoidal time_proj needs FP32 for
+            # numerical stability; this is also what the FP16 unet expects upstream.
             torch.ones((2 * export_batch_size,), dtype=torch.float32, device=self.device),
             torch.randn(2 * export_batch_size, self.text_maxlen, self.embedding_dim, dtype=dtype, device=self.device),
         ]

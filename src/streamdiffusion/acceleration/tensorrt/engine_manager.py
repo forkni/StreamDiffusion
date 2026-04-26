@@ -113,6 +113,7 @@ class EngineManager:
         use_controlnet: bool = False,
         fp8: bool = False,
         resolution: Optional[tuple] = None,
+        builder_optimization_level: Optional[int] = None,
     ) -> Path:
         """
         Generate engine path using wrapper.py's current logic.
@@ -121,6 +122,7 @@ class EngineManager:
         Special handling for ControlNet engines which use model_id-based directories.
         """
         filename = self._configs[engine_type]["filename"]
+        optlvl_suffix = f"--optlvl{builder_optimization_level}" if builder_optimization_level is not None else ""
 
         if engine_type == EngineType.CONTROLNET:
             # ControlNet engines use special model_id-based directory structure
@@ -134,7 +136,7 @@ class EngineManager:
                 prefix = f"controlnet_{model_dir_name}--min_batch-{min_batch_size}--max_batch-{max_batch_size}--res-{resolution[0]}x{resolution[1]}"
             else:
                 prefix = f"controlnet_{model_dir_name}--min_batch-{min_batch_size}--max_batch-{max_batch_size}--dyn-384-1024"
-            return self.engine_dir / prefix / filename
+            return self.engine_dir / (prefix + optlvl_suffix) / filename
         else:
             # Standard engines use the unified prefix format
             # Extract base name (from wrapper.py lines 1002-1003)
@@ -160,9 +162,24 @@ class EngineManager:
                 if use_controlnet:
                     prefix += "--controlnet"
                 if fp8:
-                    prefix += "--fp8"
+                    prefix += "--fp8v3"
+
+            prefix += optlvl_suffix
 
             prefix += f"--mode-{mode}"
+
+            # Embed TRT version + compute capability so upgrading TRT invalidates
+            # stale engines automatically. Old engine dirs are orphaned (not deleted),
+            # keeping them available for rollback. Fails silently if tensorrt isn't
+            # installed yet (e.g. during a partial install).
+            try:
+                import tensorrt as _trt
+                import torch as _torch
+
+                _cc = _torch.cuda.get_device_capability(0)
+                prefix += f"--trt{_trt.__version__}--cc{_cc[0]}{_cc[1]}"
+            except Exception:
+                pass
 
             if resolution is not None:
                 prefix += f"--res-{resolution[0]}x{resolution[1]}"
@@ -224,6 +241,7 @@ class EngineManager:
         opt_image_height: int = 704,
         opt_image_width: int = 704,
         build_dynamic_shape: bool = False,
+        builder_optimization_level: Optional[int] = None,
     ) -> Dict:
         """Get default engine build options for ControlNet engines."""
         opts = {
@@ -235,6 +253,8 @@ class EngineManager:
         if build_dynamic_shape:
             opts["min_image_resolution"] = 384
             opts["max_image_resolution"] = 1024
+        if builder_optimization_level is not None:
+            opts["builder_optimization_level"] = builder_optimization_level
         return opts
 
     def compile_and_load_engine(
@@ -334,6 +354,7 @@ class EngineManager:
         conditioning_channels: int = 3,
         opt_image_height: int = 704,
         opt_image_width: int = 704,
+        builder_optimization_level: Optional[int] = None,
     ) -> Any:
         """
         Get or load ControlNet engine, providing unified interface for ControlNet management.
@@ -350,6 +371,7 @@ class EngineManager:
             use_tiny_vae=False,  # Not used for ControlNet
             controlnet_model_id=model_id,
             resolution=(opt_image_height, opt_image_width),
+            builder_optimization_level=builder_optimization_level,
         )
 
         # Compile and load ControlNet engine
@@ -370,5 +392,6 @@ class EngineManager:
             engine_build_options=self._get_default_controlnet_build_options(
                 opt_image_height=opt_image_height,
                 opt_image_width=opt_image_width,
+                builder_optimization_level=builder_optimization_level,
             ),
         )

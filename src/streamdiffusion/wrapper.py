@@ -11,6 +11,8 @@ from PIL import Image
 from .image_utils import postprocess_image
 from .model_detection import detect_model
 from .pipeline import StreamDiffusion
+from .tools.gpu_profiler import configure as _configure_profiler
+from .tools.gpu_profiler import profiler
 
 
 logger = logging.getLogger(__name__)
@@ -127,6 +129,8 @@ class StreamDiffusionWrapper:
         max_cache_maxframes: int = 4,
         fp8: bool = False,
         static_shapes: bool = False,
+        fp8_allow_fp16_fallback: bool = False,
+        builder_optimization_level: Optional[int] = None,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -245,6 +249,31 @@ class StreamDiffusionWrapper:
             The maximum number of frames to cache, by default 1.
         cache_interval : int, optional
             The interval to cache the frames, by default 1.
+        builder_optimization_level : Optional[int], optional
+            TensorRT IBuilderConfig.builder_optimization_level (range 0-5,
+            TRT default 3). When set, overrides the per-GPU auto-detect default
+            in ``acceleration/tensorrt/utilities.py::detect_gpu_profile()``.
+
+            TouchDesigner TrtProfile mapping aligned with NVIDIA reference
+            pipelines (demoDiffusion: level 3 for FP16; TensorRT-Model-Optimizer:
+            level 4 for FP8/INT8 quantized)::
+
+              0 = Flexible   static_shapes=False + level 3 — FP16 dynamic;
+                             matches NVIDIA demoDiffusion default.
+              2 = Fast Build static_shapes=True  + level 2 — heuristic-sorted
+                             fastest tactics; ~30-40% faster build with minimal
+                             runtime loss (build-time tradeoff).
+              4 = Quality    static_shapes=True  + level 3 — FP16 static;
+                             matches NVIDIA demoDiffusion default (level 4 has
+                             no NVIDIA-validated benefit for unquantized FP16).
+              Performance    static_shapes=True  + level 4 + fp8=True —
+                             matches NVIDIA TensorRT-Model-Optimizer default
+                             for quantized diffusion (RTX 40+ only).
+
+            Levels 1 and 5 are valid TRT values but not exposed via TrtProfile
+            UI (1 = degraded; 5 = used by no NVIDIA reference pipeline). Set to
+            None to auto-detect per GPU (Ada/Ampere/Blackwell → 4, pre-Ampere
+            → 3). Default None.
         """
         if compile_engines_only:
             logger.info("compile_engines_only is True, will only compile engines and not load the model")
@@ -274,6 +303,7 @@ class StreamDiffusionWrapper:
             if not use_denoising_batch:
                 raise NotImplementedError("img2img mode must use denoising batch for now.")
 
+        _configure_profiler()  # activates via GPU_PROFILER=1 env var; no-op otherwise
         self.device = device
         self.dtype = dtype
         self.width = width
@@ -281,6 +311,9 @@ class StreamDiffusionWrapper:
         self.mode = mode
         self.output_type = output_type
         self.frame_buffer_size = frame_buffer_size
+        self._output_pin_buf: Optional[torch.Tensor] = None  # pinned CPU buffer for async D2H output
+        self._output_gpu_buf: Optional[torch.Tensor] = None  # persistent GPU fp32 staging (avoids per-frame alloc)
+        self._d2h_event: Optional[torch.cuda.Event] = None  # event for fine-grained D2H sync
         self.batch_size = len(t_index_list) * frame_buffer_size if use_denoising_batch else frame_buffer_size
         self.min_batch_size = min_batch_size
         self.max_batch_size = max_batch_size
@@ -293,6 +326,8 @@ class StreamDiffusionWrapper:
         self.safety_checker_threshold = safety_checker_threshold
         self.fp8 = fp8
         self.static_shapes = static_shapes
+        self.fp8_allow_fp16_fallback = fp8_allow_fp16_fallback
+        self.builder_optimization_level = builder_optimization_level
 
         self.stream: StreamDiffusion = self._load_model(
             model_id_or_path=model_id_or_path,
@@ -879,9 +914,25 @@ class StreamDiffusionWrapper:
             # Denormalize on GPU, return tensor
             return self._denormalize_on_gpu(image_tensor)
         elif output_type == "np":
-            # Denormalize on GPU, then single efficient CPU transfer
+            # GPU uint8 conversion + single async DMA to pinned host buffer.
+            # uint8 is 4× smaller than fp32, so PCIe transfer time is 4× shorter.
+            # Eliminates the intermediate fp32 GPU staging buffer and the PIL round-trip
+            # that was needed when callers immediately called np.array(pil_image).
             denormalized = self._denormalize_on_gpu(image_tensor)
-            return denormalized.cpu().permute(0, 2, 3, 1).float().numpy()
+            uint8_nhwc = (denormalized * 255).clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1).contiguous()
+            if (
+                self._output_pin_buf is None
+                or self._output_pin_buf.shape != uint8_nhwc.shape
+                or self._output_pin_buf.dtype != torch.uint8
+            ):
+                self._output_pin_buf = torch.empty(uint8_nhwc.shape, dtype=torch.uint8, pin_memory=True)
+                self._d2h_event = torch.cuda.Event()
+            self._output_pin_buf.copy_(uint8_nhwc, non_blocking=True)
+            with profiler.region("d2h_sync"):
+                self._d2h_event.record()
+                self._d2h_event.synchronize()
+            out = self._output_pin_buf.numpy()
+            return out if self.frame_buffer_size > 1 else out[0]
 
         # PIL output path (optimized)
         if output_type == "pil":
@@ -1312,7 +1363,7 @@ class StreamDiffusionWrapper:
         if use_cached_attn:
             from streamdiffusion.acceleration.tensorrt.models.utils import create_kvo_cache
 
-            kvo_cache, _ = create_kvo_cache(
+            kvo_cache, _, kvo_buckets, kvo_outputs_by_bucket = create_kvo_cache(
                 pipe.unet,
                 batch_size=stream.trt_unet_batch_size,
                 cache_maxframes=max_cache_maxframes,  # Allocate at max to avoid runtime resize race
@@ -1322,6 +1373,8 @@ class StreamDiffusionWrapper:
                 dtype=self.dtype,
             )
             stream.kvo_cache = kvo_cache
+            stream._kvo_buckets = kvo_buckets
+            stream._kvo_outputs_by_bucket = kvo_outputs_by_bucket
 
         # Load and properly merge LoRA weights using the standard diffusers approach
         lora_adapters_to_merge = []
@@ -1362,7 +1415,7 @@ class StreamDiffusionWrapper:
                 # Clean up any partial state
                 try:
                     stream.pipe.unload_lora_weights()
-                except:
+                except Exception:
                     pass
 
         if use_tiny_vae:
@@ -1513,6 +1566,7 @@ class StreamDiffusionWrapper:
                     use_controlnet=use_controlnet_trt,
                     fp8=fp8,
                     resolution=(self.height, self.width),
+                    builder_optimization_level=self.builder_optimization_level,
                 )
                 vae_encoder_path = engine_manager.get_engine_path(
                     EngineType.VAE_ENCODER,
@@ -1526,6 +1580,7 @@ class StreamDiffusionWrapper:
                     ipadapter_tokens=ipadapter_tokens,
                     is_faceid=is_faceid if use_ipadapter_trt else None,
                     resolution=(self.height, self.width),
+                    builder_optimization_level=self.builder_optimization_level,
                 )
                 vae_decoder_path = engine_manager.get_engine_path(
                     EngineType.VAE_DECODER,
@@ -1539,6 +1594,7 @@ class StreamDiffusionWrapper:
                     ipadapter_tokens=ipadapter_tokens,
                     is_faceid=is_faceid if use_ipadapter_trt else None,
                     resolution=(self.height, self.width),
+                    builder_optimization_level=self.builder_optimization_level,
                 )
 
                 # Check if all required engines exist
@@ -1586,12 +1642,7 @@ class StreamDiffusionWrapper:
                 logger.info(
                     f"compile_and_load_engine: Compiling UNet engine for image size: {self.width}x{self.height}"
                 )
-                try:
-                    logger.debug(
-                        f"compile_and_load_engine: use_ipadapter_trt={use_ipadapter_trt}, num_ip_layers={num_ip_layers}, tokens={num_tokens}"
-                    )
-                except Exception:
-                    pass
+                logger.debug(f"compile_and_load_engine: use_ipadapter_trt={use_ipadapter_trt}, tokens={num_tokens}")
 
                 # Note: LoRA weights have already been merged permanently during model loading
 
@@ -1616,7 +1667,7 @@ class StreamDiffusionWrapper:
 
                             # Snapshot processors before install — IPAdapter.set_ip_adapter() replaces them
                             # before load_state_dict(), so a failure leaves the UNet in corrupted state
-                            _saved_unet_processors = {name: proc for name, proc in stream.unet.attn_processors.items()}
+                            _saved_unet_processors = dict(stream.unet.attn_processors)
 
                             # Use first config if list provided
                             cfg = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
@@ -1793,7 +1844,16 @@ class StreamDiffusionWrapper:
                         "opt_image_width": self.width,
                         "build_dynamic_shape": not self.static_shapes,
                         "build_static_batch": self.static_shapes,
-                        **({"min_image_resolution": 384, "max_image_resolution": 1024, "build_all_tactics": True} if not self.static_shapes else {}),
+                        **(
+                            {"min_image_resolution": 384, "max_image_resolution": 1024, "build_all_tactics": True}
+                            if not self.static_shapes
+                            else {}
+                        ),
+                        **(
+                            {"builder_optimization_level": self.builder_optimization_level}
+                            if self.builder_optimization_level is not None
+                            else {}
+                        ),
                     },
                 )
 
@@ -1818,35 +1878,59 @@ class StreamDiffusionWrapper:
                         "opt_image_width": self.width,
                         "build_dynamic_shape": not self.static_shapes,
                         "build_static_batch": self.static_shapes,
-                        **({"min_image_resolution": 384, "max_image_resolution": 1024, "build_all_tactics": True} if not self.static_shapes else {}),
+                        **(
+                            {"min_image_resolution": 384, "max_image_resolution": 1024, "build_all_tactics": True}
+                            if not self.static_shapes
+                            else {}
+                        ),
+                        **(
+                            {"builder_optimization_level": self.builder_optimization_level}
+                            if self.builder_optimization_level is not None
+                            else {}
+                        ),
                     },
                 )
 
+                # Use polygraphy's default Blocking stream. A NonBlocking engine stream
+                # would skip the legacy/per-thread NULL-stream auto-sync that the rest of
+                # the pipeline relies on (PyTorch ops run on stream 0x0), creating a data
+                # race where the engine reads stale inputs and writes outputs that
+                # downstream PyTorch never observes — symptom is black/zero output frames.
                 cuda_stream = cuda.Stream()
 
                 vae_config = stream.vae.config
                 vae_dtype = stream.vae.dtype
 
                 try:
-                    logger.info("Loading TensorRT UNet engine...")
-                    # Build engine_build_options, adding FP8 calibration callback when enabled.
+                    logger.warning(
+                        f"[TRT] UNet engine: fp8={fp8}, static_shapes={self.static_shapes}, engine_path={unet_path}"
+                    )
                     _unet_build_opts = {
                         "opt_image_height": self.height,
                         "opt_image_width": self.width,
                         "build_dynamic_shape": False,
                         "build_static_batch": True,
                     }
+                    if self.builder_optimization_level is not None:
+                        _unet_build_opts["builder_optimization_level"] = self.builder_optimization_level
                     if fp8:
-                        from streamdiffusion.acceleration.tensorrt.fp8_quantize import (
-                            generate_unet_calibration_data,
-                        )
-                        _captured_model = unet_model
-                        _calib_batch = stream.trt_unet_batch_size
-                        _calib_h, _calib_w = self.height, self.width
+                        _is_turbo = getattr(self, "_is_turbo", False)
                         _unet_build_opts["fp8"] = True
-                        _unet_build_opts["onnx_opset"] = 19  # modelopt FP8 needs opset ≥19 for fp16 Q/DQ scales
-                        _unet_build_opts["calibration_data_fn"] = lambda: generate_unet_calibration_data(
-                            _captured_model, _calib_batch, _calib_h, _calib_w
+                        _unet_build_opts["onnx_opset"] = 19  # FP8 Q/DQ scales require opset ≥19
+                        _unet_build_opts["pipe_ref"] = stream.pipe
+                        # SDXL-Turbo: 4 steps, guidance_scale=0.0 (matches inference);
+                        # SDXL base: 20 steps, guidance_scale=7.5.
+                        # Calibration activations must match inference-time ranges.
+                        _unet_build_opts["calibration_steps"] = 4 if _is_turbo else 20
+                        _unet_build_opts["fp8_guidance_scale"] = 0.0 if _is_turbo else 7.5
+                        _unet_build_opts["fp8_allow_fp16_fallback"] = self.fp8_allow_fp16_fallback
+                        _unet_build_opts["fp8_use_cached_attn"] = use_cached_attn
+                        _unet_build_opts["fp8_use_controlnet"] = use_controlnet_trt
+                        _unet_build_opts["fp8_num_ip_layers"] = num_ip_layers if use_ipadapter_trt else 0
+                        logger.warning(
+                            f"[TRT] FP8 build opts: turbo={_is_turbo}, "
+                            f"steps={_unet_build_opts['calibration_steps']}, "
+                            f"guidance={_unet_build_opts['fp8_guidance_scale']}"
                         )
 
                     # Compile and load UNet engine using EngineManager
@@ -1885,7 +1969,7 @@ class StreamDiffusionWrapper:
                         if hasattr(stream, "unet"):
                             try:
                                 del stream.unet
-                            except:
+                            except Exception:
                                 pass
 
                         self.cleanup_gpu_memory()
@@ -1943,7 +2027,7 @@ class StreamDiffusionWrapper:
                             if hasattr(stream, "vae"):
                                 try:
                                     del stream.vae
-                                except:
+                                except Exception:
                                     pass
 
                             self.cleanup_gpu_memory()
@@ -2073,6 +2157,7 @@ class StreamDiffusionWrapper:
                                     opt_image_width=self.width,
                                     load_engine=load_engine,
                                     conditioning_channels=cfg.get("conditioning_channels", 3),
+                                    builder_optimization_level=self.builder_optimization_level,
                                 )
                                 try:
                                     setattr(engine, "model_id", cfg["model_id"])
@@ -2080,11 +2165,15 @@ class StreamDiffusionWrapper:
                                     pass
                                 compiled_cn_engines.append(engine)
                             except Exception as e:
-                                logger.warning(f"Failed to compile/load ControlNet engine for {cfg.get('model_id')}: {e}")
+                                logger.warning(
+                                    f"Failed to compile/load ControlNet engine for {cfg.get('model_id')}: {e}"
+                                )
                         if compiled_cn_engines:
                             setattr(stream, "controlnet_engines", compiled_cn_engines)
                             try:
-                                logger.info(f"Compiled/loaded {len(compiled_cn_engines)} ControlNet TensorRT engine(s)")
+                                logger.info(
+                                    f"Compiled/loaded {len(compiled_cn_engines)} ControlNet TensorRT engine(s)"
+                                )
                             except Exception:
                                 pass
                     except Exception:
@@ -2131,7 +2220,7 @@ class StreamDiffusionWrapper:
                     insightface_model_name=cfg.get("insightface_model_name"),
                 )
                 ip_module = IPAdapterModule(ip_cfg)
-                _saved_unet_processors_post = {name: proc for name, proc in stream.unet.attn_processors.items()}
+                _saved_unet_processors_post = dict(stream.unet.attn_processors)
                 ip_module.install(stream)
                 # Expose for later updates
                 stream._ipadapter_module = ip_module
@@ -2407,7 +2496,7 @@ class StreamDiffusionWrapper:
             try:
                 self.stream._param_updater.clear_caches()
                 logger.info("   Cleared prompt caches")
-            except:
+            except Exception:
                 pass
 
         # Enhanced TensorRT engine cleanup
@@ -2423,20 +2512,20 @@ class StreamDiffusionWrapper:
                         try:
                             # Call the engine's destructor explicitly
                             unet_engine.engine.__del__()
-                        except:
+                        except Exception:
                             pass
 
                     # Clear all engine-related attributes
                     if hasattr(unet_engine, "context"):
                         try:
                             del unet_engine.context
-                        except:
+                        except Exception:
                             pass
                     if hasattr(unet_engine, "engine"):
                         try:
                             del unet_engine.engine.engine  # TensorRT runtime engine
                             del unet_engine.engine
-                        except:
+                        except Exception:
                             pass
 
                     del self.stream.unet
@@ -2454,11 +2543,11 @@ class StreamDiffusionWrapper:
                             if hasattr(engine, "engine") and hasattr(engine.engine, "__del__"):
                                 try:
                                     engine.engine.__del__()
-                                except:
+                                except Exception:
                                     pass
                             try:
                                 delattr(vae_engine, engine_name)
-                            except:
+                            except Exception:
                                 pass
 
                     del self.stream.vae
@@ -2471,7 +2560,7 @@ class StreamDiffusionWrapper:
                         self.stream.controlnet_engine_pool.cleanup()
                         del self.stream.controlnet_engine_pool
                         logger.info("   ControlNet engine pool cleanup completed")
-                    except:
+                    except Exception:
                         pass
 
             except Exception as e:
@@ -2482,9 +2571,15 @@ class StreamDiffusionWrapper:
             try:
                 del self.stream
                 logger.info("   Cleared stream object")
-            except:
+            except Exception:
                 pass
             self.stream = None
+
+        # Release wrapper-level frame buffers so the next model swap allocates fresh
+        # for the new output shape and pinned host memory is returned to the OS.
+        self._output_pin_buf = None
+        self._output_gpu_buf = None
+        self._d2h_event = None
 
         # Force multiple garbage collection cycles for thorough cleanup
         for i in range(3):

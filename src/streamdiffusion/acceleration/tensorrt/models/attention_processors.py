@@ -2,9 +2,9 @@ from typing import Optional
 
 import torch
 import torch.nn.functional as F
-
 from diffusers.models.attention_processor import Attention
 from diffusers.utils import USE_PEFT_BACKEND
+
 
 class CachedSTAttnProcessor2_0:
     r"""
@@ -28,9 +28,9 @@ class CachedSTAttnProcessor2_0:
         # clone/contiguous path. Set to True by wrapper.py after engine build.
         self._curr_key_buf: Optional[torch.Tensor] = None
         self._curr_value_buf: Optional[torch.Tensor] = None
-        self._cached_key_tr_buf: Optional[torch.Tensor] = None    # transposed cache key
+        self._cached_key_tr_buf: Optional[torch.Tensor] = None  # transposed cache key
         self._cached_value_tr_buf: Optional[torch.Tensor] = None  # transposed cache value
-        self._kvo_out_buf: Optional[torch.Tensor] = None          # (2, 1, B, S, H)
+        self._kvo_out_buf: Optional[torch.Tensor] = None  # (2, 1, B, S, H)
         self._use_prealloc: bool = False
 
     def _ensure_buffers(

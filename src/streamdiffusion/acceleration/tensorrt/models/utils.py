@@ -1,16 +1,19 @@
+from typing import Dict, List, Tuple
+
 import torch
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
+
 
 def get_kvo_cache_info(unet: UNet2DConditionModel, height=512, width=512):
     latent_height = height // 8
     latent_width = width // 8
-    
+
     kvo_cache_shapes = []
     kvo_cache_structure = []
     current_h, current_w = latent_height, latent_width
-    
+
     for _, block in enumerate(unet.down_blocks):
-        if hasattr(block, 'attentions') and block.attentions is not None:
+        if hasattr(block, "attentions") and block.attentions is not None:
             block_structure = []
             for attn_block in block.attentions:
                 attn_count = 0
@@ -22,12 +25,12 @@ def get_kvo_cache_info(unet: UNet2DConditionModel, height=512, width=512):
                     attn_count += 1
                 block_structure.append(attn_count)
             kvo_cache_structure.append(block_structure)
-        
-        if hasattr(block, 'downsamplers') and block.downsamplers is not None:
+
+        if hasattr(block, "downsamplers") and block.downsamplers is not None:
             current_h //= 2
             current_w //= 2
-    
-    if hasattr(unet.mid_block, 'attentions') and unet.mid_block.attentions is not None:
+
+    if hasattr(unet.mid_block, "attentions") and unet.mid_block.attentions is not None:
         block_structure = []
         for attn_block in unet.mid_block.attentions:
             attn_count = 0
@@ -39,9 +42,9 @@ def get_kvo_cache_info(unet: UNet2DConditionModel, height=512, width=512):
                 attn_count += 1
             block_structure.append(attn_count)
         kvo_cache_structure.append(block_structure)
-    
+
     for _, block in enumerate(unet.up_blocks):
-        if hasattr(block, 'attentions') and block.attentions is not None:
+        if hasattr(block, "attentions") and block.attentions is not None:
             block_structure = []
             for attn_block in block.attentions:
                 attn_count = 0
@@ -53,13 +56,13 @@ def get_kvo_cache_info(unet: UNet2DConditionModel, height=512, width=512):
                     attn_count += 1
                 block_structure.append(attn_count)
             kvo_cache_structure.append(block_structure)
-        
-        if hasattr(block, 'upsamplers') and block.upsamplers is not None:
+
+        if hasattr(block, "upsamplers") and block.upsamplers is not None:
             current_h *= 2
             current_w *= 2
 
     kvo_cache_count = sum(sum(block) for block in kvo_cache_structure)
-    
+
     return kvo_cache_shapes, kvo_cache_structure, kvo_cache_count
 
 
@@ -89,16 +92,33 @@ def convert_structure_to_list(structured_list):
     return flat_list
 
 
-def create_kvo_cache(unet: UNet2DConditionModel, batch_size, cache_maxframes, height=512, width=512, 
-                     device='cuda', dtype=torch.float16):
+def create_kvo_cache(
+    unet: UNet2DConditionModel, batch_size, cache_maxframes, height=512, width=512, device="cuda", dtype=torch.float16
+):
     kvo_cache_shapes, kvo_cache_structure, _ = get_kvo_cache_info(unet, height, width)
-    
-    kvo_cache = []
-    for seq_length, hidden_dim in kvo_cache_shapes:
-        cache_tensor = torch.zeros(
-            2, cache_maxframes, batch_size, seq_length, hidden_dim,
-            dtype=dtype, device=device
-        )
-        kvo_cache.append(cache_tensor)
-    
-    return kvo_cache, kvo_cache_structure
+
+    bucket_keys: List[Tuple[int, int]] = []
+    key_to_idx: Dict[Tuple[int, int], int] = {}
+    layer_to_bucket: List[Tuple[int, int]] = []
+    outputs_by_bucket: List[List[int]] = []
+    for layer_idx, (s, h) in enumerate(kvo_cache_shapes):
+        b = key_to_idx.get((s, h))
+        if b is None:
+            b = len(bucket_keys)
+            key_to_idx[(s, h)] = b
+            bucket_keys.append((s, h))
+            outputs_by_bucket.append([])
+        slot = len(outputs_by_bucket[b])
+        layer_to_bucket.append((b, slot))
+        outputs_by_bucket[b].append(layer_idx)
+
+    # layers_in_bucket is the OUTERMOST dim so bucket[layer_slot] is stride-identical
+    # to a standalone (2, maxframes, B, S, H) tensor — TRT's contiguous-input
+    # requirement is satisfied without an extra .contiguous() call.
+    buckets = [
+        torch.zeros(len(outputs_by_bucket[b]), 2, cache_maxframes, batch_size, s, h, dtype=dtype, device=device)
+        for b, (s, h) in enumerate(bucket_keys)
+    ]
+    per_layer_views = [buckets[b][slot] for (b, slot) in layer_to_bucket]
+
+    return per_layer_views, kvo_cache_structure, buckets, outputs_by_bucket
