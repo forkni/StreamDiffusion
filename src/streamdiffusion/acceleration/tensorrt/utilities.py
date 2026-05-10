@@ -58,6 +58,7 @@ from ...model_detection import detect_model
 # GPU Hardware Profile — hardware-aware TRT builder configuration
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class GPUBuildProfile:
     """
@@ -68,6 +69,7 @@ class GPUBuildProfile:
       - Ada     (CC 8.9):      Balanced   — large L2, benefit from deeper tiling/opt
       - Blackwell (CC 12.0+):  Aggressive — massive L2, max search depth
     """
+
     gpu_name: str
     compute_capability: tuple
     l2_cache_bytes: int
@@ -76,13 +78,13 @@ class GPUBuildProfile:
     tier: str  # "ampere", "ada", "blackwell", "unknown"
 
     # IBuilderConfig parameters
-    builder_optimization_level: int     # 0–5; higher = better kernels, longer build
-    tiling_optimization_level: str      # "NONE"/"FAST"/"MODERATE"/"FULL"
-    l2_limit_for_tiling: int            # bytes; target L2 budget for tiling
-    max_aux_streams: int                # reserved; NOT applied (TRT heuristic is better)
-    sparse_weights: bool                # examine weights for 2:4 sparsity (Ampere+)
+    builder_optimization_level: int  # 0–5; higher = better kernels, longer build
+    tiling_optimization_level: str  # "NONE"/"FAST"/"MODERATE"/"FULL"
+    l2_limit_for_tiling: int  # bytes; target L2 budget for tiling
+    max_aux_streams: int  # reserved; NOT applied (TRT heuristic is better)
+    sparse_weights: bool  # examine weights for 2:4 sparsity (Ampere+)
     enable_runtime_activation_resize: bool  # RUNTIME_ACTIVATION_RESIZE_10_10
-    max_workspace_cap_bytes: int        # hard cap on workspace (before free-mem calc)
+    max_workspace_cap_bytes: int  # hard cap on workspace (before free-mem calc)
 
 
 def detect_gpu_profile(device: int = 0) -> GPUBuildProfile:
@@ -139,23 +141,23 @@ def detect_gpu_profile(device: int = 0) -> GPUBuildProfile:
         tier = "blackwell"
         opt_level = 4
         tiling = "FULL"
-        max_ws_cap = 16 * (2 ** 30)   # 16 GiB cap
-    elif cc >= (8, 9):                 # Ada Lovelace (8.9 exactly)
+        max_ws_cap = 16 * (2**30)  # 16 GiB cap
+    elif cc >= (8, 9):  # Ada Lovelace (8.9 exactly)
         tier = "ada"
         opt_level = 4
         tiling = "MODERATE"
-        max_ws_cap = 12 * (2 ** 30)   # 12 GiB cap
-    elif cc >= (8, 0):                 # Ampere (8.0 – 8.8)
+        max_ws_cap = 12 * (2**30)  # 12 GiB cap
+    elif cc >= (8, 0):  # Ampere (8.0 – 8.8)
         tier = "ampere"
         opt_level = 4
         tiling = "FAST"
-        max_ws_cap = 8 * (2 ** 30)    # 8 GiB cap
+        max_ws_cap = 8 * (2**30)  # 8 GiB cap
     else:
         # Pre-Ampere or unknown — use conservative defaults
         tier = "unknown"
         opt_level = 3
         tiling = "NONE"
-        max_ws_cap = 8 * (2 ** 30)
+        max_ws_cap = 8 * (2**30)
 
     profile = GPUBuildProfile(
         gpu_name=props.name,
@@ -166,9 +168,9 @@ def detect_gpu_profile(device: int = 0) -> GPUBuildProfile:
         tier=tier,
         builder_optimization_level=opt_level,
         tiling_optimization_level=tiling,
-        l2_limit_for_tiling=l2,        # use full L2 as tiling budget (static builds only)
-        max_aux_streams=0,              # 0 = let TRT decide (avoids "[MS] disabled" spam)
-        sparse_weights=True,            # always examine; no downside if not sparse
+        l2_limit_for_tiling=l2,  # use full L2 as tiling budget (static builds only)
+        max_aux_streams=0,  # 0 = let TRT decide (avoids "[MS] disabled" spam)
+        sparse_weights=True,  # always examine; no downside if not sparse
         enable_runtime_activation_resize=True,
         max_workspace_cap_bytes=max_ws_cap,
     )
@@ -176,7 +178,7 @@ def detect_gpu_profile(device: int = 0) -> GPUBuildProfile:
     logger.info(
         f"[TRT Build] GPU detected: {props.name} | "
         f"CC {cc[0]}.{cc[1]} | Tier: {tier} | "
-        f"L2: {l2 // (1024 * 1024)} MiB | VRAM: {vram // (1024 ** 3)} GiB | "
+        f"L2: {l2 // (1024 * 1024)} MiB | VRAM: {vram // (1024**3)} GiB | "
         f"opt_level={opt_level}"
     )
     return profile
@@ -188,16 +190,16 @@ def _fallback_profile() -> GPUBuildProfile:
         gpu_name="unknown",
         compute_capability=(8, 0),
         l2_cache_bytes=6 * 1024 * 1024,
-        vram_bytes=24 * (2 ** 30),
+        vram_bytes=24 * (2**30),
         sm_count=82,
         tier="unknown",
         builder_optimization_level=3,
         tiling_optimization_level="NONE",
         l2_limit_for_tiling=6 * 1024 * 1024,
-        max_aux_streams=0,              # reserved; NOT applied
+        max_aux_streams=0,  # reserved; NOT applied
         sparse_weights=False,
         enable_runtime_activation_resize=True,
-        max_workspace_cap_bytes=8 * (2 ** 30),
+        max_workspace_cap_bytes=8 * (2**30),
     )
 
 
@@ -257,9 +259,7 @@ def _apply_gpu_profile_to_config(
         try:
             if gpu_profile.l2_limit_for_tiling > 0:
                 config.l2_limit_for_tiling = gpu_profile.l2_limit_for_tiling
-                logger.info(
-                    f"[TRT Config] l2_limit_for_tiling={gpu_profile.l2_limit_for_tiling // (1024 * 1024)} MiB"
-                )
+                logger.info(f"[TRT Config] l2_limit_for_tiling={gpu_profile.l2_limit_for_tiling // (1024 * 1024)} MiB")
         except AttributeError:
             logger.debug("[TRT Config] l2_limit_for_tiling not supported — skipping")
     elif dynamic_shapes:
@@ -368,8 +368,8 @@ class TRTProfiler(trt.IProfiler):
     def __init__(self, name: str = ""):
         super().__init__()
         self.name = name
-        self._runs: list = []        # list of lists: [[( layer_name, ms ), ...], ...]
-        self._current: list = []     # accumulator for the in-progress inference
+        self._runs: list = []  # list of lists: [[( layer_name, ms ), ...], ...]
+        self._current: list = []  # accumulator for the in-progress inference
 
     def report_layer_time(self, layer_name: str, ms: float) -> None:  # noqa: N802
         self._current.append((layer_name, ms))
@@ -388,6 +388,7 @@ class TRTProfiler(trt.IProfiler):
 
         runs = self._runs[-last_n:]
         from collections import defaultdict
+
         totals: dict = defaultdict(list)
         for run in runs:
             for layer_name, ms in run:
@@ -401,10 +402,7 @@ class TRTProfiler(trt.IProfiler):
         sorted_layers = sorted(totals.items(), key=lambda x: _median(x[1]), reverse=True)
         total_ms = sum(_median(v) for _, v in sorted_layers)
 
-        lines = [
-            f"[{self.name}] Layer Profile — {len(runs)} runs, "
-            f"{total_ms:.2f} ms total (median per layer):"
-        ]
+        lines = [f"[{self.name}] Layer Profile — {len(runs)} runs, {total_ms:.2f} ms total (median per layer):"]
         for layer_name, times in sorted_layers[:25]:
             med = _median(times)
             pct = (med / total_ms * 100) if total_ms > 0 else 0
@@ -575,8 +573,11 @@ class Engine:
 
         if fp8:
             self._build_fp8(
-                onnx_path, input_profile, workspace_size,
-                timing_cache=timing_cache, gpu_profile=gpu_profile,
+                onnx_path,
+                input_profile,
+                workspace_size,
+                timing_cache=timing_cache,
+                gpu_profile=gpu_profile,
                 dynamic_shapes=dynamic_shapes,
             )
             return
@@ -599,8 +600,7 @@ class Engine:
         if not success:
             errors = [parser.get_error(i) for i in range(parser.num_errors)]
             raise RuntimeError(
-                f"TRT ONNX parser failed for FP16 engine: {onnx_path}\n"
-                + "\n".join(str(e) for e in errors)
+                f"TRT ONNX parser failed for FP16 engine: {onnx_path}\n" + "\n".join(str(e) for e in errors)
             )
 
         config = builder.create_builder_config()
@@ -652,10 +652,7 @@ class Engine:
         logger.info(f"[TRT Build] Building FP16 engine (raw API): {self.engine_path}")
         serialized = builder.build_serialized_network(network, config)
         if serialized is None:
-            raise RuntimeError(
-                f"TRT FP16 engine build failed for {onnx_path}. "
-                "Check TRT logs above for details."
-            )
+            raise RuntimeError(f"TRT FP16 engine build failed for {onnx_path}. Check TRT logs above for details.")
 
         with open(self.engine_path, "wb") as f:
             f.write(serialized)
@@ -672,7 +669,7 @@ class Engine:
             except Exception as e:
                 logger.warning(f"[TRT Build] Could not save timing cache: {e}")
 
-        size_bytes = getattr(serialized, 'nbytes', None) or len(serialized)
+        size_bytes = getattr(serialized, "nbytes", None) or len(serialized)
         logger.info(f"[TRT Build] FP16 engine saved: {self.engine_path} ({size_bytes / 1024 / 1024:.0f} MB)")
 
     def _build_fp8(
@@ -716,8 +713,7 @@ class Engine:
         if not success:
             errors = [parser.get_error(i) for i in range(parser.num_errors)]
             raise RuntimeError(
-                f"TRT ONNX parser failed for FP8 engine: {onnx_path}\n"
-                + "\n".join(str(e) for e in errors)
+                f"TRT ONNX parser failed for FP8 engine: {onnx_path}\n" + "\n".join(str(e) for e in errors)
             )
 
         config = builder.create_builder_config()
@@ -732,7 +728,7 @@ class Engine:
         # (NetworkDefinitionCreationFlag.STRONGLY_TYPED, set on network creation above)
         # is now the only mechanism. On older TRT versions where BuilderFlag.STRONGLY_TYPED
         # still exists, we also set precision flags on the config.
-        if hasattr(trt.BuilderFlag, 'STRONGLY_TYPED'):
+        if hasattr(trt.BuilderFlag, "STRONGLY_TYPED"):
             # TRT < 10.12: BuilderFlag.STRONGLY_TYPED exists — set precision flags and
             # the builder-level STRONGLY_TYPED flag alongside the network-level flag.
             config.set_flag(trt.BuilderFlag.FP8)
@@ -771,10 +767,7 @@ class Engine:
         logger.info(f"[FP8] Building TRT FP8 engine (STRONGLY_TYPED): {self.engine_path}")
         serialized = builder.build_serialized_network(network, config)
         if serialized is None:
-            raise RuntimeError(
-                f"TRT FP8 engine build failed for {onnx_path}. "
-                "Check TRT logs above for details."
-            )
+            raise RuntimeError(f"TRT FP8 engine build failed for {onnx_path}. Check TRT logs above for details.")
 
         with open(self.engine_path, "wb") as f:
             f.write(serialized)
@@ -791,7 +784,7 @@ class Engine:
             except Exception as e:
                 logger.warning(f"[FP8] Could not save timing cache: {e}")
 
-        size_bytes = getattr(serialized, 'nbytes', None) or len(serialized)
+        size_bytes = getattr(serialized, "nbytes", None) or len(serialized)
         logger.info(f"[FP8] Engine saved: {self.engine_path} ({size_bytes / 1024 / 1024:.0f} MB)")
 
     def load(self):
@@ -854,9 +847,7 @@ class Engine:
 
             if mode == trt.TensorIOMode.INPUT:
                 if not self.context.set_input_shape(name, shape):
-                    raise RuntimeError(
-                        f"TensorRT: set_input_shape failed for '{name}' with shape {shape}"
-                    )
+                    raise RuntimeError(f"TensorRT: set_input_shape failed for '{name}' with shape {shape}")
 
             tensor = torch.empty(tuple(shape), dtype=torch_dtype).to(device=device)
             self.tensors[name] = tensor
@@ -955,9 +946,7 @@ class Engine:
 
         for name, tensor in self.tensors.items():
             if not self.context.set_tensor_address(name, tensor.data_ptr()):
-                raise RuntimeError(
-                    f"TensorRT: set_tensor_address failed for '{name}'"
-                )
+                raise RuntimeError(f"TensorRT: set_tensor_address failed for '{name}'")
 
         if use_cuda_graph:
             if self.cuda_graph_instance is not None:
@@ -1082,8 +1071,8 @@ def build_engine(
     opt_batch_size: int,
     build_static_batch: bool = False,
     build_dynamic_shape: bool = False,
-    build_enable_refit: bool = False,
     build_all_tactics: bool = False,
+    build_enable_refit: bool = False,
     fp8: bool = False,
     builder_optimization_level: Optional[int] = None,
 ):
@@ -1115,7 +1104,7 @@ def build_engine(
 
     # --- Workspace sizing: leave 2 GiB for activations, cap per GPU tier ---
     _, free_mem, _ = cudart.cudaMemGetInfo()
-    GiB = 2 ** 30
+    GiB = 2**30
     if free_mem > 6 * GiB:
         activation_carveout = 2 * GiB
         max_workspace_size = min(
