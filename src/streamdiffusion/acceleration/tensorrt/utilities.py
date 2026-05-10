@@ -19,11 +19,9 @@
 #
 
 import gc
-
-# Set up logger for this module
 import logging
 import os
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from typing import Optional, Union
 
@@ -32,6 +30,8 @@ import onnx
 import onnx_graphsurgeon as gs
 import tensorrt as trt
 import torch
+
+from streamdiffusion.tools.gpu_profiler import profiler as _gpu_profiler
 
 
 # cuda-python 13.x renamed 'cudart' to 'cuda.bindings.runtime'
@@ -135,8 +135,8 @@ def detect_gpu_profile(device: int = 0) -> GPUBuildProfile:
     # opt_level=4 for all tiers: always compiles dynamic kernels (better kernel
     # selection than level-3 heuristics, even for static shapes). Level 5 avoided —
     # causes OOM during tactic profiling (160 GiB requests observed).
-    # NOTE: tactic 0x3e9 "Assertion g.nodes.size() == 0" errors in TRT 10.12 are
-    # a known TRT bug — benign, the tactic is skipped and build succeeds.
+    # NOTE: tactic 0x3e9 "Assertion g.nodes.size() == 0" errors observed in TRT 10.12–10.16 —
+    # benign (TRT skips the tactic and picks another, build completes normally).
     if cc >= (12, 0):
         tier = "blackwell"
         opt_level = 4
@@ -170,7 +170,7 @@ def detect_gpu_profile(device: int = 0) -> GPUBuildProfile:
         tiling_optimization_level=tiling,
         l2_limit_for_tiling=l2,  # use full L2 as tiling budget (static builds only)
         max_aux_streams=0,  # 0 = let TRT decide (avoids "[MS] disabled" spam)
-        sparse_weights=True,  # always examine; no downside if not sparse
+        sparse_weights=False,  # dense SD/SDXL weights; inspection adds build overhead, no runtime benefit
         enable_runtime_activation_resize=True,
         max_workspace_cap_bytes=max_ws_cap,
     )
@@ -273,8 +273,10 @@ def _apply_gpu_profile_to_config(
     # any model where TRT can't assign that many streams (e.g. VAE decoder which is
     # too sequential). TRT's heuristic silently chooses the right value per model.
 
-    # SPARSE_WEIGHTS: let TRT examine weight tensors for structured 2:4 sparsity
-    # and use Sparse Tensor Core kernels if suitable. Zero downside for dense weights.
+    # SPARSE_WEIGHTS: included for future 2:4-sparse pruned UNet variants. Stock
+    # SD/SDXL weights are dense, so TRT's sparsity inspection runs during build but
+    # finds no sparse kernels to select — small build-time cost, no runtime benefit.
+    # Controlled via gpu_profile.sparse_weights so it can be disabled per deployment.
     if gpu_profile.sparse_weights:
         try:
             config.set_flag(trt.BuilderFlag.SPARSE_WEIGHTS)
@@ -294,15 +296,46 @@ def _apply_gpu_profile_to_config(
             logger.debug("[TRT Config] RUNTIME_ACTIVATION_RESIZE_10_10 not supported — skipping")
 
     # avg_timing_iterations: number of timing runs averaged per tactic candidate.
-    # Default 1 produces noisy measurements — occasional slow GPU clocks or cache
-    # miss can unfairly disqualify the best kernel. Value of 4 gives stable rankings
-    # with minimal extra build time (4× timing overhead, which is tiny vs. compilation).
-    # TRT 10.12 confirmed to support this property.
+    # Default 1 produces noisy measurements. Blackwell (SM_120+) requires 8 passes —
+    # WDDM kernel-launch latency jitter is higher and needs more averaging to stably
+    # rank tactics. Ada/Ampere use 4 (sufficient; lower variance).
     try:
-        config.avg_timing_iterations = 4
-        logger.info("[TRT Config] avg_timing_iterations=4")
+        timing_iters = 8 if gpu_profile.compute_capability >= (12, 0) else 4
+        config.avg_timing_iterations = timing_iters
+        logger.info(f"[TRT Config] avg_timing_iterations={timing_iters}")
     except AttributeError:
         logger.debug("[TRT Config] avg_timing_iterations not supported — skipping")
+
+    # Tactic sources — SM_120+ (Blackwell) only:
+    # cuDNN conv/norm tactics don't exist in the consumer-Blackwell codegen path.
+    # Leaving CUDNN in the default set wastes profiling time and can steer Myelin
+    # toward a suboptimal fallback. Scope to CUBLAS + CUBLAS_LT + JIT_CONVOLUTIONS
+    # + EDGE_MASK_CONVOLUTIONS — the sources that produce valid SM_120 kernels.
+    # TRT 10.16 exposes TacticSource as an int enum (not IntFlag), so the bitmask
+    # is built via (1 << int(source)). No-op on Ada/Ampere.
+    if gpu_profile.compute_capability >= (12, 0):
+        try:
+            sources = (
+                (1 << int(trt.TacticSource.CUBLAS))
+                | (1 << int(trt.TacticSource.CUBLAS_LT))
+                | (1 << int(trt.TacticSource.JIT_CONVOLUTIONS))
+                | (1 << int(trt.TacticSource.EDGE_MASK_CONVOLUTIONS))
+            )
+            config.set_tactic_sources(sources)
+            logger.info(
+                "[TRT Config] tactic sources = CUBLAS|CUBLAS_LT|JIT_CONV|EDGE_MASK (CUDNN excluded for SM_120+)"
+            )
+        except (AttributeError, TypeError) as e:
+            logger.debug(f"[TRT Config] set_tactic_sources not available: {e}")
+
+    # max_num_tactics: cap profiling candidates per layer to reduce build time.
+    # Available since TRT 10.x; -1 (default) lets TRT decide heuristically. 64 is a
+    # reasonable cap that matches FLUX's config. Gracefully ignored on older TRT.
+    try:
+        config.max_num_tactics = 64
+        logger.info("[TRT Config] max_num_tactics=64")
+    except AttributeError:
+        logger.debug("[TRT Config] max_num_tactics not supported — skipping")
 
 
 # Map of numpy dtype -> torch dtype
@@ -368,7 +401,7 @@ class TRTProfiler(trt.IProfiler):
     def __init__(self, name: str = ""):
         super().__init__()
         self.name = name
-        self._runs: list = []  # list of lists: [[( layer_name, ms ), ...], ...]
+        self._runs: deque = deque(maxlen=500)  # rolling window; prevents unbounded growth at 30 fps
         self._current: list = []  # accumulator for the in-progress inference
 
     def report_layer_time(self, layer_name: str, ms: float) -> None:  # noqa: N802
@@ -431,6 +464,9 @@ class Engine:
         self._last_device = None
         # Cached set of input tensor names — immutable after engine build
         self._allowed_inputs = None
+        # Cached ExternalStream wrapping the engine's polygraphy stream; allocated on
+        # first infer() call so we avoid constructing a new Python wrapper every frame.
+        self._engine_ext_stream = None
 
     def __del__(self):
         # Check if AttributeError: 'Engine' object has no attribute 'buffers'
@@ -803,7 +839,8 @@ class Engine:
         # NOTE: profiler presence disables CUDA graph replay in infer() — IProfiler
         # cannot report per-layer times through a captured graph.
         self.profiler: Optional[TRTProfiler] = None
-        if os.environ.get("STREAMDIFFUSION_PROFILE_TRT"):
+        _profile_trt = os.environ.get("STREAMDIFFUSION_PROFILE_TRT", "").strip().lower()
+        if _profile_trt in ("1", "true", "yes", "on"):
             self.profiler = TRTProfiler(name=os.path.basename(self.engine_path))
             self.context.profiler = self.profiler
             logger.info(f"[TRTProfiler] Attached to {os.path.basename(self.engine_path)} (CUDA graphs disabled)")
@@ -941,35 +978,59 @@ class Engine:
         if self.profiler is not None:
             self.profiler.start_run()
 
-        for name, buf in feed_dict.items():
-            self.tensors[name].copy_(buf)
+        # Run input copies on the engine stream so they share ordering with the
+        # graph launch — copy_() on PyTorch's default stream would race the engine.
+        if self._engine_ext_stream is None:
+            self._engine_ext_stream = torch.cuda.ExternalStream(stream.ptr)
+            pt_stream = torch.cuda.current_stream().cuda_stream
+            if pt_stream != stream.ptr:
+                logger.debug(
+                    "[TRT] PyTorch default stream (0x%x) differs from engine stream (0x%x) "
+                    "— copy_() executes on engine stream to guarantee ordering.",
+                    pt_stream,
+                    stream.ptr,
+                )
+        with torch.cuda.stream(self._engine_ext_stream):
+            for name, buf in feed_dict.items():
+                self.tensors[name].copy_(buf)
 
         for name, tensor in self.tensors.items():
             if not self.context.set_tensor_address(name, tensor.data_ptr()):
                 raise RuntimeError(f"TensorRT: set_tensor_address failed for '{name}'")
 
-        if use_cuda_graph:
-            if self.cuda_graph_instance is not None:
-                CUASSERT(cudart.cudaGraphLaunch(self.cuda_graph_instance, stream.ptr))
-                # No cudaStreamSynchronize — graph replay is async; stream ordering ensures
-                # downstream GPU ops (copy_, attention) wait for graph completion.
-                # CPU sync happens only via end.synchronize() in pipeline.__call__.
+        with _gpu_profiler.region("trt_infer"):
+            if use_cuda_graph:
+                if self.cuda_graph_instance is not None:
+                    CUASSERT(cudart.cudaGraphLaunch(self.cuda_graph_instance, stream.ptr))
+                    # No cudaStreamSynchronize — graph replay is async; stream ordering ensures
+                    # downstream GPU ops (copy_, attention) wait for graph completion.
+                    # CPU sync happens only via end.synchronize() in pipeline.__call__.
+                else:
+                    # Warmup passes before graph capture: TRT lazily JIT-compiles tactic
+                    # variants on the first few forward calls. Three passes ensure all
+                    # kernel variants are compiled before capture so the captured graph
+                    # contains no JIT-init overhead.
+                    for _ in range(3):
+                        noerror = self.context.execute_async_v3(stream.ptr)
+                        if not noerror:
+                            raise ValueError("ERROR: inference failed.")
+                    stream.synchronize()
+                    # ThreadLocal mode: only captures ops on this thread's stream.
+                    # Global mode would also capture any GPU work submitted from other
+                    # threads (e.g. the TouchDesigner render thread), producing a
+                    # corrupted graph with unintended nodes.
+                    CUASSERT(
+                        cudart.cudaStreamBeginCapture(
+                            stream.ptr, cudart.cudaStreamCaptureMode.cudaStreamCaptureModeThreadLocal
+                        )
+                    )
+                    self.context.execute_async_v3(stream.ptr)
+                    self.graph = CUASSERT(cudart.cudaStreamEndCapture(stream.ptr))
+                    self.cuda_graph_instance = CUASSERT(cudart.cudaGraphInstantiate(self.graph, 0))
             else:
-                # do inference before CUDA graph capture
                 noerror = self.context.execute_async_v3(stream.ptr)
                 if not noerror:
                     raise ValueError("ERROR: inference failed.")
-                # capture cuda graph
-                CUASSERT(
-                    cudart.cudaStreamBeginCapture(stream.ptr, cudart.cudaStreamCaptureMode.cudaStreamCaptureModeGlobal)
-                )
-                self.context.execute_async_v3(stream.ptr)
-                self.graph = CUASSERT(cudart.cudaStreamEndCapture(stream.ptr))
-                self.cuda_graph_instance = CUASSERT(cudart.cudaGraphInstantiate(self.graph, 0))
-        else:
-            noerror = self.context.execute_async_v3(stream.ptr)
-            if not noerror:
-                raise ValueError("ERROR: inference failed.")
 
         if self.profiler is not None:
             # Synchronize to ensure all IProfiler.report_layer_time() callbacks have fired
@@ -1078,6 +1139,9 @@ def build_engine(
 ):
     # --- Step 0: Detect GPU and select hardware-optimal build parameters ---
     gpu_profile = detect_gpu_profile(device=torch.cuda.current_device())
+    if builder_optimization_level is not None:
+        gpu_profile.builder_optimization_level = builder_optimization_level
+        logger.info(f"[TRT Build] builder_optimization_level overridden to {builder_optimization_level} (from config)")
 
     # Allow caller to override the GPU-profile's optimization level (e.g. 3 for
     # faster builds at ~2-5% inference cost, or 5 for exhaustive tactic search).
@@ -1132,12 +1196,14 @@ def build_engine(
         static_batch=build_static_batch,
         static_shape=not build_dynamic_shape,
     )
+    # Note: build_all_tactics is accepted by build_engine() for API compat but
+    # Engine.build() does not forward it — tactic selection is now driven by
+    # set_tactic_sources (SM_120+) and max_tactics_per_layer in _apply_gpu_profile_to_config.
     engine.build(
         onnx_opt_path,
         fp16=True,
         input_profile=input_profile,
         enable_refit=build_enable_refit,
-        enable_all_tactics=build_all_tactics,
         timing_cache=timing_cache_path,
         workspace_size=max_workspace_size,
         fp8=fp8,
@@ -1218,9 +1284,10 @@ def export_onnx(
         # Determine if we need external data format for large models (like SDXL)
         is_large_model = is_sdxl or (hasattr(model, "config") and getattr(model.config, "sample_size", 32) >= 64)
 
-        # Export ONNX normally first
+        export_model = wrapped_model
+
         torch.onnx.export(
-            wrapped_model,
+            export_model,
             inputs,
             onnx_path,
             export_params=True,
@@ -1311,7 +1378,9 @@ def optimize_onnx(
 
     else:
         # Standard optimization for smaller models
-        onnx_opt_graph = model_data.optimize(onnx.load(onnx_path))
+        onnx_model = onnx.load(onnx_path)
+        onnx_opt_graph = model_data.optimize(onnx_model)
+
         onnx.save(onnx_opt_graph, onnx_opt_path)
 
     del onnx_opt_graph

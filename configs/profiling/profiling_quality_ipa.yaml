@@ -1,0 +1,62 @@
+﻿# Profile â€” Quality FP16 + IPAdapter only (cached_attn=false, no controlnet)
+# Matches engine: sdxl-turbo--tiny_vae-True--min_batch-1--max_batch-4--tokens4--use_cached_attn-False--optlvl3--mode-img2img--trt10.16.1.11--cc89--res-512x512
+# B2-2 isolation test: does IPAdapter alone reproduce the per-frame bool-op overhead?
+# IMPORTANT: build_engines_if_missing=false â€” fail if engine not present rather than rebuild
+
+model_id: "stabilityai/sdxl-turbo"
+
+t_index_list: [10, 25]
+width: 512
+height: 512
+device: "cuda"
+dtype: "float16"
+
+guidance_scale: 1.0
+num_inference_steps: 50
+seed: 3115577
+delta: 1.0
+
+prompt: "default fancy banana wall"
+negative_prompt: ""
+
+mode: "img2img"
+frame_buffer_size: 1
+use_denoising_batch: true
+use_tiny_vae: true
+acceleration: "tensorrt"
+cfg_type: "self"
+do_add_noise: false
+warmup: 10
+use_safety_checker: false
+skip_diffusion: false
+compile_engines_only: false
+build_engines_if_missing: false
+static_shapes: true
+fp8: false
+fp8_allow_fp16_fallback: false
+builder_optimization_level: 3
+
+scheduler: "lcm"
+sampler: "normal"
+
+use_cached_attn: false
+cache_maxframes: 2
+cache_interval: 1
+
+enable_similar_image_filter: false
+similar_image_filter_threshold: 0.99
+similar_image_filter_max_skip_frame: 1
+
+hf_cache: ""
+
+engine_dir: "engines/td"
+
+use_controlnet: false
+
+use_ipadapter: true
+ipadapters:
+  - ipadapter_model_path: "h94/IP-Adapter/sdxl_models/ip-adapter_sdxl.bin"
+    image_encoder_path: "h94/IP-Adapter/sdxl_models/image_encoder"
+    scale: 0.25
+    enabled: true
+    type: regular
