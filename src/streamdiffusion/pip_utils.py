@@ -27,13 +27,16 @@ def _check_torch_installed():
         raise RuntimeError(msg)
 
     if not torch.version.cuda:
-        raise RuntimeError("Detected CPU-only PyTorch. Install CUDA-enabled torch/vision/audio before installing this package.")
+        raise RuntimeError(
+            "Detected CPU-only PyTorch. Install CUDA-enabled torch/vision/audio before installing this package."
+        )
 
 
 def get_cuda_version() -> str | None:
     _check_torch_installed()
 
     import torch
+
     return torch.version.cuda
 
 
@@ -66,7 +69,7 @@ def is_installed(package: str) -> bool:
 
 def run_python(command: str, env: Dict[str, str] | None = None) -> str:
     run_kwargs = {
-        "args": f"\"{python}\" {command}",
+        "args": f'"{python}" {command}',
         "shell": True,
         "env": os.environ if env is None else env,
         "encoding": "utf8",
