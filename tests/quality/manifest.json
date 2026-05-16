@@ -1,0 +1,25 @@
+{
+    "_note": "Version pins for the quality regression harness. Run regenerate_golden.py --update-manifest after any dep bump to refresh hashes. run_compare.py aborts if installed versions diverge.",
+    "versions": {
+        "torch": "2.7.0+cu128",
+        "tensorrt": "10.16.1.11",
+        "nvidia_modelopt": "0.43.0",
+        "diffusers": "0.36.0.dev0"
+    },
+    "fixtures": {
+        "sd_turbo_img2img_plain": {
+            "model_id": "stabilityai/sd-turbo",
+            "seed": 2,
+            "t_index_list": [32, 45],
+            "golden_sha256": null,
+            "_note": "null = golden not yet generated; run regenerate_golden.py --update-manifest"
+        },
+        "sdxl_turbo_img2img_plain": {
+            "model_id": "stabilityai/sdxl-turbo",
+            "seed": 2,
+            "t_index_list": [32, 45],
+            "golden_sha256": null,
+            "_note": "null = golden not yet generated; run regenerate_golden.py --update-manifest"
+        }
+    }
+}

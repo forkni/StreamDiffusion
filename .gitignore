@@ -267,3 +267,6 @@ SESSION_LOG.md
 
 # Profiling/audit CSV exports (Nsight summaries, kernel stats — generated artifacts)
 audit_reports/
+
+# Quality harness run outputs (generated; goldens/ is committed, outputs/ is not)
+tests/quality/outputs/

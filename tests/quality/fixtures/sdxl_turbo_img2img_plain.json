@@ -1,0 +1,15 @@
+{
+    "model_id": "stabilityai/sdxl-turbo",
+    "prompt": "a portrait of a young woman with long brown hair, soft studio lighting, photorealistic",
+    "negative_prompt": "",
+    "seed": 2,
+    "t_index_list": [32, 45],
+    "width": 512,
+    "height": 512,
+    "cfg_type": "none",
+    "guidance_scale": 1.0,
+    "num_inference_steps": 50,
+    "delta": 1.0,
+    "warmup": 1,
+    "use_denoising_batch": true
+}

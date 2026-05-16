@@ -1,0 +1,21 @@
+# Quality thresholds for FP8 vs FP16-TRT comparison.
+#
+# Seeded by running the baseline and setting:
+#   ssim_min = baseline_ssim - 0.02
+#   lpips_max = baseline_lpips + 0.05
+#
+# PLACEHOLDER: thresholds are unset (0.0/1.0) until the first golden generation
+# run populates real baseline numbers. After running:
+#   python tests/quality/regenerate_golden.py --update-manifest
+# update the values below based on the logged SSIM/LPIPS baseline.
+
+fixtures:
+  sd_turbo_img2img_plain:
+    ssim_min: 0.0
+    lpips_max: 1.0
+    _note: "placeholder — update after regenerate_golden.py baseline run"
+
+  sdxl_turbo_img2img_plain:
+    ssim_min: 0.0
+    lpips_max: 1.0
+    _note: "placeholder — update after regenerate_golden.py baseline run"

@@ -1,0 +1,4 @@
+# Development + quality-harness dependencies (not needed for production inference)
+lpips>=0.1.4
+scikit-image>=0.21
+PyYAML>=6.0
