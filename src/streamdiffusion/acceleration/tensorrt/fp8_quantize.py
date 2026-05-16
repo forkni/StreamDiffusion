@@ -442,6 +442,19 @@ def quantize_onnx_fp8(
             logger.info(f"[FP8] Casting calibration '{_k}': {calibration_data[_k].dtype} → {_expected}")
             calibration_data[_k] = calibration_data[_k].astype(_expected)
 
+    # Normalize leading-dim mismatches: when CFG is active the hook captures
+    # sample/encoder_hidden_states at batch*2 but timestep stays at batch*1.
+    # Tile the shorter arrays to the maximum row count so modelopt's
+    # CalibrationDataProvider splits all inputs into equal-sized chunks.
+    _max_rows = max(arr.shape[0] for arr in calibration_data.values())
+    for _k in list(calibration_data.keys()):
+        _arr = calibration_data[_k]
+        if _arr.shape[0] < _max_rows:
+            import math as _math
+            _repeats = _math.ceil(_max_rows / _arr.shape[0])
+            calibration_data[_k] = np.tile(_arr, (_repeats,) + (1,) * (_arr.ndim - 1))[:_max_rows]
+            logger.info(f"[FP8] Tiled '{_k}' {_arr.shape[0]} → {_max_rows} rows (CFG batch mismatch fix)")
+
     import inspect as _inspect
 
     _params = set(_inspect.signature(modelopt_quantize).parameters.keys())

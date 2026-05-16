@@ -46,6 +46,7 @@ def _sha256(path: str) -> str:
 
 def _current_versions() -> dict:
     import importlib.metadata
+
     versions = {}
     for pkg, key in [
         ("torch", "torch"),
@@ -56,7 +57,17 @@ def _current_versions() -> dict:
         try:
             versions[key] = importlib.metadata.version(pkg)
         except Exception:
-            versions[key] = "unknown"
+            # TRT on Windows is often installed via NVIDIA's custom mechanism
+            # with no .dist-info — fall back to the package's __version__.
+            if pkg == "tensorrt":
+                try:
+                    import tensorrt as _trt
+
+                    versions[key] = _trt.__version__
+                except Exception:
+                    versions[key] = "unknown"
+            else:
+                versions[key] = "unknown"
     return versions
 
 
@@ -102,7 +113,9 @@ def run_fixture(fixture_name: str, fixture: dict) -> str:
 def main():
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--update-manifest", action="store_true", help="Update manifest.json with current versions + golden hashes")
+    parser.add_argument(
+        "--update-manifest", action="store_true", help="Update manifest.json with current versions + golden hashes"
+    )
     parser.add_argument("--fixture", default=None, help="Run only this fixture (default: all)")
     args = parser.parse_args()
 

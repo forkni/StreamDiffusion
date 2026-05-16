@@ -47,9 +47,17 @@ def _sha256(path: str) -> str:
 
 def _installed_version(pkg: str) -> str:
     import importlib.metadata
+
     try:
         return importlib.metadata.version(pkg)
     except Exception:
+        if pkg == "tensorrt":
+            try:
+                import tensorrt as _trt
+
+                return _trt.__version__
+            except Exception:
+                pass
         return "unknown"
 
 
@@ -114,6 +122,7 @@ def _compute_metrics(golden_path: str, output_path: str) -> dict:
     try:
         import lpips
         import torch
+
         loss_fn = lpips.LPIPS(net="alex", verbose=False)
         g_t = torch.from_numpy(golden).permute(2, 0, 1).unsqueeze(0) * 2 - 1
         o_t = torch.from_numpy(output).permute(2, 0, 1).unsqueeze(0) * 2 - 1
@@ -229,7 +238,12 @@ def main():
         print(f"\nThresholds seeded → {THRESHOLDS_PATH}")
 
     n = len(results)
-    n_pass = sum(1 for name, m in results.items() if m["ssim"] >= thresholds.get("fixtures", {}).get(name, {}).get("ssim_min", 0.0) and m["lpips"] <= thresholds.get("fixtures", {}).get(name, {}).get("lpips_max", 1.0))
+    n_pass = sum(
+        1
+        for name, m in results.items()
+        if m["ssim"] >= thresholds.get("fixtures", {}).get(name, {}).get("ssim_min", 0.0)
+        and m["lpips"] <= thresholds.get("fixtures", {}).get(name, {}).get("lpips_max", 1.0)
+    )
     print(f"\n{n_pass}/{n} fixtures pass thresholds.")
     sys.exit(0 if all_pass else 1)
 
