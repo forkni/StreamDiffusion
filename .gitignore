@@ -224,6 +224,12 @@ controlnet_test_*
 demo/realtime-img2img/uploads/
 .cgw.conf
 
+# Local-only git workflow tooling (cgw scripts, hooks, example — never committed)
+scripts/git/
+hooks/cc-block-dangerous-git.sh
+.githooks/
+cgw.conf.example
+
 # Local Claude / session state (per-user, never committed)
 .claude/
 
