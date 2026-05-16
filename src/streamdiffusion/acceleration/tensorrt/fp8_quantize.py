@@ -429,7 +429,8 @@ def quantize_onnx_fp8(
     # e.g. SDXL exports `sample` as FP32 even though the unet runs FP16.
     # modelopt's CalibrationDataProvider asserts strict count match and ORT's
     # inference probe rejects dtype mismatches, so filter+cast accordingly.
-    _onnx_inputs = {k: v[0] for k, v in _read_onnx_input_specs(onnx_path).items()}
+    _specs = _read_onnx_input_specs(onnx_path)  # {name: (dtype, dims)}
+    _onnx_inputs = {k: v[0] for k, v in _specs.items()}
     _dropped = set(calibration_data.keys()) - set(_onnx_inputs)
     if _dropped:
         logger.info(f"[FP8] Dropping calibration keys not exposed by ONNX: {sorted(_dropped)}")
@@ -442,18 +443,30 @@ def quantize_onnx_fp8(
             logger.info(f"[FP8] Casting calibration '{_k}': {calibration_data[_k].dtype} → {_expected}")
             calibration_data[_k] = calibration_data[_k].astype(_expected)
 
-    # Normalize leading-dim mismatches: when CFG is active the hook captures
-    # sample/encoder_hidden_states at batch*2 but timestep stays at batch*1.
-    # Tile the shorter arrays to the maximum row count so modelopt's
-    # CalibrationDataProvider splits all inputs into equal-sized chunks.
-    _max_rows = max(arr.shape[0] for arr in calibration_data.values())
+    # Per-input tile: target rows = n_itr × resolved_dim0(name) so every input
+    # splits into exactly n_itr chunks of shape (resolved_dim0, ...).
+    # Mirrors modelopt CalibrationDataProvider: symbolic dims → 1, static dims kept.
+    # Naïve _max_rows tile breaks kvo_cache_in_* (ONNX dim0=2 static) by pumping
+    # sample to 2×_n_itr rows, causing modelopt to split kvo into (1,...) chunks.
+    import math as _math
+    _resolved_dim0 = {
+        name: max(1, (_specs[name][1][0] or 1)) for name in calibration_data
+    }
+    _n_itr = max(
+        arr.shape[0] // _resolved_dim0[name]
+        for name, arr in calibration_data.items()
+    )
+    _n_itr = max(1, _n_itr)
     for _k in list(calibration_data.keys()):
         _arr = calibration_data[_k]
-        if _arr.shape[0] < _max_rows:
-            import math as _math
-            _repeats = _math.ceil(_max_rows / _arr.shape[0])
-            calibration_data[_k] = np.tile(_arr, (_repeats,) + (1,) * (_arr.ndim - 1))[:_max_rows]
-            logger.info(f"[FP8] Tiled '{_k}' {_arr.shape[0]} → {_max_rows} rows (CFG batch mismatch fix)")
+        _target_rows = _n_itr * _resolved_dim0[_k]
+        if _arr.shape[0] != _target_rows:
+            _repeats = _math.ceil(_target_rows / max(1, _arr.shape[0]))
+            calibration_data[_k] = np.tile(_arr, (_repeats,) + (1,) * (_arr.ndim - 1))[:_target_rows]
+            logger.info(
+                f"[FP8] Tiled '{_k}' {_arr.shape[0]} → {_target_rows} rows "
+                f"(n_itr={_n_itr} × resolved_dim0={_resolved_dim0[_k]})"
+            )
 
     import inspect as _inspect
 
