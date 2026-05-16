@@ -302,6 +302,59 @@ def _read_onnx_input_specs(onnx_path: str) -> Dict[str, tuple]:
     return result
 
 
+def _assert_finite_qdq_scales(onnx_path: str) -> None:
+    """Raise RuntimeError if any FP8 Q/DQ scale in onnx_path is non-finite.
+
+    Root cause: modelopt/onnx/quantization/fp8.py computes
+        np_fp8_scale = (np_scale * 448.0) / 127.0
+    in the source dtype (FP16). An INT8 amax > ~18,500 overflows to +inf;
+    the resulting Q/DQ scale produces zero output at inference.
+
+    Checks both initializer scales AND Constant-node scales (the latter appear
+    on some residual-add Q nodes injected by modelopt on SDXL UNet).
+    On failure: raises RuntimeError listing the first 5 offending node names
+    and directs the user to extend _DEFAULT_EXCLUDE_PATTERNS and delete the
+    cached .fp8.onnx so modelopt reruns without those layers.
+    """
+    import onnx as _onnx
+    from onnx import numpy_helper as _numpy_helper
+
+    model = _onnx.load(onnx_path, load_external_data=True)
+    graph = model.graph
+    init_map = {init.name: init for init in graph.initializer}
+    const_map: dict = {}
+    for node in graph.node:
+        if node.op_type == "Constant" and node.output:
+            attr = {a.name: a for a in node.attribute}
+            if "value" in attr:
+                const_map[node.output[0]] = _numpy_helper.to_array(attr["value"].t)
+
+    bad: list = []
+    for node in graph.node:
+        if node.op_type not in ("QuantizeLinear", "DequantizeLinear"):
+            continue
+        if len(node.input) < 2:
+            continue
+        scale_name = node.input[1]
+        if scale_name in init_map:
+            arr = _numpy_helper.to_array(init_map[scale_name]).flatten().astype(np.float64)
+        elif scale_name in const_map:
+            arr = const_map[scale_name].flatten().astype(np.float64)
+        else:
+            continue
+        if not np.isfinite(arr).all():
+            bad.append(node.name or scale_name)
+
+    if bad:
+        names = ", ".join(bad[:5]) + ("..." if len(bad) > 5 else "")
+        raise RuntimeError(
+            f"[FP8] Non-finite Q/DQ scale in {len(bad)} node(s): {names}. "
+            f"Add the offending layer substring(s) to _DEFAULT_EXCLUDE_PATTERNS "
+            f"in fp8_quantize.py, delete the cached .fp8.onnx, and rebuild. "
+            f"Diagnostic: modelopt/onnx/quantization/fp8.py overflow when INT8 amax > ~18500."
+        )
+
+
 def quantize_onnx_fp8(
     onnx_path: str,
     output_path: str,
@@ -420,6 +473,8 @@ def quantize_onnx_fp8(
 
     if not os.path.exists(output_path):
         raise RuntimeError(f"[FP8] modelopt_quantize completed but output not found: {output_path}")
+
+    _assert_finite_qdq_scales(output_path)
 
     size_mb = os.path.getsize(output_path) / (1024**2)
     logger.info(f"[FP8] FP8 ONNX written: {output_path} ({size_mb:.1f} MB)")

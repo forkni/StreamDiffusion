@@ -286,6 +286,9 @@ class EngineBuilder:
         # --- FP8 Q/DQ layer count (sanity gate: < 100 means quantization is inactive) ---
         if fp8 and os.path.exists(engine_path):
             try:
+                import json as _json
+                import re as _re
+
                 import tensorrt as trt
 
                 _rt = trt.Runtime(trt.Logger(trt.Logger.WARNING))
@@ -299,6 +302,33 @@ class EngineBuilder:
                 if _qdq < 500:
                     _build_logger.warning(
                         f"[BUILD] Low Q/DQ count ({_qdq} < 500) — FP8 quantization likely inactive or incomplete"
+                    )
+
+                # Fused-MHA check: count attention layers TRT fused into a single kernel.
+                # Pattern is empirical — FLUX uses "_gemm_mha_v2"; SDXL on Ada may differ.
+                # First build logs sample names so the regex can be confirmed or tightened.
+                _MHA_RE = _re.compile(r"mha|fmha|MultiHead|FlashAttn", _re.IGNORECASE)
+                try:
+                    _layers = _json.loads(_info).get("Layers", [])
+                except Exception:
+                    _layers = []
+                _total = len(_layers)
+                _mha_names = [_l.get("Name", "") for _l in _layers if _MHA_RE.search(_l.get("Name", ""))]
+                _mha_count = len(_mha_names)
+                stats["mha_fused_kernels"] = _mha_count
+                stats["total_engine_layers"] = _total
+                _build_logger.info(
+                    f"[BUILD] FP8 engine fused MHA layers: {_mha_count} / {_total} total"
+                )
+                if _mha_count == 0 and _total > 0:
+                    _build_logger.warning(
+                        "[BUILD] No fused MHA layers detected — attention may be running decomposed "
+                        "(slower). Sample layer names (first 5): "
+                        + str([_l.get("Name", "") for _l in _layers[:5]])
+                    )
+                else:
+                    _build_logger.info(
+                        f"[BUILD] Sample fused-MHA layer names: {_mha_names[:3]}"
                     )
             except Exception as _e:
                 _build_logger.warning(f"[BUILD] FP8 inspector check skipped: {_e}")
