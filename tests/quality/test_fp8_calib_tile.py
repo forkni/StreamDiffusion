@@ -3,6 +3,7 @@
 Reproduces the kvo_cache_in dim-0=2 vs synthesized dim-0=1 split mismatch
 hit by SDXL-Turbo + use_cached_attn + cfg_type=self configs.
 """
+
 import math
 
 import numpy as np

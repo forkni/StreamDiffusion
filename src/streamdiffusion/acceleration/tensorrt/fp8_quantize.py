@@ -449,13 +449,9 @@ def quantize_onnx_fp8(
     # Naïve _max_rows tile breaks kvo_cache_in_* (ONNX dim0=2 static) by pumping
     # sample to 2×_n_itr rows, causing modelopt to split kvo into (1,...) chunks.
     import math as _math
-    _resolved_dim0 = {
-        name: max(1, (_specs[name][1][0] or 1)) for name in calibration_data
-    }
-    _n_itr = max(
-        arr.shape[0] // _resolved_dim0[name]
-        for name, arr in calibration_data.items()
-    )
+
+    _resolved_dim0 = {name: max(1, (_specs[name][1][0] or 1)) for name in calibration_data}
+    _n_itr = max(arr.shape[0] // _resolved_dim0[name] for name, arr in calibration_data.items())
     _n_itr = max(1, _n_itr)
     for _k in list(calibration_data.keys()):
         _arr = calibration_data[_k]

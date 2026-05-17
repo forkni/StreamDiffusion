@@ -21,6 +21,12 @@ logger = logging.getLogger(__name__)
 
 _PATCHED = False
 
+# Sentinel used by _patch_down_block so we can distinguish "caller passed kvo_cache=None
+# explicitly" (patched UNet → must return 3-tuple) from "caller never passed kvo_cache"
+# (ControlNet / any other diffusers module that uses CrossAttnDownBlock2D → must return the
+# original 2-tuple to avoid "too many values to unpack (expected 2)").
+_KVO_NOT_GIVEN = object()
+
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -360,7 +366,12 @@ def _patch_transformer2d() -> None:
 
 
 def _patch_mid_block() -> None:
-    """UNetMidBlock2DCrossAttn.forward: thread kvo_cache through attention loop."""
+    """UNetMidBlock2DCrossAttn.forward: thread kvo_cache through attention loop.
+
+    Same sentinel trick as _patch_down_block: callers that do not pass kvo_cache explicitly
+    (e.g. ControlNet) get the original single-return-value (hidden_states); the patched UNet
+    path — which always passes kvo_cache= explicitly — gets the 2-tuple (hidden, kvo_cache_out).
+    """
     import torch
     from diffusers.models.unets.unet_2d_blocks import UNetMidBlock2DCrossAttn
 
@@ -372,8 +383,11 @@ def _patch_mid_block() -> None:
         attention_mask=None,
         cross_attention_kwargs=None,
         encoder_attention_mask=None,
-        kvo_cache=None,
+        kvo_cache=_KVO_NOT_GIVEN,
     ):
+        _caller_passed_kvo = kvo_cache is not _KVO_NOT_GIVEN
+        if not _caller_passed_kvo:
+            kvo_cache = None
         if cross_attention_kwargs is not None:
             if cross_attention_kwargs.get("scale", None) is not None:
                 logger.warning("Passing `scale` to `cross_attention_kwargs` is deprecated. `scale` will be ignored.")
@@ -406,13 +420,20 @@ def _patch_mid_block() -> None:
                 if block_cache_out is not None:
                     kvo_cache_out.append(block_cache_out)
 
-        return hidden_states, kvo_cache_out
+        if _caller_passed_kvo:
+            return hidden_states, kvo_cache_out
+        return hidden_states
 
     UNetMidBlock2DCrossAttn.forward = _forward
 
 
 def _patch_down_block() -> None:
-    """CrossAttnDownBlock2D.forward: thread kvo_cache, return (hidden, output_states, kvo_cache_out)."""
+    """CrossAttnDownBlock2D.forward: thread kvo_cache, return (hidden, output_states, kvo_cache_out).
+
+    Uses _KVO_NOT_GIVEN sentinel so the patched forward stays backward-compatible with callers
+    (e.g. ControlNet) that never pass kvo_cache: those callers get the original 2-tuple return,
+    while _patch_unet2d (which always passes kvo_cache= explicitly) gets the 3-tuple.
+    """
     import torch
     from diffusers.models.unets.unet_2d_blocks import CrossAttnDownBlock2D
 
@@ -425,8 +446,11 @@ def _patch_down_block() -> None:
         cross_attention_kwargs=None,
         encoder_attention_mask=None,
         additional_residuals=None,
-        kvo_cache=None,
+        kvo_cache=_KVO_NOT_GIVEN,
     ):
+        _caller_passed_kvo = kvo_cache is not _KVO_NOT_GIVEN
+        if not _caller_passed_kvo:
+            kvo_cache = None
         if cross_attention_kwargs is not None:
             if cross_attention_kwargs.get("scale", None) is not None:
                 logger.warning("Passing `scale` to `cross_attention_kwargs` is deprecated. `scale` will be ignored.")
@@ -471,7 +495,9 @@ def _patch_down_block() -> None:
                 hidden_states = downsampler(hidden_states)
             output_states = output_states + (hidden_states,)
 
-        return hidden_states, output_states, kvo_cache_out
+        if _caller_passed_kvo:
+            return hidden_states, output_states, kvo_cache_out
+        return hidden_states, output_states
 
     CrossAttnDownBlock2D.forward = _forward
 
