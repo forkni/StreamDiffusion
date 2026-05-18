@@ -43,8 +43,9 @@ class CUDAGraphsMixin:
 
         Args:
             stream: Stream to capture.
-            mode:   cudaStreamCaptureMode — 0=global (safest), 1=thread_local,
-                    2=relaxed. Use 0 unless you know what you're doing.
+            mode:   cudaStreamCaptureMode — 0=global, 1=thread_local, 2=relaxed.
+                    In multi-threaded/multi-engine processes prefer 1 (ThreadLocal);
+                    0 (Global) is only "safest" for single-threaded programs.
 
         Raises:
             RuntimeError: If capture start fails (e.g., stream already capturing).

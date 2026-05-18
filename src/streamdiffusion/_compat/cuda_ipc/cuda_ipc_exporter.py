@@ -590,7 +590,7 @@ class CUDAIPCExporter:
         for slot in range(self.num_slots):
             capture_started = False
             try:
-                self.cuda.stream_begin_capture(self.ipc_stream, mode=0)
+                self.cuda.stream_begin_capture(self.ipc_stream, mode=1)  # ThreadLocal: safer in multi-engine processes
                 capture_started = True
                 self.cuda.memcpy_async(
                     dst=self.dev_ptrs[slot],
