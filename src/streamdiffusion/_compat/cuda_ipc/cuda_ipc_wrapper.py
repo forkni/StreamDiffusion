@@ -21,37 +21,19 @@ from ctypes import POINTER, byref, c_float, c_int, c_size_t, c_uint, c_uint64, c
 
 _logger = logging.getLogger(__name__)
 
-try:
-    from cuda_link.cuda_runtime_types import (  # noqa: E402
-        CUDAError,
-        CUDAEvent_t,
-        CUDAGraph_t,
-        CUDAGraphExec_t,
-        CUDAGraphNode_t,
-        CUDAStream_t,
-        cudaIpcEventHandle_t,
-        cudaIpcMemHandle_t,
-        cudaMemcpy3DParms,
-        cudaPointerAttributes,
-    )
-except ImportError:
-    from CUDARuntimeTypes import (  # type: ignore[no-redef]  # noqa: E402
-        CUDAError,
-        CUDAEvent_t,
-        CUDAGraph_t,
-        CUDAGraphExec_t,
-        CUDAGraphNode_t,
-        CUDAStream_t,
-        cudaIpcEventHandle_t,
-        cudaIpcMemHandle_t,
-        cudaMemcpy3DParms,
-        cudaPointerAttributes,
-    )
-
-try:
-    from cuda_link.cuda_graphs import CUDAGraphsMixin  # noqa: E402
-except ImportError:
-    from CUDAGraphs import CUDAGraphsMixin  # type: ignore[no-redef]  # noqa: E402
+from .cuda_graphs import CUDAGraphsMixin  # noqa: E402
+from .cuda_runtime_types import (  # noqa: E402
+    CUDAError,
+    CUDAEvent_t,
+    CUDAGraph_t,
+    CUDAGraphExec_t,
+    CUDAGraphNode_t,
+    CUDAStream_t,
+    cudaIpcEventHandle_t,
+    cudaIpcMemHandle_t,
+    cudaMemcpy3DParms,
+    cudaPointerAttributes,
+)
 
 
 class CUDARuntimeAPI(CUDAGraphsMixin):
