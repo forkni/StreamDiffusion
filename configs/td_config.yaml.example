@@ -85,14 +85,22 @@ use_ipadapter: false
 
 
 
+# CUDA IPC zero-copy GPU-to-GPU output (SD→TD via cuda-link)
+use_cuda_ipc_output: false  # set true to enable
+cuda_ipc_shm_name: 'StreamDiffusionTD_512-512_output_ipc'
+cuda_ipc_num_slots: 3
+output_type: 'np'
+
 # TouchDesigner specific settings
 td_settings:
   # OSC communication
   osc_receive_port: 8576
   osc_transmit_port: 8588
 
-  # Memory interface
+  # Legacy CPU SharedMemory names (used when use_cuda_ipc_output is false)
   input_mem_name: 'StreamDiffusionTD_512-512'
+  # Reserved for future TD→SD IPC input direction (not wired yet)
+  cuda_ipc_input_shm_name: 'StreamDiffusionTD_512-512_input_ipc'
   output_mem_name: 'StreamDiffusionTD_512-512_out'
 
   # Debug settings

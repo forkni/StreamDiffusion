@@ -131,6 +131,10 @@ class StreamDiffusionWrapper:
         static_shapes: bool = False,
         fp8_allow_fp16_fallback: bool = False,
         builder_optimization_level: Optional[int] = None,
+        # CUDA IPC output (SD→TD zero-copy GPU transport via cuda-link)
+        use_cuda_ipc_output: bool = False,
+        cuda_ipc_shm_name: Optional[str] = None,
+        cuda_ipc_num_slots: int = 2,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -314,6 +318,10 @@ class StreamDiffusionWrapper:
         self._output_pin_buf: Optional[torch.Tensor] = None  # pinned CPU buffer for async D2H output
         self._output_gpu_buf: Optional[torch.Tensor] = None  # persistent GPU fp32 staging (avoids per-frame alloc)
         self._d2h_event: Optional[torch.cuda.Event] = None  # event for fine-grained D2H sync
+        self.use_cuda_ipc_output = use_cuda_ipc_output
+        self._cuda_ipc_shm_name = cuda_ipc_shm_name
+        self._cuda_ipc_num_slots = cuda_ipc_num_slots
+        self._cuda_ipc_exporter = None  # lazy-init on first frame via _lazy_init_ipc_exporter
         self.batch_size = len(t_index_list) * frame_buffer_size if use_denoising_batch else frame_buffer_size
         self.min_batch_size = min_batch_size
         self.max_batch_size = max_batch_size
@@ -907,6 +915,15 @@ class StreamDiffusionWrapper:
         Union[Image.Image, List[Image.Image]]
             The postprocessed image.
         """
+        # CUDA IPC fast-path: export to TD via zero-copy GPU IPC (cuda-link CUDAIPCExporter).
+        # Skips D2H, CPU repack, and CPU SHM write. Returns None to let the TD-side
+        # _send_output_frame early-exit (it already guards on output_image is None).
+        if self.use_cuda_ipc_output and self._cuda_ipc_shm_name:
+            bgra = self._ipc_pack_rgba(image_tensor)
+            exporter = self._lazy_init_ipc_exporter(bgra.shape[0], bgra.shape[1])
+            exporter.export_frame(bgra.data_ptr(), bgra.numel())
+            return None
+
         # Fast paths for non-PIL outputs (avoid unnecessary conversions)
         if output_type == "latent":
             return image_tensor
@@ -946,6 +963,44 @@ class StreamDiffusionWrapper:
             return postprocess_image(image_tensor.cpu(), output_type=output_type)
         else:
             return postprocess_image(image_tensor.cpu(), output_type=output_type)[0]
+
+    def _ipc_pack_rgba(self, image_tensor: torch.Tensor) -> torch.Tensor:
+        """Convert pipeline output to HWC uint8 BGRA on GPU for cuda-link wire contract."""
+        denorm = self._denormalize_on_gpu(image_tensor)  # NCHW [0,1]
+        if denorm.dim() == 4:
+            denorm = denorm[0]  # CHW [0,1]
+        rgb_u8 = (denorm * 255).clamp(0, 255).to(torch.uint8)  # CHW uint8
+        rgb_hwc = rgb_u8.permute(1, 2, 0).contiguous()  # HWC RGB
+        alpha = torch.full_like(rgb_hwc[..., :1], 255)
+        return torch.cat([rgb_hwc[..., 2:3], rgb_hwc[..., 1:2], rgb_hwc[..., 0:1], alpha], dim=-1).contiguous()
+
+    def _lazy_init_ipc_exporter(self, height: int, width: int):
+        """Initialize CUDAIPCExporter on first frame (lazy to defer CUDA IPC SHM creation)."""
+        if self._cuda_ipc_exporter is not None:
+            return self._cuda_ipc_exporter
+        from streamdiffusion._compat.cuda_ipc import CUDAIPCExporter
+
+        exporter = CUDAIPCExporter(
+            shm_name=self._cuda_ipc_shm_name,
+            height=height,
+            width=width,
+            channels=4,
+            dtype="uint8",
+            num_slots=self._cuda_ipc_num_slots,
+            debug=False,
+        )
+        exporter.initialize()
+        self._cuda_ipc_exporter = exporter
+        return exporter
+
+    def cleanup_cuda_ipc(self) -> None:
+        """Tear down the CUDA IPC exporter and release its SHM + GPU resources."""
+        if self._cuda_ipc_exporter is not None:
+            try:
+                self._cuda_ipc_exporter.cleanup()
+            except Exception:
+                pass
+            self._cuda_ipc_exporter = None
 
     def _denormalize_on_gpu(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """

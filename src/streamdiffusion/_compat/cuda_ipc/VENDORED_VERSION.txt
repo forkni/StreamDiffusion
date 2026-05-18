@@ -1,0 +1,17 @@
+version: 1.4.1
+source: F:\RD_PROJECTS\COMPONENTS\cuda-link
+head_commit: 92989fc
+vendored: 2026-05-17
+files_vendored:
+  __init__.py
+  _nvtx.py
+  activation_barrier.py
+  cuda_graphs.py
+  cuda_ipc_exporter.py
+  cuda_ipc_importer.py
+  cuda_ipc_wrapper.py
+  cuda_runtime_types.py
+  nvml_observer.py
+  shm_protocol.py
+
+To re-sync: copy src/cuda_link/ from the source repo over this directory, then update head_commit and vendored date above.

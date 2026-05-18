@@ -157,6 +157,11 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
     param_map["cache_maxframes"] = config.get("cache_maxframes", 1)
     param_map["cache_interval"] = config.get("cache_interval", 1)
 
+    # CUDA IPC output (SD→TD zero-copy GPU transport via cuda-link)
+    param_map["use_cuda_ipc_output"] = config.get("use_cuda_ipc_output", False)
+    param_map["cuda_ipc_shm_name"] = config.get("cuda_ipc_shm_name")
+    param_map["cuda_ipc_num_slots"] = config.get("cuda_ipc_num_slots", 2)
+
     # Pipeline hook configurations (Phase 4: Configuration Integration)
     hook_configs = _prepare_pipeline_hook_configs(config)
     param_map.update(hook_configs)
