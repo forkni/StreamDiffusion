@@ -2205,7 +2205,7 @@ class StreamDiffusionWrapper:
                                     max_batch_size=self.max_batch_size,
                                     min_batch_size=self.min_batch_size,
                                     cuda_stream=cuda_stream,
-                                    use_cuda_graph=True,
+                                    use_cuda_graph=False,  # TRT's genericReformat uses legacy stream during execute_async_v3 — incompatible with graph capture (901)
                                     unet=None,
                                     model_path=cfg["model_id"],
                                     opt_image_height=self.height,

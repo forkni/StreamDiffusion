@@ -1015,6 +1015,11 @@ class Engine:
                         if not noerror:
                             raise ValueError("ERROR: inference failed.")
                     stream.synchronize()
+                    # Drain the legacy/NULL stream before capture. The polygraphy Stream
+                    # is created via cudaStreamCreate (blocking), which implicitly syncs
+                    # with legacy. Any pending GPU work on legacy at capture time triggers
+                    # cudaErrorStreamCaptureInvalidated (901). One-time cost per engine.
+                    torch.cuda.current_stream().synchronize()
                     # ThreadLocal mode: only captures ops on this thread's stream.
                     # Global mode would also capture any GPU work submitted from other
                     # threads (e.g. the TouchDesigner render thread), producing a
