@@ -1144,10 +1144,6 @@ def build_engine(
 ):
     # --- Step 0: Detect GPU and select hardware-optimal build parameters ---
     gpu_profile = detect_gpu_profile(device=torch.cuda.current_device())
-    if builder_optimization_level is not None:
-        gpu_profile.builder_optimization_level = builder_optimization_level
-        logger.info(f"[TRT Build] builder_optimization_level overridden to {builder_optimization_level} (from config)")
-
     # Allow caller to override the GPU-profile's optimization level (e.g. 3 for
     # faster builds at ~2-5% inference cost, or 5 for exhaustive tactic search).
     if builder_optimization_level is not None:
