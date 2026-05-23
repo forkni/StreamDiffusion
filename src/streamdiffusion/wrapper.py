@@ -915,13 +915,17 @@ class StreamDiffusionWrapper:
         Union[Image.Image, List[Image.Image]]
             The postprocessed image.
         """
-        # CUDA IPC fast-path: export to TD via zero-copy GPU IPC (cuda-link CUDAIPCExporter).
+        # CUDA IPC fast-path: export to TD via zero-copy GPU IPC (cuda-link Exporter, v1.5.1+).
         # Skips D2H, CPU repack, and CPU SHM write. Returns None to let the TD-side
         # _send_output_frame early-exit (it already guards on output_image is None).
         if self.use_cuda_ipc_output and self._cuda_ipc_shm_name:
+            from streamdiffusion._compat.cuda_ipc import FrameOutcome, GpuFrame
+
             bgra = self._ipc_pack_rgba(image_tensor)
             exporter = self._lazy_init_ipc_exporter(bgra.shape[0], bgra.shape[1])
-            exporter.export_frame(bgra.data_ptr(), bgra.numel())
+            outcome = exporter.export(GpuFrame(ptr=bgra.data_ptr(), size=bgra.numel()))
+            if outcome == FrameOutcome.FAILED:
+                logger.warning("CUDA IPC export failed; check GPU/SHM state")
             return None
 
         # Fast paths for non-PIL outputs (avoid unnecessary conversions)
@@ -975,29 +979,29 @@ class StreamDiffusionWrapper:
         return torch.cat([rgb_hwc[..., 2:3], rgb_hwc[..., 1:2], rgb_hwc[..., 0:1], alpha], dim=-1).contiguous()
 
     def _lazy_init_ipc_exporter(self, height: int, width: int):
-        """Initialize CUDAIPCExporter on first frame (lazy to defer CUDA IPC SHM creation)."""
+        """Initialize Exporter on first frame (lazy to defer CUDA IPC SHM creation)."""
         if self._cuda_ipc_exporter is not None:
             return self._cuda_ipc_exporter
-        from streamdiffusion._compat.cuda_ipc import CUDAIPCExporter
+        from streamdiffusion._compat.cuda_ipc import Exporter, FrameSpec
 
-        exporter = CUDAIPCExporter(
-            shm_name=self._cuda_ipc_shm_name,
-            height=height,
-            width=width,
-            channels=4,
-            dtype="uint8",
-            num_slots=self._cuda_ipc_num_slots,
-            debug=False,
+        self._cuda_ipc_exporter = Exporter.open(
+            FrameSpec(
+                shm_name=self._cuda_ipc_shm_name,
+                height=height,
+                width=width,
+                channels=4,
+                dtype="uint8",
+                num_slots=self._cuda_ipc_num_slots,
+            ),
+            # policy=None → ExportPolicy.from_env() respects all CUDALINK_* env vars
         )
-        exporter.initialize()
-        self._cuda_ipc_exporter = exporter
-        return exporter
+        return self._cuda_ipc_exporter
 
     def cleanup_cuda_ipc(self) -> None:
         """Tear down the CUDA IPC exporter and release its SHM + GPU resources."""
         if self._cuda_ipc_exporter is not None:
             try:
-                self._cuda_ipc_exporter.cleanup()
+                self._cuda_ipc_exporter.close()
             except Exception:
                 pass
             self._cuda_ipc_exporter = None

@@ -1,17 +1,31 @@
-version: 1.4.1
+version: 1.5.1
 source: F:\RD_PROJECTS\COMPONENTS\cuda-link
-head_commit: 92989fc
-vendored: 2026-05-17
+head_commit: 2d44ef8f29a8671601a58213b0ebd98da7eb8339
+vendored: 2026-05-22
 files_vendored:
   __init__.py
+  _cuda_adapters.py
+  _env.py
+  _exporter_port.py
+  _importer_port.py
   _nvtx.py
+  _profile.py
   activation_barrier.py
   cuda_graphs.py
-  cuda_ipc_exporter.py
   cuda_ipc_importer.py
   cuda_ipc_wrapper.py
   cuda_runtime_types.py
+  exporter.py
+  importer.py
   nvml_observer.py
   shm_protocol.py
 
 To re-sync: copy src/cuda_link/ from the source repo over this directory, then update head_commit and vendored date above.
+Remove any files present here that no longer exist upstream (e.g. cuda_ipc_exporter.py removed in v1.5.0).
+
+RE-VENDORING TRAP (2026-05-23): After any re-vendoring, re-apply relative imports to these four files —
+upstream ships try/except dual-namespace blocks that break in SD's _compat/cuda_ipc/ package context:
+  cuda_ipc_wrapper.py: from ._env import env_bool; from .cuda_runtime_types import ...; from .cuda_graphs import CUDAGraphsMixin
+  cuda_graphs.py:      from .cuda_runtime_types import ...
+  nvml_observer.py:    from ._env import env_bool
+The td_exporter/ mirror is NOT patched (flat-namespace imports are correct there — TD COMP Text DATs).

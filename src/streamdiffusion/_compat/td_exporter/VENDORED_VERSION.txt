@@ -1,7 +1,7 @@
-version: 1.4.1
+version: 1.5.1
 source: F:\RD_PROJECTS\COMPONENTS\cuda-link\td_exporter\
-head_commit: 92989fc
-vendored: 2026-05-17
+head_commit: 2d44ef8f29a8671601a58213b0ebd98da7eb8339
+vendored: 2026-05-22
 
 NOTE: These files use flat-namespace imports (from SHMProtocol import ...) designed
 for TouchDesigner's Python environment where each Text DAT in a component is an
@@ -10,3 +10,35 @@ package — there is intentionally no __init__.py here.
 
 To deploy into a .tox component: copy each file into a Text DAT whose name matches
 the filename (without .py), e.g. CUDAIPCExtension.py → Text DAT named CUDAIPCExtension.
+Use the upstream TOXES/CUDAIPCLink_v1.5.1.tox as the reference component template.
+
+files_vendored:
+  ActivationBarrier.py
+  benchmark_timestamp.py
+  callbacks_template.py
+  CudaAdapters.py
+  CUDAGraphs.py
+  CUDAIPCExtension.py
+  CUDAIPCWrapper.py
+  CUDARuntimeTypes.py
+  Env.py
+  Exporter.py
+  ExporterPort.py
+  FrameProfile.py
+  Importer.py
+  ImporterPort.py
+  NVMLObserver.py
+  NVTXShim.py
+  parexecute_callbacks.py
+  script_top_callbacks.py
+  SHMProtocol.py
+  TDConfig.py
+  TDHost.py
+  TDReceiver.py
+  TDSender.py
+  warning_emitter_callbacks.py
+  _td_fakes.py
+  example_receiver_launcher.py
+  example_receiver_python.py
+  example_sender_launcher.py
+  example_sender_python.py
