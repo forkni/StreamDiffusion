@@ -49,7 +49,7 @@ class StreamDiffusion:
         normalize_prompt_weights: bool = True,
         normalize_seed_weights: bool = True,
         scheduler: Literal["lcm", "tcd"] = "lcm",
-        sampler: Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"] = "normal",
+        sampler: Literal["simple", "sgm_uniform", "normal", "ddim", "beta", "karras"] = "normal",
         kvo_cache: List[torch.Tensor] = [],
         cache_interval: int = 1,
         cache_maxframes: int = 1,
@@ -180,11 +180,11 @@ class StreamDiffusion:
         # Map sampler types to configuration parameters
         sampler_config = {
             "simple": {"timestep_spacing": "linspace"},
-            "sgm uniform": {"timestep_spacing": "trailing"},
+            "sgm_uniform": {"timestep_spacing": "trailing"},
             "normal": {},  # Default configuration
             "ddim": {"timestep_spacing": "leading"},
-            "beta": {"beta_schedule": "scaled_linear"},
-            "karras": {},  # Karras sigmas handled per scheduler
+            "beta": {"beta_schedule": "scaled_linear"},  # no-op: equals SD/SDXL default
+            "karras": {},  # no-op: LCM/TCD have no karras-sigma logic
         }
 
         # Get sampler-specific configuration
@@ -202,6 +202,27 @@ class StreamDiffusion:
         else:
             logger.warning(f"Unknown scheduler type '{scheduler_type}', falling back to LCM")
             return LCMScheduler.from_config(config, **sampler_params)
+
+    def _get_spaced_timesteps(self, spacing: str, num_inference_steps: int) -> torch.Tensor:
+        """Return a descending timestep schedule per the paper's Table 2 spacing strategies.
+
+        LCMScheduler and TCDScheduler store timestep_spacing in config but never consume it
+        in set_timesteps (they always build a linearly-spaced grid). This produces the
+        correct leading/linspace/trailing schedules so the sampler option actually takes
+        effect. 'normal' bypasses this and uses the LCM/TCD native grid.
+        """
+        T = self.scheduler.config.num_train_timesteps
+        S = num_inference_steps
+        if spacing == "trailing":
+            # round(arange(T, 0, -T/S)) - 1 — descending, includes T-1
+            ts = torch.arange(T, 0, -T / S).round().long() - 1
+        elif spacing == "linspace":
+            # linspace(0, T-1, S) reversed — includes both 0 and T-1
+            ts = torch.linspace(0, T - 1, S).round().long().flip(0)
+        else:  # "leading"
+            # arange(S) * (T//S) reversed — includes 0, excludes T-1
+            ts = (torch.arange(S, dtype=torch.float32) * (T // S)).round().long().flip(0)
+        return ts.clamp(0, T - 1)
 
     def _check_unet_tensorrt(self) -> bool:
         """Cache TensorRT detection to avoid repeated hasattr calls"""
@@ -482,6 +503,13 @@ class StreamDiffusion:
             self.prompt_embeds = embeds_ctx.prompt_embeds
 
         self.scheduler.set_timesteps(num_inference_steps, self.device)
+        # LCM/TCD ignore timestep_spacing natively. Apply the correct grid for samplers
+        # that explicitly request a spacing; leave "normal" on the LCM native schedule.
+        _SPACING_SAMPLERS = {"simple", "sgm_uniform", "ddim"}
+        if self.sampler_type in _SPACING_SAMPLERS:
+            spacing = getattr(self.scheduler.config, "timestep_spacing", "leading")
+            if spacing in ("trailing", "linspace", "leading"):
+                self.scheduler.timesteps = self._get_spaced_timesteps(spacing, num_inference_steps).to(self.device)
         self.timesteps = self.scheduler.timesteps.to(self.device)
 
         # make sub timesteps list based on the indices in the t_list list and the values in the timesteps list
@@ -516,6 +544,9 @@ class StreamDiffusion:
 
         alpha_prod_t_sqrt_list = []
         beta_prod_t_sqrt_list = []
+        # alpha_prod_t_sqrt = √ᾱₜ  (cumulative signal-retention std)
+        # beta_prod_t_sqrt  = √(1−ᾱₜ) (cumulative MARGINAL noise std, NOT per-step βₜ)
+        # Notation follows diffusers convention; ᾱₜ = Πᵢ(1−βᵢ) is computed by the scheduler.
         for timestep in self.sub_timesteps:
             alpha_prod_t_sqrt = self.scheduler.alphas_cumprod[timestep].sqrt()
             beta_prod_t_sqrt = (1 - self.scheduler.alphas_cumprod[timestep]).sqrt()
@@ -621,7 +652,7 @@ class StreamDiffusion:
     def set_scheduler(
         self,
         scheduler: Literal["lcm", "tcd"] = None,
-        sampler: Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"] = None,
+        sampler: Literal["simple", "sgm_uniform", "normal", "ddim", "beta", "karras"] = None,
     ) -> None:
         """
         Change the scheduler and/or sampler at runtime.
@@ -842,15 +873,24 @@ class StreamDiffusion:
             if hook_mid_res is not None:
                 ip_scale_kw["mid_block_additional_residual"] = hook_mid_res
 
-            model_pred, kvo_cache_out = self.unet(
-                x_t_latent_plus_uc,
-                t_list,
-                encoder_hidden_states=self.prompt_embeds,
-                kvo_cache=self.kvo_cache,
-                return_dict=False,
-                **ip_scale_kw,
-            )
-            self.update_kvo_cache(kvo_cache_out)
+            if self._check_unet_tensorrt():
+                model_pred, kvo_cache_out = self.unet(
+                    x_t_latent_plus_uc,
+                    t_list,
+                    encoder_hidden_states=self.prompt_embeds,
+                    kvo_cache=self.kvo_cache,
+                    return_dict=False,
+                    **ip_scale_kw,
+                )
+                self.update_kvo_cache(kvo_cache_out)
+            else:
+                model_pred = self.unet(
+                    x_t_latent_plus_uc,
+                    t_list,
+                    encoder_hidden_states=self.prompt_embeds,
+                    return_dict=False,
+                    **ip_scale_kw,
+                )[0]
 
         if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):
             noise_pred_text = model_pred[1:]
@@ -1226,7 +1266,7 @@ class StreamDiffusion:
                 self.sub_timesteps_tensor,
                 encoder_hidden_states=self.prompt_embeds,
                 return_dict=False,
-            )
+            )[0]
 
         x_0_pred_out = ((x_t_latent - self.beta_prod_t_sqrt * model_pred).float() / self.alpha_prod_t_sqrt.float()).to(
             x_t_latent.dtype

@@ -108,7 +108,7 @@ class StreamDiffusionWrapper:
         normalize_seed_weights: bool = True,
         # Scheduler and sampler options
         scheduler: Literal["lcm", "tcd"] = "lcm",
-        sampler: Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"] = "normal",
+        sampler: Literal["simple", "sgm_uniform", "normal", "ddim", "beta", "karras"] = "normal",
         # ControlNet options
         use_controlnet: bool = False,
         controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
@@ -216,7 +216,7 @@ class StreamDiffusionWrapper:
             by default True. When False, weights > 1 will amplify noise.
         scheduler : Literal["lcm", "tcd"], optional
             The scheduler type to use for denoising, by default "lcm".
-        sampler : Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"], optional
+        sampler : Literal["simple", "sgm_uniform", "normal", "ddim", "beta", "karras"], optional
             The sampler type to use for noise scheduling, by default "normal".
         use_controlnet : bool, optional
             Whether to enable ControlNet support, by default False.
@@ -1070,7 +1070,7 @@ class StreamDiffusionWrapper:
         normalize_prompt_weights: bool = True,
         normalize_seed_weights: bool = True,
         scheduler: Literal["lcm", "tcd"] = "lcm",
-        sampler: Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"] = "normal",
+        sampler: Literal["simple", "sgm_uniform", "normal", "ddim", "beta", "karras"] = "normal",
         use_controlnet: bool = False,
         controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         use_ipadapter: bool = False,
@@ -1147,7 +1147,7 @@ class StreamDiffusionWrapper:
             When False, weights > 1 will amplify noise.
         scheduler : Literal["lcm", "tcd"], optional
             The scheduler type to use for denoising, by default "lcm".
-        sampler : Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"], optional
+        sampler : Literal["simple", "sgm_uniform", "normal", "ddim", "beta", "karras"], optional
             The sampler type to use for noise scheduling, by default "normal".
         use_controlnet : bool, optional
             Whether to enable ControlNet support, by default False.

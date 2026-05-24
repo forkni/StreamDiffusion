@@ -17,6 +17,9 @@ from .models.models import BaseModel
 
 
 def cosine_distance(image_embeds, text_embeds):
+    # Returns cosine SIMILARITY (dot product of unit-normalised vectors ∈ [−1,1]),
+    # not a distance.  Name preserved for compatibility with HF diffusers'
+    # StableDiffusionSafetyChecker, which defines it identically.
     normalized_image_embeds = nn.functional.normalize(image_embeds)
     normalized_text_embeds = nn.functional.normalize(text_embeds)
     return torch.mm(normalized_image_embeds, normalized_text_embeds.t())
