@@ -112,7 +112,12 @@ class CannyPreprocessor(BasePreprocessor):
         Gx = F.conv2d(blurred, self._sobel_x, padding=1)
         Gy = F.conv2d(blurred, self._sobel_y, padding=1)
         mag = torch.sqrt(Gx * Gx + Gy * Gy).squeeze(0).squeeze(0)
-        mag = mag / (mag.amax() + 1e-7)  # normalize to [0, 1]
+        # Normalize by a fixed reference (≈max Sobel response for a full-contrast step edge
+        # in [0,1]-range input) rather than per-frame amax.  Per-frame amax makes the
+        # low/high thresholds relative to the strongest gradient in each frame, which
+        # causes threshold semantics to shift when a frame has low contrast — inconsistent
+        # frame-to-frame and diverging from cv2.Canny's absolute threshold semantics.
+        mag = (mag / 4.0).clamp(0.0, 1.0)
 
         # Double threshold + single-step hysteresis (max-pool dilation of strong edges)
         low_t = self.params.get("low_threshold", 100) / 255.0
@@ -124,4 +129,4 @@ class CannyPreprocessor(BasePreprocessor):
         )
         edges = (strong + weak * strong_dilated).clamp(0.0, 1.0).to(dtype=self.dtype)
 
-        return edges.unsqueeze(0).expand(3, -1, -1)
+        return edges.unsqueeze(0).repeat(3, 1, 1)  # contiguous CHW; expand() is non-contiguous

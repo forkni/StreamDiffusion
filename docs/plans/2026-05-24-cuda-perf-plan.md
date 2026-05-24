@@ -174,3 +174,44 @@ exports the frame via IPC and `_send_output_frame` receives `None` (`td_manager.
   and FPS improves; watch the TD textport / `logs/` for regressions.
 - Re-run `code-search` for `.cpu()`/`.numpy()` on the per-frame path to confirm the
   round-trips are gone.
+
+---
+
+## Post-implementation corrections (2026-05-24)
+
+**File path corrections.** This plan cited
+`Scripts/streamdiffusionTD__Text__td_manager__td.py` as a general reference, but the
+correct distinction is:
+- `Scripts/streamdiffusionTD__Text__td_manager__td.py` — **canonical TD Text-DAT source**
+  (edits here sync to the running .tox immediately; this is where to make changes).
+- `StreamDiffusion/StreamDiffusionTD/td_manager.py` — **runtime target** written by TD on
+  "Writeconfigs"; **untracked by git**. P4/P5/P6 live in both copies and are not in git
+  history — the f631c90 commit message only covers the pipeline.py / canny.py parts.
+
+**P3 GPU Canny hardening (2026-05-24).**
+Two correctness bugs fixed in `src/streamdiffusion/preprocessing/processors/canny.py`:
+1. `mag / (mag.amax() + 1e-7)` → `(mag / 4.0).clamp(0.0, 1.0)` — fixed per-frame max
+   normalization that made thresholds relative/flickering. New constant divisor (≈ max
+   Sobel response for a [0,1] step edge) keeps thresholds stable across frames.
+2. `edges.unsqueeze(0).expand(3,-1,-1)` → `.repeat(3,1,1)` — fixed non-contiguous
+   stride-0 view returned to downstream consumers.
+
+**`use_cuda_ipc_controlnet` was a dead config flag.** At the time this plan was written
+(and through the P6 implementation), the config key `use_cuda_ipc_controlnet: true` and
+`cuda_ipc_control_shm_name` were emitted by the YAML emitter but had **no producer and no
+consumer**: `shmem_out_cn` has only a CPU `SharedMemEXT` (no `cuda_ipc_parexec` exporter),
+and neither td_manager copy had a control importer. Meanwhile, `_process_controlnet_frame`
+bailed permanently when `control_memory` was `None`, with no lazy-reconnect — the real root
+cause of the "no conditioning effect" regression.
+
+**ControlNet CUDA-IPC consumer implemented (2026-05-24).** The Python-side consumer was
+added to both td_manager copies:
+- `ipc_control_importer` / `_pending_ipc_control_name` state vars + throttled lazy-reconnect.
+- `_try_construct_ipc_control_importer()` helper (mirrors `_try_construct_ipc_importer`).
+- `_send_back_processed_controlnet()` helper (extracted from inline duplication).
+- `_process_controlnet_frame` restructured: IPC path (zero-copy GPU tensor → `[0,1]`
+  float16 — **not** `[-1,1]` like the input path) with CPU SHM as a lazy-reconnecting
+  fallback. Both branches now survive the startup race with TD's COMP activation.
+- **TD-side prerequisite:** `shmem_out_cn` must be wired as a CUDA-IPC Sender publishing to
+  `<stream>_control_ipc` (add `CUDAIPCExtension` + `cuda_ipc_parexec` ParExecute DAT,
+  mirroring `shmem_out`). Until then, the Python consumer falls back to CPU SHM.
