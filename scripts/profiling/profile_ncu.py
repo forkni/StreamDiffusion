@@ -4,14 +4,17 @@ StreamDiffusion Nsight Compute (ncu) profiling launcher.
 Captures per-kernel performance metrics from StreamDiffusion's TRT inference path.
 
 ── Quick start ─────────────────────────────────────────────────────────────────
-Basic metrics (2-3× overhead), first 50 kernels after 10 skipped:
-    .venv/Scripts/python scripts/profiling/profile_ncu.py --target benchmark --set basic
+Production engine (recommended — reuses td_config.yaml cached engine):
+    venv/Scripts/python scripts/profiling/profile_ncu.py --config StreamDiffusionTD/td_config.yaml --set roofline --kernel-regex "sm89_xmma_gemm_e4m3" --launch-count 50
+
+Basic metrics (2-3× overhead), first 50 kernels:
+    venv/Scripts/python scripts/profiling/profile_ncu.py --config StreamDiffusionTD/td_config.yaml --set basic
 
 Full metrics (20-50× overhead):
-    .venv/Scripts/python scripts/profiling/profile_ncu.py --target benchmark --set full
+    venv/Scripts/python scripts/profiling/profile_ncu.py --config StreamDiffusionTD/td_config.yaml --set full
 
-Roofline analysis (3-5× overhead):
-    .venv/Scripts/python scripts/profiling/profile_ncu.py --target benchmark --set roofline
+Fallback (single.py, non-production engine):
+    venv/Scripts/python scripts/profiling/profile_ncu.py --target benchmark --set roofline
 
 ── Output ──────────────────────────────────────────────────────────────────────
   logs/ncu_<target>_<set>_<TS>.ncu-rep   — open in Nsight Compute UI
@@ -79,6 +82,14 @@ parser.add_argument(
     help="After capture, export details as CSV to logs/",
 )
 parser.add_argument(
+    "--config",
+    default="",
+    metavar="PATH",
+    help="YAML/JSON config file (e.g. StreamDiffusionTD/td_config.yaml). "
+    "When provided, targets profile_nsys.py --target benchmark --config <path> "
+    "instead of single.py — reuses the cached production engine.",
+)
+parser.add_argument(
     "--dry-run",
     action="store_true",
     help="Print the ncu command without executing",
@@ -99,6 +110,7 @@ os.makedirs(_LOGS_DIR, exist_ok=True)
 # interprets '|' in --kernel-name as a pipe and corrupts the regex.
 _NCU_CANDIDATES = [
     os.environ.get("NCU", ""),
+    r"C:\Program Files\NVIDIA Corporation\Nsight Compute 2026.1.1\target\windows-desktop-win7-x64\ncu.exe",
     r"C:\Program Files\NVIDIA Corporation\Nsight Compute 2025.1.1\target\windows-desktop-win7-x64\ncu.exe",
     r"C:\Program Files\NVIDIA Corporation\Nsight Compute 2024.3.2\target\windows-desktop-win7-x64\ncu.exe",
     r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin\ncu.exe",
@@ -110,33 +122,39 @@ if _NCU is None:
 print(f"[profile_ncu] ncu: {_NCU}")
 
 # ── Target command ─────────────────────────────────────────────────────────────
-_TARGETS = {
-    "benchmark": [
+if args.config:
+    # Production path: reuses the cached engine from td_config.yaml via profile_nsys.py.
+    # This is the correct target for profiling the actual deployed engine.
+    cfg_path = args.config if os.path.isabs(args.config) else os.path.join(_PROJECT_ROOT, args.config)
+    target_cmd = [
         _PYTHON,
-        os.path.join(_PROJECT_ROOT, "examples", "benchmark", "single.py"),
-        "--iterations",
-        "1",
-        "--warmup",
-        "0",
-        "--acceleration",
-        "tensorrt",
-    ],
-    "infer": [
-        _PYTHON,
-        os.path.join(_PROJECT_ROOT, "examples", "benchmark", "single.py"),
-        "--iterations",
-        "1",
-        "--warmup",
-        "0",
-        "--acceleration",
-        "tensorrt",
-    ],
-}
-
-target_cmd = _TARGETS[args.target]
+        os.path.join(_PROJECT_ROOT, "scripts", "profiling", "profile_nsys.py"),
+        "--target", "benchmark",
+        "--config", cfg_path,
+    ]
+    _target_label = f"config_{os.path.splitext(os.path.basename(args.config))[0]}"
+else:
+    _TARGETS = {
+        "benchmark": [
+            _PYTHON,
+            os.path.join(_PROJECT_ROOT, "examples", "benchmark", "single.py"),
+            "--iterations", "1",
+            "--warmup", "0",
+            "--acceleration", "tensorrt",
+        ],
+        "infer": [
+            _PYTHON,
+            os.path.join(_PROJECT_ROOT, "examples", "benchmark", "single.py"),
+            "--iterations", "1",
+            "--warmup", "0",
+            "--acceleration", "tensorrt",
+        ],
+    }
+    target_cmd = _TARGETS[args.target]
+    _target_label = args.target
 
 # ── Output paths ───────────────────────────────────────────────────────────────
-rep_name = f"ncu_{args.target}_{args.metric_set}_{_TIMESTAMP}"
+rep_name = f"ncu_{_target_label}_{args.metric_set}_{_TIMESTAMP}"
 rep_path = os.path.join(_LOGS_DIR, rep_name + ".ncu-rep")
 csv_path = os.path.join(_LOGS_DIR, rep_name + ".csv")
 
