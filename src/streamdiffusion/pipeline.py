@@ -1030,7 +1030,8 @@ class StreamDiffusion:
     def __call__(self, x: Union[torch.Tensor, PIL.Image.Image, np.ndarray] = None) -> torch.Tensor:
         start = self._timing_start
         end = self._timing_end
-        start.record()
+        if self.similar_image_filter:
+            start.record()
 
         if x is not None:
             # Fast path: already a normalized GPU tensor with the right shape/dtype.
@@ -1095,16 +1096,19 @@ class StreamDiffusion:
             self._prev_image_buf = torch.empty_like(x_output)
         self._prev_image_buf.copy_(x_output)
         self.prev_image_result = self._prev_image_buf
-        end.record()
-        # P2: sample timing only every 16 frames — eliminates ~15/16 per-frame host stalls.
-        # inference_time_ema feeds only the similar-filter sleep heuristic, so a 16-frame
-        # update cadence is more than sufficient.
-        # Grounding: CUDA HB §6.1 — per-frame device sync costs ~100 µs vs ~3.4 µs gated.
-        self._sync_counter += 1
-        if self._sync_counter % 16 == 0:
-            end.synchronize()
-            inference_time = start.elapsed_time(end) / 1000
-            self.inference_time_ema = 0.9 * self.inference_time_ema + 0.1 * inference_time
+        # P2: the timing path exists only to maintain inference_time_ema, which is consumed
+        # solely by the similar-filter sleep heuristic (see the similar_image_filter branch
+        # above). When the filter is off the EMA has no reader, so skip the records AND the
+        # blocking end.synchronize() entirely. When on, retain the 16-frame sample cadence
+        # (eliminates ~15/16 per-frame host stalls).
+        # Grounding: CUDA HB §6.1 — per-frame device sync ~100 µs vs ~3.4 µs amortized.
+        if self.similar_image_filter:
+            end.record()
+            self._sync_counter += 1
+            if self._sync_counter % 16 == 0:
+                end.synchronize()
+                inference_time = start.elapsed_time(end) / 1000
+                self.inference_time_ema = 0.9 * self.inference_time_ema + 0.1 * inference_time
 
         return x_output
 
