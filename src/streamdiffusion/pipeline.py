@@ -671,20 +671,22 @@ class StreamDiffusion:
         x_t_latent_batch: torch.Tensor,
         idx: Optional[int] = None,
     ) -> torch.Tensor:
-        if idx is None:
-            # Upcast division to fp32 — alpha_prod_t_sqrt can be small at early timesteps,
-            # causing fp16 rounding artifacts; cast result back to original dtype.
-            F_theta = (
-                (x_t_latent_batch - self.beta_prod_t_sqrt * model_pred_batch).float() / self.alpha_prod_t_sqrt.float()
-            ).to(x_t_latent_batch.dtype)
-            denoised_batch = self.c_out * F_theta + self.c_skip * x_t_latent_batch
-        else:
-            F_theta = (
-                (x_t_latent_batch - self.beta_prod_t_sqrt[idx] * model_pred_batch).float()
-                / self.alpha_prod_t_sqrt[idx].float()
-            ).to(x_t_latent_batch.dtype)
-            denoised_batch = self.c_out[idx] * F_theta + self.c_skip[idx] * x_t_latent_batch
-        return denoised_batch
+        with profiler.region("sched.step_batch"):
+            if idx is None:
+                # Upcast division to fp32 — alpha_prod_t_sqrt can be small at early timesteps,
+                # causing fp16 rounding artifacts; cast result back to original dtype.
+                F_theta = (
+                    (x_t_latent_batch - self.beta_prod_t_sqrt * model_pred_batch).float()
+                    / self.alpha_prod_t_sqrt.float()
+                ).to(x_t_latent_batch.dtype)
+                denoised_batch = self.c_out * F_theta + self.c_skip * x_t_latent_batch
+            else:
+                F_theta = (
+                    (x_t_latent_batch - self.beta_prod_t_sqrt[idx] * model_pred_batch).float()
+                    / self.alpha_prod_t_sqrt[idx].float()
+                ).to(x_t_latent_batch.dtype)
+                denoised_batch = self.c_out[idx] * F_theta + self.c_skip[idx] * x_t_latent_batch
+            return denoised_batch
 
     def unet_step(
         self,
@@ -963,13 +965,14 @@ class StreamDiffusion:
 
                 if self.denoising_steps_num > 1:
                     x_0_pred_out = x_0_pred_batch[-1].unsqueeze(0)
-                    if self.do_add_noise:
-                        self.x_t_latent_buffer = (
-                            self.alpha_prod_t_sqrt[1:] * x_0_pred_batch[:-1]
-                            + self.beta_prod_t_sqrt[1:] * self.init_noise[1:]
-                        )
-                    else:
-                        self.x_t_latent_buffer = self.alpha_prod_t_sqrt[1:] * x_0_pred_batch[:-1]
+                    with profiler.region("sched.rebuild"):
+                        if self.do_add_noise:
+                            self.x_t_latent_buffer = (
+                                self.alpha_prod_t_sqrt[1:] * x_0_pred_batch[:-1]
+                                + self.beta_prod_t_sqrt[1:] * self.init_noise[1:]
+                            )
+                        else:
+                            self.x_t_latent_buffer = self.alpha_prod_t_sqrt[1:] * x_0_pred_batch[:-1]
                 else:
                     x_0_pred_out = x_0_pred_batch
                     self.x_t_latent_buffer = None

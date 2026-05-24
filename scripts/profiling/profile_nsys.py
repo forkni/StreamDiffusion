@@ -101,6 +101,7 @@ os.makedirs(_PROFILER_LOGS_DIR, exist_ok=True)
 _NSYS_CANDIDATES = [
     os.environ.get("NSYS", ""),
     "nsys",
+    r"C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\target-windows-x64\nsys.exe",
     r"C:\Program Files\NVIDIA Corporation\Nsight Systems 2025.3.2\target-windows-x64\nsys.exe",
     r"C:\Program Files\NVIDIA Corporation\Nsight Systems 2025.1.3\target-windows-x64\nsys.exe",
     r"C:\Program Files\NVIDIA Corporation\Nsight Systems 2024.6.2\target-windows-x64\nsys.exe",

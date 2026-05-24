@@ -970,13 +970,14 @@ class StreamDiffusionWrapper:
 
     def _ipc_pack_rgba(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """Convert pipeline output to HWC uint8 BGRA on GPU for cuda-link wire contract."""
-        denorm = self._denormalize_on_gpu(image_tensor)  # NCHW [0,1]
-        if denorm.dim() == 4:
-            denorm = denorm[0]  # CHW [0,1]
-        rgb_u8 = (denorm * 255).clamp(0, 255).to(torch.uint8)  # CHW uint8
-        rgb_hwc = rgb_u8.permute(1, 2, 0).contiguous()  # HWC RGB
-        alpha = torch.full_like(rgb_hwc[..., :1], 255)
-        return torch.cat([rgb_hwc[..., 2:3], rgb_hwc[..., 1:2], rgb_hwc[..., 0:1], alpha], dim=-1).contiguous()
+        with profiler.region("glue.ipc_pack_rgba"):
+            denorm = self._denormalize_on_gpu(image_tensor)  # NCHW [0,1]
+            if denorm.dim() == 4:
+                denorm = denorm[0]  # CHW [0,1]
+            rgb_u8 = (denorm * 255).clamp(0, 255).to(torch.uint8)  # CHW uint8
+            rgb_hwc = rgb_u8.permute(1, 2, 0).contiguous()  # HWC RGB
+            alpha = torch.full_like(rgb_hwc[..., :1], 255)
+            return torch.cat([rgb_hwc[..., 2:3], rgb_hwc[..., 1:2], rgb_hwc[..., 0:1], alpha], dim=-1).contiguous()
 
     def _lazy_init_ipc_exporter(self, height: int, width: int):
         """Initialize Exporter on first frame (lazy to defer CUDA IPC SHM creation)."""

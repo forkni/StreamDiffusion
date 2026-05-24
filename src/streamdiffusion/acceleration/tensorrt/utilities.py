@@ -991,8 +991,9 @@ class Engine:
                     stream.ptr,
                 )
         with torch.cuda.stream(self._engine_ext_stream):
-            for name, buf in feed_dict.items():
-                self.tensors[name].copy_(buf)
+            with _gpu_profiler.region("trt.input_staging"):
+                for name, buf in feed_dict.items():
+                    self.tensors[name].copy_(buf)
 
         for name, tensor in self.tensors.items():
             if not self.context.set_tensor_address(name, tensor.data_ptr()):
