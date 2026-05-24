@@ -69,19 +69,22 @@ with 1/7th the DRAM utilization — purely because the matrices are 50× smaller
 | fp16 instead of fp8 | Slightly larger arithmetic intensity, still wave-limited | Slower (fp8 IS faster per FP) |
 | t_index / cfg_type tuning | Reduces steps, doesn't change per-kernel size | Reduces total work, not per-kernel utilization |
 
-**Highest-ROI option: increase batch size.** If the application can consume multiple
-generated frames per TD callback (e.g., triple-buffering for texture blending), running
-at batch=4 increases GEMM M by 4× → moves from 0.2 → 0.8 waves → ~4× better SM
-utilization → near-linear throughput scaling without extra latency. The current engine
-was built with `max_batch=4` (`engine_dir` path includes `min_batch-1--max_batch-4`),
-so this requires no engine rebuild.
+**Highest-ROI option: increase batch size** (throughput-only — adds input latency; see
+verdict section below). `batch_size = denoising_steps_num × frame_buffer_size`
+(`pipeline.py:100-101`); production runs batch=2 (`denoising_steps_num=2 ×
+frame_buffer_size=1`). `frame_buffer_size=2` reaches batch=4 exactly (2×2), fitting the
+engine's `max_batch=4` without rebuild. `frame_buffer_size=4` would require batch=8 and
+a rebuild. But filling batch=4 requires feeding 2 input frames per call, which adds input
+latency and requires loop + `img2img` rework in the TD path.
 
 ## What to do next
 
-1. **Batch-size throughput test** — run profile_nsys.py benchmark with
-   `frame_buffer_size=4` (or modify td_config.yaml to set `batch_size: 4`) and measure
-   throughput (frames/second) vs latency (ms/frame). If latency stays ≤30ms while
-   FPS doubles or triples, batch-mode operation is worth exposing to TD.
+1. **Batch-size lever: deferred** — `frame_buffer_size=2` is the correct value to reach
+   batch=4, but the live TD loop is 1-in-1-out (`td_manager.py:579/619/622`) and
+   `img2img` accepts a single image. Exploiting this requires collecting 2 frames before
+   inference + reworking the output path, and adds ~1 frame-interval of input latency.
+   Only worthwhile for offline/throughput-oriented modes, not the live interactive stream.
+   Full analysis in verdict section below.
 2. **Nothing else for now** — the eager-op audit established all non-TRT paths are
    negligible. The only other lever is resolution (major scope change) or step count.
 
@@ -90,3 +93,69 @@ so this requires no engine rebuild.
 - Report: `logs/ncu_fp8_gemm_roofline.ncu-rep` — open with Nsight Compute UI
 - Reference: `logs/ncu_target_gemm_roofline.ncu-rep` — A100 fp16 baseline (different GPU)
 - Prior pass: `docs/profiling/other_candidates_profile_2026-05-24.md`
+
+## Verdict: why there is no latency fix (and what 99% GPU load means)
+
+*Added 2026-05-24 after confirming the TD architecture and completing the full audit.*
+
+### The 99% GPU load observation
+
+During the live stream the GPU reports **~99% utilization** (Task Manager / nvidia-smi
+"3D" / "CUDA" graph). This is **not** a contradiction of the wave-limited finding — it
+is the other half of the picture.
+
+| Metric | What it measures | Value |
+|---|---|---|
+| **Temporal utilization** (nvidia-smi) | Fraction of wall-clock time a kernel is running | ~99% |
+| **Compute SOL** (ncu) | Of the math the SMs *could* do while a kernel runs, how much is realized | ~15% |
+| **SM wave count** (ncu SOLBottleneck) | Full sweeps of all 128 SMs per kernel | 0.2–0.4 |
+
+**99% temporal** means kernels run back-to-back — essentially zero idle gaps between them.
+**15% compute SOL / 0.2–0.4 waves** means during each kernel, ~77–102 of 128 SMs are
+idle *inside* the kernel.
+
+Consequences for optimization:
+- **No time-gap headroom** → any technique that reclaims gaps between kernels (stream
+  overlap, launch-latency cuts, eager-op fusion) cannot help. This is exactly why all 4
+  profiling candidates (glue, input-staging, scheduler chains, ncu audit = all NO GO)
+  were negligible — their combined cost vanishes into rounding error even fused to zero.
+- **Large idle-SM headroom *within* kernels** → batch size addresses this: extra frames'
+  GEMM blocks fill the SMs sitting idle *during* the same kernel invocation, so 4 frames
+  complete in roughly the wall-clock duration of today's single-frame kernel. That is the
+  throughput leverage. It does not reduce latency; it increases throughput.
+
+### The TD architectural constraint
+
+The live streaming loop is strictly 1-in-1-out:
+
+```
+td_manager._streaming_loop  (td_manager.py:491)
+    _get_input_frame()           # reads ONE frame   (line 579)
+    wrapper.img2img(one_image)   # single-image call  (line 619)
+    _send_output_frame(output)   # writes ONE frame   (line 622)
+```
+
+`wrapper.img2img` and `pipeline.__call__` accept a single image; there is no frame queue
+or accumulator. The internal `batch_size` refers to the denoising-step batch for
+`t_index_list`, not multiple input frames.
+
+Using `frame_buffer_size=2` (batch=4) requires:
+1. Collecting 2 input frames before each `img2img` call.
+2. Reworking `img2img` and the IPC output path to accept and emit 2 frames per call.
+3. **Accepting ~1 extra frame-interval of input-to-output latency** from buffering.
+
+### Final verdict
+
+| Goal | Is the batch-size lever the fix? |
+|---|---|
+| **Lower per-frame latency** (live interactive use) | **No.** The 28 ms UNet is the problem-size floor at 512×512 on the 4090. No code or config change addresses it. |
+| **Higher frame throughput** (offline / slow-mo / multi-output) | **Yes — with rework.** `frame_buffer_size=2` (batch=4, no rebuild) gives ~2× throughput, costs ~1 frame of input latency, and requires the TD loop + `img2img` to support multi-frame batches. |
+
+**For the live interactive img2img stream this pipeline is designed for: there is no fix.**
+The 99% temporal load confirms no idle time remains; the wave-limited ncu profile confirms
+the remaining waste is inside kernels and only accessible via frame batching. Batching is
+a throughput-for-latency trade requiring architectural rework and is not pursued here.
+
+Other levers for context: fewer denoising steps reduces total work but not per-kernel wave
+count; lower resolution shrinks GEMMs further (worse occupancy); larger resolution adds 4×
+work and 4× waves (near-roofline) but 4× latency.
