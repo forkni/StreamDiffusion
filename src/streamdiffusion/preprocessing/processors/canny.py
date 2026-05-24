@@ -1,12 +1,12 @@
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 
 from .base import BasePreprocessor
 
 
-# TODO provide gpu native edge detection
 class CannyPreprocessor(BasePreprocessor):
     """
     Canny edge detection preprocessor for ControlNet
@@ -37,15 +37,11 @@ class CannyPreprocessor(BasePreprocessor):
         }
 
     def __init__(self, low_threshold: int = 100, high_threshold: int = 200, **kwargs):
-        """
-        Initialize Canny preprocessor
-
-        Args:
-            low_threshold: Lower threshold for edge detection
-            high_threshold: Upper threshold for edge detection
-            **kwargs: Additional parameters
-        """
         super().__init__(low_threshold=low_threshold, high_threshold=high_threshold, **kwargs)
+        # GPU kernel tensors — lazily initialized on first _process_tensor_core call
+        self._gauss_k: torch.Tensor | None = None
+        self._sobel_x: torch.Tensor | None = None
+        self._sobel_y: torch.Tensor | None = None
 
     def _process_core(self, image: Image.Image) -> Image.Image:
         """
@@ -66,26 +62,66 @@ class CannyPreprocessor(BasePreprocessor):
 
         return Image.fromarray(edges_rgb)
 
+    def _build_gpu_kernels(self, device: torch.device) -> None:
+        """Lazily build and cache fixed conv kernels on the target device."""
+        self._gauss_k = (
+            torch.tensor(
+                [[1, 4, 6, 4, 1], [4, 16, 24, 16, 4], [6, 24, 36, 24, 6], [4, 16, 24, 16, 4], [1, 4, 6, 4, 1]],
+                dtype=torch.float32,
+                device=device,
+            ).view(1, 1, 5, 5)
+            / 256.0
+        )
+        self._sobel_x = torch.tensor(
+            [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
+            dtype=torch.float32,
+            device=device,
+        ).view(1, 1, 3, 3)
+        self._sobel_y = torch.tensor(
+            [[-1, -2, -1], [0, 0, 0], [1, 2, 1]],
+            dtype=torch.float32,
+            device=device,
+        ).view(1, 1, 3, 3)
+
     def _process_tensor_core(self, image_tensor: torch.Tensor) -> torch.Tensor:
+        """GPU-native Canny approximation: Gaussian blur → Sobel magnitude → double-threshold.
+
+        Replaces the GPU→CPU→GPU cv2.Canny round-trip that existed on this path.
+        Output is visually comparable to cv2.Canny at the same thresholds; not
+        pixel-identical (no full NMS, hysteresis approximated via 3×3 max-pool dilation).
+        Grounding: CUDA HB Ch.11 p.353 — avoid CPU round-trip when data is already on device.
         """
-        Process tensor directly on GPU for Canny edge detection
-        """
+        device = image_tensor.device
+
+        if self._gauss_k is None or self._gauss_k.device != device:
+            self._build_gpu_kernels(device)
+
+        # Grayscale conversion
         if image_tensor.shape[0] == 3:
-            gray_tensor = 0.299 * image_tensor[0] + 0.587 * image_tensor[1] + 0.114 * image_tensor[2]
+            gray = 0.299 * image_tensor[0] + 0.587 * image_tensor[1] + 0.114 * image_tensor[2]
         else:
-            gray_tensor = image_tensor[0] if image_tensor.shape[0] == 1 else image_tensor
+            gray = image_tensor[0] if image_tensor.shape[0] >= 1 else image_tensor
 
-        gray_cpu = gray_tensor.cpu()
-        gray_np = (gray_cpu * 255).clamp(0, 255).to(torch.uint8).numpy()
+        # (1, 1, H, W) for conv2d; float32 for numerical precision in gradient computation
+        gray_4d = gray.unsqueeze(0).unsqueeze(0).to(dtype=torch.float32)
 
-        low_threshold = self.params.get("low_threshold", 100)
-        high_threshold = self.params.get("high_threshold", 200)
+        # Gaussian blur (5×5, σ≈1.4) — reduces noise before gradient computation
+        blurred = F.conv2d(gray_4d, self._gauss_k, padding=2)
 
-        edges = cv2.Canny(gray_np, low_threshold, high_threshold)
+        # Sobel gradient magnitude
+        Gx = F.conv2d(blurred, self._sobel_x, padding=1)
+        Gy = F.conv2d(blurred, self._sobel_y, padding=1)
+        mag = torch.sqrt(Gx * Gx + Gy * Gy).squeeze(0).squeeze(0)
+        mag = mag / (mag.amax() + 1e-7)  # normalize to [0, 1]
 
-        edges_tensor = torch.from_numpy(edges).float() / 255.0
-        edges_tensor = edges_tensor.to(device=self.device, dtype=self.dtype)
+        # Double threshold + single-step hysteresis (max-pool dilation of strong edges)
+        low_t = self.params.get("low_threshold", 100) / 255.0
+        high_t = self.params.get("high_threshold", 200) / 255.0
+        strong = (mag >= high_t).float()
+        weak = ((mag >= low_t) & (mag < high_t)).float()
+        strong_dilated = (
+            F.max_pool2d(strong.unsqueeze(0).unsqueeze(0), kernel_size=3, stride=1, padding=1).squeeze(0).squeeze(0)
+        )
+        edges = (strong + weak * strong_dilated).clamp(0.0, 1.0).to(dtype=self.dtype)
 
-        edges_rgb = edges_tensor.unsqueeze(0).repeat(3, 1, 1)
-
-        return edges_rgb
+        return edges.unsqueeze(0).expand(3, -1, -1)

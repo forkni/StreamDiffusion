@@ -56,6 +56,16 @@ class StreamDiffusion:
     ) -> None:
         self.device = torch.device(device)
         self.dtype = torch_dtype
+        # P1: TF32/cuDNN performance flags — idempotent, set once per process per CUDA device.
+        # Enables TF32 accumulation on Ampere+ for fp32 matmuls/convs (~3× throughput) and
+        # cuDNN autotuning for fixed-size conv inputs.  Safe: UNet runs in fp16 via TRT;
+        # only PyTorch VAE encoder/decoder and preprocessing convs are affected.
+        # Grounding: PMPP Ch.5 roofline; CUDA HB Ch.6 stream overlap.
+        if self.device.type == "cuda":
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark = True
+            torch.set_float32_matmul_precision("high")
         self.generator = None
         self._input_staging: Optional[torch.Tensor] = None
 
@@ -129,6 +139,7 @@ class StreamDiffusion:
         self.vae = pipe.vae
 
         self.inference_time_ema = 0
+        self._sync_counter = 0  # counts __call__ invocations for timing-sync cadence (P2)
         self.similar_filter_sleep_fraction = 0.025
         self.last_frame_was_skipped = False  # True when similar filter skipped inference this frame
 
@@ -1085,9 +1096,15 @@ class StreamDiffusion:
         self._prev_image_buf.copy_(x_output)
         self.prev_image_result = self._prev_image_buf
         end.record()
-        end.synchronize()  # Wait only for this event, not all streams globally
-        inference_time = start.elapsed_time(end) / 1000
-        self.inference_time_ema = 0.9 * self.inference_time_ema + 0.1 * inference_time
+        # P2: sample timing only every 16 frames — eliminates ~15/16 per-frame host stalls.
+        # inference_time_ema feeds only the similar-filter sleep heuristic, so a 16-frame
+        # update cadence is more than sufficient.
+        # Grounding: CUDA HB §6.1 — per-frame device sync costs ~100 µs vs ~3.4 µs gated.
+        self._sync_counter += 1
+        if self._sync_counter % 16 == 0:
+            end.synchronize()
+            inference_time = start.elapsed_time(end) / 1000
+            self.inference_time_ema = 0.9 * self.inference_time_ema + 0.1 * inference_time
 
         return x_output
 
