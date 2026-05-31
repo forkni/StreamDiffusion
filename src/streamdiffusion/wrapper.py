@@ -322,6 +322,10 @@ class StreamDiffusionWrapper:
         self._cuda_ipc_shm_name = cuda_ipc_shm_name
         self._cuda_ipc_num_slots = cuda_ipc_num_slots
         self._cuda_ipc_exporter = None  # lazy-init on first frame via _lazy_init_ipc_exporter
+        # IPC health tracking — updated per-frame in postprocess_image, read by get_ipc_health_status()
+        self._ipc_consecutive_failures: int = 0
+        self._ipc_barrier_skip_count: int = 0
+        self._ipc_graphs_degraded: bool = False
         self.batch_size = len(t_index_list) * frame_buffer_size if use_denoising_batch else frame_buffer_size
         self.min_batch_size = min_batch_size
         self.max_batch_size = max_batch_size
@@ -924,8 +928,18 @@ class StreamDiffusionWrapper:
             bgra = self._ipc_pack_rgba(image_tensor)
             exporter = self._lazy_init_ipc_exporter(bgra.shape[0], bgra.shape[1])
             outcome = exporter.export(GpuFrame(ptr=bgra.data_ptr(), size=bgra.numel()))
-            if outcome == FrameOutcome.FAILED:
-                logger.warning("CUDA IPC export failed; check GPU/SHM state")
+            # Health tracking — defensive private-attr read; safe if vendored code changes.
+            self._ipc_graphs_degraded = getattr(exporter, "_graphs_disabled", False)
+            if outcome == FrameOutcome.PUBLISHED:
+                self._ipc_consecutive_failures = 0
+            elif outcome == FrameOutcome.FAILED:
+                self._ipc_consecutive_failures += 1
+                logger.warning(
+                    "CUDA IPC export failed (consecutive=%d); check GPU/SHM state",
+                    self._ipc_consecutive_failures,
+                )
+            elif outcome == FrameOutcome.SKIPPED_BARRIER:
+                self._ipc_barrier_skip_count += 1
             return None
 
         # Fast paths for non-PIL outputs (avoid unnecessary conversions)
@@ -997,6 +1011,33 @@ class StreamDiffusionWrapper:
             # policy=None → ExportPolicy.from_env() respects all CUDALINK_* env vars
         )
         return self._cuda_ipc_exporter
+
+    def get_ipc_health_status(self) -> str:
+        """Return a short health string for the CUDA-IPC zero-copy output path.
+
+        Designed for the 1 Hz status loop — reads only Python counters and one private attr;
+        no GPU calls, no locks.  Returns one of:
+          'disabled'           – use_cuda_ipc_output is off
+          'not-init'           – exporter not yet constructed (first frame not processed)
+          'FAILED(N)'          – N consecutive per-frame export failures
+          'barrier-skip(N)'    – activation-barrier skips (normal during startup settle)
+          'ok/graph-fallback'  – exporter running but CUDA graphs fell back to legacy memcpy
+          'ok'                 – all clear, zero-copy graphs active
+        """
+        if not (self.use_cuda_ipc_output and self._cuda_ipc_shm_name):
+            return "disabled"
+        exporter = self._cuda_ipc_exporter
+        if exporter is None:
+            return "not-init"
+        if self._ipc_consecutive_failures > 0:
+            return f"FAILED({self._ipc_consecutive_failures})"
+        if self._ipc_barrier_skip_count > 0:
+            s = f"barrier-skip({self._ipc_barrier_skip_count})"
+            self._ipc_barrier_skip_count = 0  # reset: startup transient, report once then clear
+            return s
+        if self._ipc_graphs_degraded:
+            return "ok/graph-fallback"
+        return "ok"
 
     def cleanup_cuda_ipc(self) -> None:
         """Tear down the CUDA IPC exporter and release its SHM + GPU resources."""
