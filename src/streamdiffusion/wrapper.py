@@ -915,11 +915,11 @@ class StreamDiffusionWrapper:
         Union[Image.Image, List[Image.Image]]
             The postprocessed image.
         """
-        # CUDA IPC fast-path: export to TD via zero-copy GPU IPC (cuda-link Exporter, v1.5.1+).
+        # CUDA IPC fast-path: export to TD via zero-copy GPU IPC (cuda-link Exporter v1.5.0+ API).
         # Skips D2H, CPU repack, and CPU SHM write. Returns None to let the TD-side
         # _send_output_frame early-exit (it already guards on output_image is None).
         if self.use_cuda_ipc_output and self._cuda_ipc_shm_name:
-            from streamdiffusion._compat.cuda_ipc import FrameOutcome, GpuFrame
+            from cuda_link import FrameOutcome, GpuFrame
 
             bgra = self._ipc_pack_rgba(image_tensor)
             exporter = self._lazy_init_ipc_exporter(bgra.shape[0], bgra.shape[1])
@@ -983,7 +983,7 @@ class StreamDiffusionWrapper:
         """Initialize Exporter on first frame (lazy to defer CUDA IPC SHM creation)."""
         if self._cuda_ipc_exporter is not None:
             return self._cuda_ipc_exporter
-        from streamdiffusion._compat.cuda_ipc import Exporter, FrameSpec
+        from cuda_link import Exporter, FrameSpec
 
         self._cuda_ipc_exporter = Exporter.open(
             FrameSpec(

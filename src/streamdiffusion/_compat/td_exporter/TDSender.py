@@ -1,8 +1,16 @@
 """
-TDSender - Sender engine for CUDAIPCExtension.
+TDSender — Sender engine: thin TD-COMP adapter over the canonical Exporter.
 
-Owns all Sender-mode CUDA IPC resources: GPU ring-buffer allocation, IPC handle
-export, SHM write-back, CUDA graph capture, and activation-barrier signalling.
+Owns only the genuinely TD-specific concerns:
+  - ExportBuffer TOP resolution and pixel-format rejection (TD 2025 interop quirks)
+  - cuda_memory() → GpuFrame bridge (mapping TD's CUDAMemoryRef to GpuFrame)
+  - Dynamic geometry / dtype change: close+reopen Exporter on resolution switch
+  - HolderBarrier lifecycle (holder role: pauses the Python Exporter during TD init)
+  - Host status side-effects (set_warning_status, clear_status)
+
+All GPU ring-buffer allocation, IPC handle export, SHM writes, CUDA graph capture,
+event handling, publish, and 7-step cleanup delegate to the canonical Exporter
+(td_exporter/Exporter.py — auto-derived from src/cuda_link/exporter.py).
 
 textDAT name: TDSender  (must match the importable module name inside the COMP namespace)
 """
@@ -11,41 +19,21 @@ from __future__ import annotations
 
 import contextlib
 import os
-import time
 import traceback
-from ctypes import c_void_p
-from multiprocessing.shared_memory import SharedMemory
 from typing import Any, Callable
 
 from ActivationBarrier import HolderBarrier  # noqa: E402, I001
-from CUDAIPCWrapper import get_cuda_runtime  # noqa: E402
-from CUDARuntimeTypes import CUDART_GRAPHS_MIN_VERSION  # noqa: E402
-from FrameProfile import FrameProfile  # noqa: E402
-from NVMLObserver import NVML_AVAILABLE, NVMLObserver  # noqa: E402
+from Exporter import Exporter, ExportPolicy, FrameOutcome, FrameSpec, GpuFrame  # noqa: E402
 from NVTXShim import pop_range as _nvtx_pop  # noqa: E402
-from NVTXShim import push_range as _nvtx_push
-from NVTXShim import verbose_range as _nvtx_verbose
-from SHMProtocol import (  # noqa: E402
-    _ST_U32,
-    FORMAT_KIND_FLOAT,
-    FORMAT_KIND_UNSIGNED,
-    MAGIC_OFFSET,
-    METADATA_SIZE,
-    NUM_SLOTS_OFFSET,
-    PROTOCOL_MAGIC,
-    SHM_HEADER_SIZE,
-    SHUTDOWN_FLAG_SIZE,
-    SLOT_SIZE,
-    TIMESTAMP_SIZE,
-    WRITE_IDX_OFFSET,
-    Metadata,
-    SHMLayout,
-    bump_version,
-    publish_frame,
-)
+from NVTXShim import push_range as _nvtx_push  # noqa: E402
+from SHMProtocol import FLAGS_MONO_ALPHA, DtypeCodec, read_version, set_version  # noqa: E402
 from TDConfig import TDSenderConfig  # noqa: E402
 from TDHost import TDHost  # noqa: E402
 
+
+# ---------------------------------------------------------------------------
+# Module-level constants (TD 2025 pixel-format rejection table)
+# ---------------------------------------------------------------------------
 
 _CUDA_UNSUPPORTED_PIXEL_FORMATS = {
     # Rejected outright by cudaMemory(): "Texture is invalid pixel format to be shared with CUDA."
@@ -59,39 +47,137 @@ _CUDA_UNSUPPORTED_PIXEL_FORMATS = {
     "11-bit",
     "11bit",
 }
+# Map TD pixelFormatName values (op.pixelFormatName) → (dtype_str, num_channels).
+# Used in export_frame to detect dtype changes that are invisible to cm.size/cm.data_type —
+# specifically dtype-shrink transitions (e.g. float32→uint8) where TD keeps the old
+# (larger) CUDA allocation unchanged, so neither cm.size nor cm.data_type reflects the change.
+# pixelFormatName updates immediately on any format change (grow or shrink).
+# Built from the TD Script TOP par.format menu names (Section 1 of pixel_format_probe.py).
+# Float16 variants are included for completeness but are caught first by _is_unsupported_format.
+_PIXEL_FMT_NAME_TO_DTYPE: dict[str, tuple[str, int]] = {
+    # RGBA
+    "rgba32float": ("float32", 4),
+    "rgba16fixed": ("uint16", 4),
+    "rgba8fixed": ("uint8", 4),
+    # RG
+    "rg32float": ("float32", 2),
+    "rg16fixed": ("uint16", 2),
+    "rg8fixed": ("uint8", 2),
+    # Mono (1 component)
+    "mono32float": ("float32", 1),
+    "mono16fixed": ("uint16", 1),
+    "mono8fixed": ("uint8", 1),
+    # Alpha-only (1 component)
+    "a32float": ("float32", 1),
+    "a16fixed": ("uint16", 1),
+    "a8fixed": ("uint8", 1),
+    # Mono+Alpha (2 components)
+    "monoalpha32float": ("float32", 2),
+    "monoalpha16fixed": ("uint16", 2),
+    "monoalpha8fixed": ("uint8", 2),
+    # Float16 variants (unsupported by cudaMemory; present so the map is complete)
+    "rgba16float": ("float16", 4),
+    "rg16float": ("float16", 2),
+    "mono16float": ("float16", 1),
+    "a16float": ("float16", 1),
+    "monoalpha16float": ("float16", 2),
+    # "useinput", "rgb10a2fixed", "rgba11float" → NOT mapped (no reliable dtype/channel count)
+}
+
 _EXPORT_BUFFER_NAME = "ExportBuffer"
 
 # Pre-built NVTX range name strings per slot — eliminates f-string allocation on every export_frame call.
 _NVTX_SENDER_SLOT_NAMES: tuple[str, ...] = tuple(f"cudalink.sender.export_frame.slot{i}" for i in range(10))
 
-# FrameProfile region names for TDSender — defines column order for report() / avg().
-_SENDER_PROFILE_REGIONS: tuple[str, ...] = (
-    "pre_interop",
-    "cuda_memory",
-    "post_interop",
-    "memcpy",
-    "record_event",
-    "sync",
-    "sticky_check",
-    "flush_probe",
-    "shm_publish",
-    "export",
-    "unaccounted",
-)
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
+
+def _cm_dtype_to_str(cm_data_type: object) -> str:
+    """Map CUDAMemoryRef.data_type (numpy dtype) to a DtypeCodec dtype string.
+
+    Falls back to "uint8" for unknown or missing dtype objects.
+    """
+    try:
+        name = cm_data_type.name  # e.g. "float32", "uint8", "float16"
+        if name in DtypeCodec.supported():
+            return name
+    except (AttributeError, TypeError):
+        pass
+    return "uint8"
+
+
+def _guess_dtype_from_buffer_size(width: int, height: int, channels: int, buffer_size: int | None) -> str:
+    """Estimate dtype from bytes-per-pixel ratio when data_type is not yet known.
+
+    Used at initialize() time before the first cuda_memory() call reveals the actual dtype,
+    and as a size-authoritative fallback when cm.data_type is stale or None.
+
+    Maps to TD-shareable (non-rejected) dtypes only:
+      1 byte/component → uint8   ("8-bit fixed")
+      2 bytes/component → uint16  ("16-bit fixed") — NOT float16 (TD rejects float16)
+      4 bytes/component → float32 ("32-bit float")
+    """
+    if buffer_size is None or width <= 0 or height <= 0 or channels <= 0:
+        return "uint8"
+    bpp = round(buffer_size / (width * height * channels), 1)
+    return {1.0: "uint8", 2.0: "uint16", 4.0: "float32"}.get(bpp, "uint8")
+
+
+def _resolve_frame_dtype(
+    width: int,
+    height: int,
+    channels: int,
+    cm_size: int | None,
+    cm_data_type: object,
+    fallback_dtype: str,
+) -> str:
+    """Return the authoritative dtype for an incoming frame.
+
+    cm.size is the ground truth because it is exactly what Exporter.export validates.
+    cm.data_type.name can be None or stale on the transition frame when TD switches
+    texture format — so we cross-check name and size and fall back to the size-derived
+    dtype when they disagree.
+
+    Resolution order:
+      1. If cm.data_type.name is in DtypeCodec.supported() AND its itemsize matches
+         the real byte count → name is correct, return it.
+      2. Else derive dtype from bytes-per-pixel via _guess_dtype_from_buffer_size and
+         return that if it matches the size.
+      3. Otherwise return fallback_dtype (typically the current spec's dtype).
+    """
+    name = _cm_dtype_to_str(cm_data_type)  # "uint8" on None/unknown
+    px = width * height * channels
+    if px > 0 and cm_size:
+        # Path 1: explicit name is consistent with the byte count — trust it.
+        if name in DtypeCodec.supported() and DtypeCodec.itemsize(name) * px == cm_size:
+            return name
+        # Path 2: name is stale/wrong — derive from bytes.
+        guessed = _guess_dtype_from_buffer_size(width, height, channels, cm_size)
+        if DtypeCodec.itemsize(guessed) * px == cm_size:
+            return guessed
+    return fallback_dtype
+
+
+# ---------------------------------------------------------------------------
+# TDSenderEngine
+# ---------------------------------------------------------------------------
 
 
 class TDSenderEngine:
-    """Sender-mode engine: owns all GPU/SHM resources for the Sender path.
+    """Thin TD-COMP adapter over the canonical Exporter.
 
-    Constructed by the CUDAIPCExtension facade and replaced (not mutated) on
-    mode switches - guaranteeing zero state leak between Sender and Receiver.
+    Constructed by CUDAIPCExtension and replaced (not mutated) on mode switches —
+    guaranteeing zero state leak between Sender and Receiver modes.
     """
 
     def __init__(
         self,
         host: TDHost,
         config: TDSenderConfig,
-        cuda: Any,
+        cuda: Any,  # ignored — Exporter.open(cuda=None) creates its own CTypesCUDAAdapter
         log_fn: Callable,
         num_slots: int,
         device: int,
@@ -100,108 +186,127 @@ class TDSenderEngine:
     ) -> None:
         self._host = host
         self._config = config
-        self.cuda = cuda
-        self._log = log_fn
+        self._log_fn = log_fn
         self.num_slots = num_slots
         self.device = device
         self.shm_name = shm_name
         self.verbose_performance = verbose
 
-        self._initialized = False
+        self._initialized: bool = False
+        self._closed: bool = False
+        self._exporter: Exporter | None = None
+        self._current_spec: FrameSpec | None = None
+        self._policy: ExportPolicy | None = None
 
-        self.dev_ptrs = [None] * self.num_slots
-        self.buffer_size = 0
-        self.data_size = 0
-        self.width = 0
-        self.height = 0
-        self.channels = 4
-
-        self.ipc_handles = [None] * self.num_slots
-        self.ipc_events = [None] * self.num_slots
-        self.ipc_event_handles = [None] * self.num_slots
-
-        self._pending_free_ptrs: list = []
-        self._pending_free_events: list = []
-        self._deferred_free_at_frame = 0
-
-        self.write_idx = 0
-        self.shm_handle = None
-        self._layout: SHMLayout | None = None
-        self._shutdown_offset = 0
-        self._ts_offset = 0
-        self.frame_count = 0
-        self.cuda_mem_ref = None
-        self.sync_interval = 10
-
-        self._export_sync: bool = self._config.export_sync
-        self._export_profile: bool = self._config.export_profile
-        self._export_flush_probe: bool = self._config.export_flush_probe
-        self._use_graphs: bool = self._config.use_graphs
-        self._log(
-            f"[GRAPHS_INIT] _use_graphs={self._use_graphs} "
-            f"(config.use_graphs={self._config.use_graphs}, "
-            f"CUDALINK_TD_USE_GRAPHS env={os.environ.get('CUDALINK_TD_USE_GRAPHS', '(unset)')})",
-            force=True,
-        )
-        self._graphs_disabled: bool = False
-        self._graph_execs: list = [None] * self.num_slots
-        self._graph_templates: list = [None] * self.num_slots
-        self._graph_memcpy_nodes: list = [None] * self.num_slots
-        self._stream_high_prio: bool = self._config.stream_high_prio
-        self._init_pace: bool = self._config.init_pace
-        self._graphs_pending: bool = False
-        self._graphs_deferred: bool = self._config.graphs_deferred
-        self._persist_stream: bool = self._config.persist_stream
+        # HolderBarrier — signals the Python Exporter (CheckerBarrier) to pause during TD init.
+        # This is the HOLDER role; the Exporter's CheckerBarrier is disabled via barrier_enabled=False
+        # in ExportPolicy so the canonical Exporter never creates a conflicting CheckerBarrier.
         self._barrier = HolderBarrier(
-            enabled=self._config.activation_barrier,
-            settle_frames=self._config.barrier_settle_frames,
+            enabled=config.activation_barrier,
+            settle_frames=config.barrier_settle_frames,
         )
 
-        self._nvml_observer: NVMLObserver | None = None
+        # Engine-held monotonic version counter — used to seed set_version() after
+        # close()+open() so the receiver always sees a strictly-greater version and
+        # triggers _refresh_on_version_change. Without this, Exporter.close() unlinks
+        # the SHM, the fresh segment starts at version 1 again, and the receiver's
+        # `version != last_version` check silently passes (1 != 1 → False).
+        self._ipc_version: int = 0
 
-        self._profile: FrameProfile = FrameProfile(_SENDER_PROFILE_REGIONS)
-
-        self._warned_format = False
+        # TD-specific per-frame state (not in canonical Exporter)
+        self._warned_format: bool = False
+        self._warned_dtype_size: bool = False  # one-shot: unresolvable bytes-per-pixel
         self._export_buffer: object = None
         self._last_pixel_fmt: str = ""
         self._last_fmt_needs_conv: bool = False
+        self._last_pixel_fmt_name: str = ""  # last seen pixelFormatName; change → override dtype
 
-        self.ipc_stream = None
-        self._last_cuda_mem_err = ""
-        self._detected_numpy_dtype: object = None
-        self._last_numpy_dtype: object = None
-        self._last_status_tuple: tuple | None = None
+    # ------------------------------------------------------------------
+    # Compatibility properties — delegate to Exporter when initialized,
+    # else return empty-but-correctly-sized defaults.
+    # Accessed by test_cuda_ipc_exporter.py and test_extension_characterization.py.
+    # ------------------------------------------------------------------
 
-        # Profiling events (created lazily in initialize when _export_profile=True)
-        self._timing_start = None
-        self._timing_end = None
+    @property
+    def dev_ptrs(self) -> list:
+        if self._exporter is not None:
+            return self._exporter.dev_ptrs
+        # Pre-init: return correctly-sized null stubs so len() == num_slots.
+        # Post-cleanup (_closed=True): return [] — no slots exist.
+        return [] if self._closed else [None] * self.num_slots
+
+    @property
+    def ipc_handles(self) -> list:
+        if self._exporter is not None:
+            return self._exporter.ipc_handles
+        return [] if self._closed else [None] * self.num_slots
+
+    @property
+    def frame_count(self) -> int:
+        return self._exporter.frame_count if self._exporter is not None else 0
+
+    @property
+    def shm_handle(self) -> object:
+        return self._exporter.shm_handle if self._exporter is not None else None
+
+    @property
+    def write_idx(self) -> int:
+        return self._exporter.write_idx if self._exporter is not None else 0
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _log(self, msg: str, force: bool = False) -> None:
+        if force or self.verbose_performance:
+            self._log_fn(msg)
+
+    # ------------------------------------------------------------------
+    # Public API (called by CUDAIPCExtension)
+    # ------------------------------------------------------------------
 
     def is_ready(self) -> bool:
-        """True when initialized and all GPU buffer slots are allocated."""
-        return self._initialized and all(ptr is not None for ptr in self.dev_ptrs)
+        """True when Exporter is open and all ring-buffer slots are allocated."""
+        return self._initialized and self._exporter is not None and self._exporter.is_ready()
 
     def get_stats(self) -> dict:
-        """Sender statistics dict."""
-        return {
-            "mode": "Sender",
-            "initialized": self._initialized,
-            "frame_count": self.frame_count,
-            "shm_name": self.shm_name,
-            "num_slots": self.num_slots,
-            "buffer_size_mb": self.buffer_size / 1024 / 1024 if self.buffer_size > 0 else 0,
-            "resolution": f"{self.width}x{self.height}x{self.channels}" if self.width > 0 else "N/A",
-            "write_idx": self.write_idx,
-            "dev_ptrs": [f"0x{ptr.value:016x}" if ptr else "NULL" for ptr in self.dev_ptrs],
-        }
+        """Sender statistics dict.
+
+        Delegates to Exporter.get_stats() which already returns all required keys
+        (resolution, buffer_size_mb, write_idx, dev_ptrs, frame_count, etc.).
+        Adds 'mode' = 'Sender' for the CUDAIPCExtension facade.
+        """
+        if self._exporter is None:
+            return {
+                "mode": "Sender",
+                "initialized": False,
+                "frame_count": 0,
+                "shm_name": self.shm_name,
+                "num_slots": self.num_slots,
+                "buffer_size_mb": 0,
+                "resolution": "N/A",
+                "write_idx": 0,
+                "dev_ptrs": [],
+            }
+        stats = self._exporter.get_stats()
+        stats["mode"] = "Sender"
+        return stats
+
+    def _check_deferred_cleanup(self) -> None:
+        """No-op: Exporter.close() handles all cleanup immediately; no deferred queue.
+
+        This method MUST exist — called by CUDAIPCExtension._check_deferred_cleanup()
+        and by callbacks_template.py:onFrameStart every cook.
+        """
 
     def _is_unsupported_format(self, top_op: object) -> bool:
-        """Return True if the TOP's pixel format is unsupported by cudaMemory() in TD 2025.
+        """Return True if TOP pixel format is unsupported by cudaMemory() in TD 2025.
 
         Empirical probe (verification/results/cuda_memory_probe_20260510_090919.json,
         TD 2025.32820): cudaMemory() rejects all 4 float16 variants and 10:10:10:2 fixed
         outright; 11:11:10 float "succeeds" but returns dataType=uint8/numComps=4 (raw
         byte layout, NOT semantic) — silent corruption. On True: sender skips the frame
-        and emits a component warning (addScriptError); on False: warning is cleared.
+        and emits a component warning; on False: warning is cleared.
 
         top_op may be a RealTOPHandle, FakeTOPHandle, or raw TD TOP (backward compat).
         """
@@ -216,1068 +321,378 @@ class TDSenderEngine:
         self._last_fmt_needs_conv = any(u in pixel_lower for u in _CUDA_UNSUPPORTED_PIXEL_FORMATS)
         return self._last_fmt_needs_conv
 
-    def initialize(self, width: int, height: int, channels: int = 4, buffer_size: int | None = None) -> bool:
-        """Initialize CUDA IPC resources.
+    def initialize(
+        self, width: int, height: int, channels: int = 4, buffer_size: int | None = None, extra_flags: int = 0
+    ) -> bool:
+        """Open the Exporter with geometry from TD parameters.
+
+        Called by CUDAIPCExtension.initialize() when the COMP first activates or
+        after a mode switch. Geometry (width/height/channels) is known at this point;
+        dtype is guessed from buffer_size ratio and corrected on the first export_frame()
+        call when cuda_memory() reveals the actual data_type.
 
         Args:
-            width: Texture width in pixels
-            height: Texture height in pixels
-            channels: Number of channels (default: 4 for RGBA)
-            buffer_size: Actual buffer size in bytes (optional, auto-calculated if None)
+            width: Texture width in pixels.
+            height: Texture height in pixels.
+            channels: Number of channels (default 4 for RGBA).
+            buffer_size: Actual buffer size in bytes; used to infer dtype when set.
 
         Returns:
-            True if initialization successful, False otherwise
+            True if Exporter opened successfully, False otherwise.
         """
         if self._initialized:
             self._log("Already initialized")
             return True
 
-        # Lock Numslots while active — changing slot count at runtime causes array size mismatch
+        # Lock Numslots while active — changing slot count at runtime causes array-size mismatch.
         self._host.set_param_enabled("Numslots", False)
 
         try:
-            # Activation-barrier hold: signal the Python producer to pause pushes
+            # HolderBarrier: signal the Python Exporter (CheckerBarrier) to pause pushes
             # during this Sender's WDDM-saturating init burst.
             self._barrier.acquire(os.getpid(), log_fn=self._log)
 
-            # Load CUDA runtime bound to the configured device
-            self.cuda = get_cuda_runtime(device=self.device)
-            if not getattr(self, "_runtime_load_logged", False):
-                self._log(f"Loaded CUDA runtime on device {self.cuda.get_device()}", force=True)
-                self._runtime_load_logged = True
+            # Best-guess dtype — corrected on first export_frame() if wrong.
+            dtype_guess = _guess_dtype_from_buffer_size(width, height, channels, buffer_size)
 
-            # Create dedicated non-blocking stream for IPC operations.
-            # Reuse existing stream on re-init to avoid leaks.
-            if self.ipc_stream is None:
-                # Default normal-priority (Phase 4.1). Set CUDALINK_TD_STREAM_PRIO=high
-                # for explicit single-pair lowest-latency.
-                if self._stream_high_prio:
-                    self.ipc_stream = self.cuda.create_stream_with_priority(flags=0x01)
-                    self._log(
-                        f"Created IPC stream (high-priority): 0x{int(self.ipc_stream.value):016x}",
-                        force=True,
-                    )
-                else:
-                    self.ipc_stream = self.cuda.create_stream(flags=0x01)
-                    self._log(
-                        f"Created IPC stream (normal-priority): 0x{int(self.ipc_stream.value):016x}",
-                        force=True,
-                    )
-            else:
-                self._log(
-                    f"Reusing IPC stream: 0x{int(self.ipc_stream.value):016x}",
-                    force=True,
-                )
-
-            # Store dimensions
-            self.width = width
-            self.height = height
-            self.channels = channels
-            # Use provided buffer_size (from cuda_mem.size) or calculate
-            raw_size = buffer_size if buffer_size is not None else width * height * channels * 4
-            # Round up to 2MiB alignment (NVIDIA requirement: prevents unintended information disclosure)
-            alignment = 2 * 1024 * 1024  # 2 MiB
-            self.buffer_size = ((raw_size + alignment - 1) // alignment) * alignment
-            self.data_size = raw_size  # Store actual data size for memcpy and comparisons
-
-            # Defensive array resize: num_slots may have changed between cleanup and init
-            # (e.g. handle_numslots_change() sets num_slots after cleanup resets arrays)
-            if len(self.dev_ptrs) != self.num_slots:
-                self.dev_ptrs = [None] * self.num_slots
-                self.ipc_handles = [None] * self.num_slots
-                self.ipc_events = [None] * self.num_slots
-                self.ipc_event_handles = [None] * self.num_slots
-
-            # Switch to CUDA primary context before allocating IPC buffers.  TD's cook thread
-            # may have entered TD's interop context (via top.cudaMemory / cudaGraphicsMap*)
-            # between CUDARuntimeAPI.__init__ and here.  cudaMalloc in the interop context
-            # mints IPC handles bound to that context; a second process (with its own primary
-            # context) cannot open them (error 400).  We save the current context and restore
-            # it after the alloc block so TD's interop machinery is unaffected.
-            _ctx_token = self.cuda.set_device(self.device)
-
-            # Allocate ring buffer slots
-            for slot in range(self.num_slots):
-                # Allocate persistent GPU buffer for this slot
-                self.dev_ptrs[slot] = self.cuda.malloc(self.buffer_size)
-                self._log(
-                    f"Allocated GPU buffer slot {slot}: "
-                    f"{self.buffer_size / 1024 / 1024:.1f} MB at 0x{self.dev_ptrs[slot].value:016x}",
-                    force=True,
-                )
-
-                # Create IPC handle for this buffer (ONCE - reuse for all frames)
-                self.ipc_handles[slot] = self.cuda.ipc_get_mem_handle(self.dev_ptrs[slot])
-                self._log(f"Created IPC handle for slot {slot} (64 bytes)")
-
-                # Create IPC event for GPU-side synchronization (per-slot)
-                self.ipc_events[slot] = self.cuda.create_ipc_event()
-                self.ipc_event_handles[slot] = self.cuda.ipc_get_event_handle(self.ipc_events[slot])
-                self._log(f"Created IPC event for slot {slot} (64 bytes)")
-
-            self.cuda.restore_context(_ctx_token)
-            self._log(f"Created {self.num_slots} IPC buffer slots with events", force=True)
-
-            # INIT_PACE checkpoint 1/3 — CUDALINK_TD_INIT_PACE=1: flush WDDM queue after per-slot
-            # alloc burst (cudaMalloc + IpcGetMemHandle + EventCreate + IpcGetEventHandle × N).
-            if self._init_pace:
-                self.cuda.stream_synchronize(self.ipc_stream)
-                time.sleep(0.02)
-                self._log("[INIT_PACE] checkpoint 1/3 (post-slot-alloc)", force=True)
-
-            # Create SharedMemory for IPC handle transfer
-            # Size: header + slots + shutdown flag + metadata + timestamp (for extended protocol)
-            shm_size = (
-                SHM_HEADER_SIZE + (self.num_slots * SLOT_SIZE) + SHUTDOWN_FLAG_SIZE + METADATA_SIZE + TIMESTAMP_SIZE
+            spec = FrameSpec(
+                shm_name=self.shm_name,
+                height=height,
+                width=width,
+                channels=channels,
+                dtype=dtype_guess,
+                num_slots=self.num_slots,
+                device=self.device,
+                extra_flags=extra_flags,
+            )
+            policy = ExportPolicy(
+                export_sync=self._config.export_sync,
+                flush_probe=self._config.export_flush_probe,
+                use_graphs=self._config.use_graphs,
+                high_priority_stream=self._config.stream_high_prio,
+                export_profile=self._config.export_profile,
+                # HolderBarrier is managed by this adapter; disable Exporter's CheckerBarrier
+                # so it does not create a conflicting parallel check on the same SHM segment.
+                barrier_enabled=False,
             )
 
-            try:
-                # Try to open existing SharedMemory first
-                self.shm_handle = SharedMemory(name=self.shm_name)
-                self._log(f"Opened existing SharedMemory: {self.shm_name}", force=True)
-            except FileNotFoundError:
-                # Create new SharedMemory if doesn't exist
-                self.shm_handle = SharedMemory(name=self.shm_name, create=True, size=shm_size)
-                self._log(
-                    f"Created new SharedMemory: {self.shm_name} ({shm_size} bytes)",
-                    force=True,
-                )
+            # Exporter.open() with cuda=None creates CTypesCUDAAdapter.for_device(spec.device).
+            self._exporter = Exporter.open(spec, policy=policy, cuda=None)
+            self._current_spec = spec
+            self._policy = policy
 
-            # Write IPC handle to SharedMemory (ONCE - Python process reads at startup)
-            self._write_handle_to_shm()
+            # Seed the monotonic version counter from the freshly-opened SHM segment.
+            # The receiver will cache this value (ipc_version) on first connect; any
+            # subsequent reopen must produce a strictly-greater value so the receiver's
+            # `version != last_version` check fires. See export_frame() for the bump.
+            if self._exporter.shm_handle is not None:
+                self._ipc_version = read_version(self._exporter.shm_handle.buf)
 
-            # Write texture metadata to extended protocol region
-            self._write_metadata_to_shm()
-
-            # INIT_PACE checkpoint 2/3 — after SHM segment creation + handle/metadata writes.
-            if self._init_pace:
-                self.cuda.stream_synchronize(self.ipc_stream)
-                time.sleep(0.02)
-                self._log("[INIT_PACE] checkpoint 2/3 (post-SHM-write)", force=True)
-
-            # Cache SHM offsets: avoid recomputing these on every export_frame() call
-            self._layout = SHMLayout(self.num_slots)
-            self._shutdown_offset = self._layout.shutdown_offset
-            self._ts_offset = self._layout.timestamp_offset
-
-            # Cache ExportBuffer as TOPHandle — eliminates per-frame ownerComp.op() lookup
+            # Cache ExportBuffer handle — eliminates per-frame ownerComp.op() lookup.
             self._export_buffer = self._host.find_top(_EXPORT_BUFFER_NAME)
-
-            # Create GPU timing events (only when Debug is ON for benchmarking)
-            if self.verbose_performance:
-                self._timing_start = self.cuda.create_timing_event()
-                self._timing_end = self.cuda.create_timing_event()
-                self._log("Created GPU timing events for benchmarking", force=False)
-            else:
-                self._timing_start = None
-                self._timing_end = None
 
             self._initialized = True
             self._barrier.arm_settle_countdown()
-            self._log("Initialization complete - ready for zero-copy GPU transfer", force=True)
-
-            # CUDA Graphs build (after IPC stream / events / ring buffer are ready).
-            # Gated on CUDALINK_TD_USE_GRAPHS=1 AND cudart >= 11.4
-            # (cudaGraphInstantiateWithFlags + EventRecordNodeSetEvent require 11.4+).
-            if self._use_graphs:
-                try:
-                    rt_version = self.cuda.get_runtime_version()
-                except (RuntimeError, OSError) as exc:
-                    rt_version = 0
-                    self._log(f"cudaRuntimeGetVersion failed ({exc}) — disabling graphs", force=True)
-                if rt_version >= CUDART_GRAPHS_MIN_VERSION:
-                    if self._graphs_deferred:
-                        # CUDALINK_TD_GRAPHS_DEFERRED=1: defer graph capture to first
-                        # warm frame (frame_count >= 30) so the init burst doesn't overlap
-                        # with Receiver-A's 60 Hz stream. First 30 frames use legacy memcpy_async.
-                        self._graphs_pending = True
-                        self._log(
-                            "CUDA export graph build deferred to first warm frame (CUDALINK_TD_GRAPHS_DEFERRED=1)",
-                            force=True,
-                        )
-                    else:
-                        self._build_export_graphs()
-                        # INIT_PACE checkpoint 3/3 — after graph capture + instantiation.
-                        if self._init_pace:
-                            self.cuda.stream_synchronize(self.ipc_stream)
-                            time.sleep(0.02)
-                            self._log("[INIT_PACE] checkpoint 3/3 (post-graph-build)", force=True)
-                else:
-                    self._log(
-                        f"CUDALINK_TD_USE_GRAPHS=1 ignored: cudart {rt_version} < {CUDART_GRAPHS_MIN_VERSION} "
-                        "(cudaGraphInstantiateWithFlags requires 11.4+).",
-                        force=True,
-                    )
-                    self._graphs_disabled = True
-
-            if NVML_AVAILABLE and self._config.nvml:
-                obs = NVMLObserver(device=self.device, enabled=True)
-                if obs.start():
-                    self._nvml_observer = obs
-                    self._log(f"NVMLObserver attached on device {self.device}", force=True)
-
+            self._log("Initialization complete — ready for zero-copy GPU transfer", force=True)
             return True
 
-        except (OSError, RuntimeError, ValueError) as e:
+        except (OSError, RuntimeError, ValueError, Exception) as e:
             self._log(f"Initialization failed: {e}", force=True)
             self._host.set_error_status(f"Initialization failed: {e}")
             traceback.print_exc()
             return False
 
-    def _build_export_graphs(self) -> None:
-        """Capture the D2D memcpy into a 1-node CUDA Graph exec per ring slot.
-
-        Mirrors CUDAIPCExporter._build_export_graphs() on the Python side.
-        Captures only the memcpy_async (IPC events / external waits cannot be
-        captured in global mode).  On failure the stream is restored to normal
-        mode and self._graphs_disabled is set so the legacy stream path is used.
-        """
-        if self.cuda is None or self.ipc_stream is None:
-            return
-
-        placeholder_src = self.dev_ptrs[0]
-
-        for slot in range(self.num_slots):
-            capture_started = False
-            try:
-                # Relaxed: required to coexist with TensorRT's per-engine
-                # cudaStreamBeginCapture (PyTorch, CuPy, TRT may all be in the same process).
-                self.cuda.stream_begin_capture(self.ipc_stream, mode=2)
-                capture_started = True
-                self.cuda.memcpy_async(
-                    dst=self.dev_ptrs[slot],
-                    src=placeholder_src,
-                    count=self.data_size,
-                    kind=3,  # cudaMemcpyDeviceToDevice
-                    stream=self.ipc_stream,
-                )
-                template_graph = self.cuda.stream_end_capture(self.ipc_stream)
-                capture_started = False
-
-                nodes = self.cuda.graph_get_nodes(template_graph)
-                if len(nodes) != 1:
-                    self.cuda.graph_destroy(template_graph)
-                    raise RuntimeError(f"Unexpected graph node count {len(nodes)} (expected 1: MemcpyNode).")
-                memcpy_node = nodes[0]
-
-                graph_exec = self.cuda.graph_instantiate(template_graph)
-                # Keep template alive so the captured node handle stays valid for
-                # the per-frame cudaGraphExecMemcpyNodeSetParams1D updates.
-                self._graph_execs[slot] = graph_exec
-                self._graph_templates[slot] = template_graph
-                self._graph_memcpy_nodes[slot] = memcpy_node
-                self._log(f"Built export graph for slot {slot} (1-node: Memcpy)")
-
-            except (RuntimeError, OSError) as exc:
-                if capture_started:
-                    try:
-                        abandoned_graph = self.cuda.stream_end_capture(self.ipc_stream)
-                        self.cuda.graph_destroy(abandoned_graph)
-                    except (RuntimeError, OSError):
-                        pass
-                self._log(
-                    f"CUDA Graph build failed for slot {slot} ({exc}) — disabling graphs "
-                    "for this session and falling back to legacy stream path. "
-                    "Set CUDALINK_TD_USE_GRAPHS=0 to suppress.",
-                    force=True,
-                )
-                self._graphs_disabled = True
-                self._destroy_export_graphs()
-                return
-
-        self._log(
-            f"CUDA export graphs built for {self.num_slots} slots (CUDALINK_TD_USE_GRAPHS=1)",
-            force=True,
-        )
-
-    def _destroy_export_graphs(self) -> None:
-        """Destroy all CUDA Graph exec objects and their templates."""
-        if self.cuda is None:
-            return
-        for slot, graph_exec in enumerate(getattr(self, "_graph_execs", [])):
-            if graph_exec is not None:
-                try:
-                    self.cuda.graph_exec_destroy(graph_exec)
-                except (RuntimeError, OSError) as e:
-                    self._log(f"Error destroying graph exec slot {slot}: {e}", force=True)
-                self._graph_execs[slot] = None
-        for slot, template in enumerate(getattr(self, "_graph_templates", [])):
-            if template is not None:
-                with contextlib.suppress(RuntimeError, OSError):
-                    self.cuda.graph_destroy(template)
-                self._graph_templates[slot] = None
-        if hasattr(self, "_graph_memcpy_nodes"):
-            self._graph_memcpy_nodes = [None] * self.num_slots
-
-    def _write_handle_to_shm(self) -> None:
-        """Write magic + version + num_slots + write_idx + all IPC handles to SharedMemory.
-
-        Layout (20 + NUM_SLOTS*192 + 1 bytes):
-        [0-3]     magic (4B) - protocol validation "CIPD"
-        [4-11]    version (8B)
-        [12-15]   num_slots (4B)
-        [16-19]   write_idx (4B)
-
-        For each slot (128 bytes per slot):
-        [20+slot*128 : 84+slot*128]   mem_handle (64B)
-        [84+slot*128 : 148+slot*128]  event_handle (64B)
-
-        [20+NUM_SLOTS*128]  shutdown flag (1B)
-        """
-        if self.shm_handle is None or not all(self.ipc_handles):
-            return
-
-        self._layout = SHMLayout(self.num_slots)
-
-        # Write protocol header: magic, bump version, num_slots, reset write_idx
-        _ST_U32.pack_into(self.shm_handle.buf, MAGIC_OFFSET, PROTOCOL_MAGIC)
-        new_version = bump_version(self.shm_handle.buf)
-        _ST_U32.pack_into(self.shm_handle.buf, NUM_SLOTS_OFFSET, self.num_slots)
-        _ST_U32.pack_into(self.shm_handle.buf, WRITE_IDX_OFFSET, 0)  # write_idx=0 initially
-
-        # Write handles for each slot
-        for slot in range(self.num_slots):
-            base_offset = self._layout.slot_offset(slot)
-
-            # Write memory handle (64 bytes)
-            mem_handle_bytes = bytes(self.ipc_handles[slot].internal)
-            self.shm_handle.buf[base_offset : base_offset + 64] = mem_handle_bytes
-            self._log(f"[IPC-HEX] slot{slot} mem handle prefix: {mem_handle_bytes[:16].hex()}...")
-
-            # Write event handle (64 bytes) if available
-            if self.ipc_event_handles[slot]:
-                event_handle_bytes = bytes(self.ipc_event_handles[slot].reserved)
-                self.shm_handle.buf[base_offset + 64 : base_offset + 128] = event_handle_bytes
-                self._log(f"Wrote slot {slot} handles: mem={len(mem_handle_bytes)}B, event={len(event_handle_bytes)}B")
-            else:
-                self._log(f"Wrote slot {slot} mem handle: {len(mem_handle_bytes)}B")
-
-        # Clear shutdown flag — matches CUDAIPCExporter._write_handles_to_shm() on the Python side.
-        # Without this, a stale shutdown_flag=1 from a previous session (or a race where another
-        # sender initialised after this one) would block the receiver indefinitely.
-        self.shm_handle.buf[self._layout.shutdown_offset] = 0
-
-        self._log(
-            f"Wrote all IPC handles v{new_version} to SharedMemory ({SHM_HEADER_SIZE + self.num_slots * SLOT_SIZE + SHUTDOWN_FLAG_SIZE + METADATA_SIZE + TIMESTAMP_SIZE} bytes total)",
-            force=True,
-        )
-
-    def _write_metadata_to_shm(self) -> None:
-        """Write texture metadata to the extended protocol region after shutdown flag.
-
-        Extended protocol layout (20 bytes):
-        [+0  : 4B]  width         (uint32 LE)
-        [+4  : 4B]  height        (uint32 LE)
-        [+8  : 4B]  num_comps     (uint32 LE)
-        [+12 : 1B]  format_kind   (uint8)  — cudaChannelFormatKind: 0=Signed,1=Unsigned,2=Float
-        [+13 : 1B]  bits_per_comp (uint8)  — 8/16/32/64
-        [+14 : 2B]  flags         (uint16 LE) — bit0=bfloat16; rest reserved=0
-        [+16 : 4B]  data_size     (uint32 LE) — actual bytes (before 2MiB alignment)
-        """
-        if self.shm_handle is None or self.data_size == 0:
-            return
-
-        # Encode format as (kind, bits, flags) — self-describing, receiver-compatible.
-        # Primary source: _detected_numpy_dtype from cuda_mem.data_type (authoritative).
-        # The GPU allocation size (self.data_size) may be padded or reflect the previous
-        # format when dtype changes with a constant allocation, so it must not drive
-        # kind/bits alone. Ratio-based fallback is used only when dtype is unavailable.
-        pixel_count = self.width * self.height * self.channels if (self.width and self.height and self.channels) else 0
-
-        flags = 0
-        # Fallback: derive bits/kind from GPU allocation ratio.
-        _ratio_bits = (
-            self.data_size // pixel_count * 8 if pixel_count > 0 and self.data_size % pixel_count == 0 else 32
-        )
-        bits = _ratio_bits
-        kind = FORMAT_KIND_UNSIGNED if bits == 8 else FORMAT_KIND_FLOAT
-
-        # Override with authoritative dtype hint when cuda_mem.data_type was reported.
-        _hint = self._detected_numpy_dtype
-        if _hint is not None:
-            try:
-                import numpy as _np
-
-                _hint = _np.dtype(_hint)
-                if _hint == _np.dtype("uint8"):
-                    bits, kind = 8, FORMAT_KIND_UNSIGNED
-                elif _hint == _np.dtype("uint16"):
-                    bits, kind = 16, FORMAT_KIND_UNSIGNED
-                elif _hint == _np.dtype("float16"):
-                    bits, kind = 16, FORMAT_KIND_FLOAT
-                elif _hint == _np.dtype("float64"):
-                    bits, kind = 64, FORMAT_KIND_FLOAT
-                else:  # float32 and any future dtype
-                    bits, kind = 32, FORMAT_KIND_FLOAT
-            except Exception:  # noqa: BLE001
-                pass  # keep ratio-derived fallback
-
-        # Use active-region size (W*H*C*(bits/8)) as the metadata data_size so
-        # the receiver invariant W*H*C*(bits/8)==data_size is always satisfied.
-        # self.data_size is the GPU allocation (may be padded/stale when dims change
-        # with a constant allocation), so it must not flow directly into the metadata
-        # field that the receiver validates. Python-side exporter does the same.
-        meta_data_size = pixel_count * (bits // 8)
-        Metadata(
-            width=self.width,
-            height=self.height,
-            num_comps=self.channels,
-            format_kind=kind,
-            bits_per_comp=bits,
-            flags=flags,
-            data_size=meta_data_size,
-        ).pack_into(self.shm_handle.buf, self._layout)
-
-        # Track last written dtype for change detection
-        self._last_numpy_dtype = self._detected_numpy_dtype
-
-        self._log(
-            f"Wrote metadata: {self.width}x{self.height}x{self.channels}, "
-            f"kind={kind} bits={bits} flags=0x{flags:04x}, size={meta_data_size}B"
-        )
-
-    def _has_dtype_changed(self) -> bool:
-        """Check if detected numpy dtype differs from last written metadata.
-
-        Both attributes are pre-initialized to None in __init__ and set as numpy.dtype
-        objects (from cuda_mem.shape.dataType / _write_metadata_to_shm), so direct
-        comparison is safe — no per-frame np.dtype() construction needed.
-        """
-        if self._detected_numpy_dtype is None or self._last_numpy_dtype is None:
-            return False  # Not yet detected or not yet written
-        return self._detected_numpy_dtype != self._last_numpy_dtype
-
-    def _bump_version(self) -> None:
-        """Increment SharedMemory version counter to signal consumers to re-read metadata."""
-        if self.shm_handle is None:
-            return
-        new_version = bump_version(self.shm_handle.buf)
-        self._log(f"Version bumped to {new_version} (metadata-only change)")
-
-    def export_frame(self, top_op: TOP | None = None) -> bool:
+    def export_frame(self, top_op: object = None) -> bool:
         """Export the ExportBuffer TOP texture via CUDA IPC.
 
-        Resolves ExportBuffer internally from ownerComp so the correct frame
-        is always exported regardless of what the caller previously passed.
-
-        Args:
-            top_op: Deprecated. Accepted for backwards compatibility but ignored.
-                ExportBuffer is always resolved from ownerComp internally.
+        top_op is deprecated and ignored; ExportBuffer is always resolved from
+        ownerComp internally to guarantee the correct frame is exported.
 
         Returns:
-            True if export successful, False otherwise
+            True if frame was published, False if skipped or failed.
         """
+        # Resolve ExportBuffer TOP handle (cached; re-looked-up if invalid).
         top_op = self._export_buffer
         if top_op is None or not top_op.is_valid():
-            self._export_buffer = None  # invalidate stale cache
-            # Lazy lookup: op may have been added after initialize() (e.g. dynamic network edits)
+            self._export_buffer = None
             top_op = self._host.find_top(_EXPORT_BUFFER_NAME)
             if top_op is None:
                 self._log(f"'{_EXPORT_BUFFER_NAME}' not found in component", force=True)
                 return False
-            self._export_buffer = top_op  # cache for subsequent frames
+            self._export_buffer = top_op
 
-        # Check if Active parameter is enabled (hot path via TDHost.is_active())
+        # is_active() gate — skip silently when Sender parameter is OFF.
         if not self._host.is_active():
             return False
 
-        # Start frame timer (only if verbose)
-        if self.verbose_performance:
-            frame_start = time.perf_counter()
-            if self._export_profile:
-                _t_pre = frame_start
-                # initialize per-frame profile locals so unaccounted calc is always defined
-                _this_pre = _this_post = _this_sync = _this_sticky = _this_fp = _this_shm = 0.0
-                # record_event_time is only set in the ipc_events path; init here for the fallback
-                record_event_time = 0.0
-
-        _nvtx_push(_NVTX_SENDER_SLOT_NAMES[self.write_idx % self.num_slots], "green")
-        try:
-            # Ensure CUDA runtime and stream exist BEFORE first cudaMemory() call.
-            # cuda and ipc_stream are always set together; one outer check covers both.
-            if self.ipc_stream is None:
-                if self.cuda is None:
-                    self.cuda = get_cuda_runtime(device=self.device)
-                # Honour CUDALINK_TD_STREAM_PRIO in the pre-init lazy path too (mirror of init).
-                if self._stream_high_prio:
-                    self.ipc_stream = self.cuda.create_stream_with_priority(flags=0x01)
-                    self._log(
-                        f"Created IPC stream (pre-init, high-priority): 0x{int(self.ipc_stream.value):016x}",
-                        force=True,
-                    )
-                else:
-                    self.ipc_stream = self.cuda.create_stream(flags=0x01)
-                    self._log(
-                        f"Created IPC stream (pre-init, normal-priority): 0x{int(self.ipc_stream.value):016x}",
-                        force=True,
-                    )
-            _cuda = self.cuda
-
-            # Block transfer when the source pixel format is unsupported by cudaMemory().
-            # Probe (verification/results/cuda_memory_probe_20260510_090919.json) confirmed
-            # 6 formats fail: all 4 float16 variants (hard exception), 10:10:10:2 (hard
-            # exception), 11:11:10 (succeeds but returns raw uint8/4ch — silent corruption).
-            # Tint the COMP yellow every bad frame (idempotent; keeps tint alive); log once.
-            if self._is_unsupported_format(top_op):
-                src_fmt = (
-                    top_op.pixel_format if hasattr(top_op, "pixel_format") else getattr(top_op, "pixelFormat", "?")
-                )
-                warn_msg = f"unsupported pixel format {src_fmt!r}"
-                self._host.set_warning_status(warn_msg)
-                if not self._warned_format:
-                    self._log(
-                        f"Pixel format {src_fmt!r} unsupported by cudaMemory() — "
-                        "transfer suspended; component tinted yellow",
-                        force=True,
-                    )
-                    self._warned_format = True
-                return False
-            if self._warned_format:
-                self._host.clear_status()
-                self._log("Source pixel format now supported — transfer resumed", force=True)
-                self._warned_format = False
-
-            # Time cudaMemory() call (OpenGL→CUDA interop)
-            if self.verbose_performance:
-                if self._export_profile:
-                    _this_pre = (time.perf_counter() - _t_pre) * 1_000_000
-                    self._profile.record("pre_interop", _this_pre)
-                cuda_mem_start = time.perf_counter()
-
-            # Get TOP's CUDA memory — always pass a valid stream (never None)
-            try:
-                cuda_mem = top_op.cuda_memory(stream=int(self.ipc_stream.value))
-            except Exception as cuda_err:
-                pixel_fmt = (
-                    top_op.pixel_format
-                    if hasattr(top_op, "pixel_format")
-                    else getattr(top_op, "pixelFormat", "unknown")
-                )
-                err_msg = f"cudaMemory() failed (pixelFormat={pixel_fmt}): {cuda_err}"
-                if err_msg != self._last_cuda_mem_err:
-                    self._log(err_msg, force=True)
-                    self._last_cuda_mem_err = err_msg
-                return False
-
-            if self.verbose_performance:
-                cuda_mem_time = (time.perf_counter() - cuda_mem_start) * 1_000_000  # microseconds
-                self._profile.record("cuda_memory", cuda_mem_time)
-                if self._export_profile:
-                    _t_post = time.perf_counter()
-
-            # Reset error suppression on success
-            if self._last_cuda_mem_err:
-                self._log("cudaMemory() recovered.", force=True)
-                self._last_cuda_mem_err = ""
-
-            if cuda_mem is None:
-                self._log(f"Failed to get CUDA memory from {top_op}", force=True)
-                return False
-
-            # CRITICAL: Keep reference to prevent garbage collection
-            self.cuda_mem_ref = cuda_mem
-
-            # CUDAMemoryRef fields are plain Python ints — direct access, no shape indirection
-            actual_width = cuda_mem.width
-            actual_height = cuda_mem.height
-            actual_channels = cuda_mem.channels
-            actual_size = cuda_mem.size
-            self._detected_numpy_dtype = cuda_mem.data_type  # numpy.dtype or None
-            _dt = self._detected_numpy_dtype
-            _dtype_str = (
-                getattr(_dt, "name", None) or getattr(_dt, "__name__", str(_dt)) if _dt is not None else "unknown"
-            )
-            _status_key = (actual_width, actual_height, actual_channels, _dtype_str)
-            if _status_key != self._last_status_tuple:
-                self._host.set_info_status(f"{actual_width}x{actual_height} {_dtype_str} {actual_channels}ch")
-                self._last_status_tuple = _status_key
-
-            # Check if we need to (re)initialize
-            if not self._initialized or actual_size != self.data_size:
-                if self._initialized:
-                    self._log(
-                        f"Resolution changed: {self.width}x{self.height}x{self.channels} -> {actual_width}x{actual_height}x{actual_channels}",
-                        force=True,
-                    )
-                    # Queue old resources for deferred free (cudaFree blocks on IPC memory)
-                    self._pending_free_ptrs.extend([p for p in self.dev_ptrs if p])
-                    self._pending_free_events.extend([e for e in self.ipc_events if e])
-                    self.dev_ptrs = [None] * self.num_slots
-                    self.ipc_events = [None] * self.num_slots
-                    self.ipc_handles = [None] * self.num_slots
-                    self.ipc_event_handles = [None] * self.num_slots
-                    self._initialized = False
-                    # Schedule deferred free after 30 frames (receiver needs time to close handles)
-                    self._deferred_free_at_frame = self.frame_count + 30
-
-                if not self.initialize(actual_width, actual_height, actual_channels, actual_size):
-                    return False
-                # Metadata already written by initialize()
-
-            elif (
-                actual_width != self.width
-                or actual_height != self.height
-                or actual_channels != self.channels
-                or self._has_dtype_changed()
-            ):
-                # Metadata-only update: buffer size unchanged so GPU handles stay valid.
-                # Rewrite the 20-byte metadata region and bump version to signal consumers.
-                self.width = actual_width
-                self.height = actual_height
-                self.channels = actual_channels
-                self._write_metadata_to_shm()
-                self._bump_version()
+        # Pixel-format rejection (TD 2025 CUDA interop quirks — see _is_unsupported_format).
+        if self._is_unsupported_format(top_op):
+            src_fmt = top_op.pixel_format if hasattr(top_op, "pixel_format") else getattr(top_op, "pixelFormat", "?")
+            self._host.set_warning_status(f"unsupported pixel format {src_fmt!r}")
+            if not self._warned_format:
                 self._log(
-                    "Metadata changed (dtype/dimensions) without size change — updated in-place",
+                    f"Pixel format {src_fmt!r} unsupported by cudaMemory() — "
+                    "transfer suspended; component tinted yellow",
                     force=True,
                 )
-
-            # Calculate current slot for ring buffer rotation
-            slot = self.write_idx % self.num_slots
-
-            # Time cudaMemcpyAsync D2D (non-blocking) - only if verbose
-            if self.verbose_performance:
-                if self._export_profile:
-                    _this_post = (time.perf_counter() - _t_post) * 1_000_000
-                    self._profile.record("post_interop", _this_post)
-                memcpy_start = time.perf_counter()
-                # Record GPU timing start event (actual GPU time measurement)
-                if self._timing_start:
-                    _cuda.record_event(self._timing_start, stream=self.ipc_stream)
-
-            # Deferred graph build (CUDALINK_TD_GRAPHS_DEFERRED=1): fires once after 30
-            # steady-state frames so the capture burst doesn't overlap Sender-B's cold activation.
-            if self._graphs_pending and self.frame_count >= 30:
-                self._build_export_graphs()
-                self._graphs_pending = False
-
-            # Copy TOP texture to this slot's persistent buffer (async on IPC stream).
-            # When CUDALINK_TD_USE_GRAPHS=1 and the per-slot graph exec is built, replay
-            # a 1-node CUDA Graph (MemcpyNode) instead of the imperative memcpy_async —
-            # this collapses the kernel-mode submission into a single cudaGraphLaunch.
-            # Falls back automatically (and permanently for this instance) if launch fails.
-            if self._use_graphs and not self._graphs_disabled and self._graph_execs[slot] is not None:
-                try:
-                    _cuda.graph_exec_memcpy_node_set_params_1d(
-                        self._graph_execs[slot],
-                        self._graph_memcpy_nodes[slot],
-                        dst=self.dev_ptrs[slot],
-                        src=c_void_p(cuda_mem.ptr),
-                        count=self.data_size,
-                        kind=3,  # cudaMemcpyDeviceToDevice
-                    )
-                    _cuda.graph_launch(self._graph_execs[slot], self.ipc_stream)
-                except (RuntimeError, OSError) as _graph_err:
-                    self._log(
-                        f"Graph launch failed ({_graph_err}) — disabling graphs, "
-                        "falling back to legacy memcpy_async this frame",
-                        force=True,
-                    )
-                    self._graphs_disabled = True
-                    _cuda.memcpy_async(
-                        dst=self.dev_ptrs[slot],
-                        src=c_void_p(cuda_mem.ptr),
-                        count=self.data_size,
-                        kind=3,
-                        stream=self.ipc_stream,
-                    )
-            else:
-                with _nvtx_verbose("cudalink.sender.memcpy", "green"):
-                    _cuda.memcpy_async(
-                        dst=self.dev_ptrs[slot],
-                        src=c_void_p(cuda_mem.ptr),
-                        count=self.data_size,
-                        kind=3,  # cudaMemcpyDeviceToDevice
-                        stream=self.ipc_stream,
-                    )
-
-            if self.verbose_performance:
-                # Record GPU timing end event (actual GPU time measurement)
-                if self._timing_end:
-                    _cuda.record_event(self._timing_end, stream=self.ipc_stream)
-                memcpy_time = (
-                    time.perf_counter() - memcpy_start
-                ) * 1_000_000  # microseconds (enqueue time only, copy is async)
-                self._profile.record("memcpy", memcpy_time)
-
-            # GPU-side synchronization with CUDA IPC Events
-            if self.ipc_events[slot]:
-                if self.verbose_performance:
-                    record_start = time.perf_counter()
-
-                # Record event for this slot after async memcpy (stream-ordered)
-                with _nvtx_verbose("cudalink.sender.record_event", "green"):
-                    _cuda.record_event(self.ipc_events[slot], stream=self.ipc_stream)
-
-                if self.verbose_performance:
-                    record_event_time = (time.perf_counter() - record_start) * 1_000_000
-                    self._profile.record("record_event", record_event_time)
-
-                # CUDALINK_EXPORT_SYNC=1: CPU-blocks on ipc_stream after record_event.
-                # Default is now "0" (receiver cudaStreamWaitEvent guarantees correctness).
-                # Enable for regression testing or if downstream consumers rely on CPU-timing.
-                if self._export_sync:
-                    if self.verbose_performance and self._export_profile:
-                        _t_sync = time.perf_counter()
-                    _cuda.stream_synchronize(self.ipc_stream)
-                    if self.verbose_performance and self._export_profile:
-                        _this_sync = (time.perf_counter() - _t_sync) * 1_000_000
-                        self._profile.record("sync", _this_sync)
-
-                if self.verbose_performance and self._export_profile:
-                    _t_sticky = time.perf_counter()
-                _cuda.check_sticky_error("export_frame")
-                if self.verbose_performance and self._export_profile:
-                    _this_sticky = (time.perf_counter() - _t_sticky) * 1_000_000
-                    self._profile.record("sticky_check", _this_sticky)
-
-                # WDDM deferred-submission probe: forces pending GPU work to submit without
-                # blocking. Per CUDA Handbook p3/pg56, WDDM buffers commands until a flush;
-                # cudaStreamQuery triggers that flush. Only active when EXPORT_FLUSH_PROBE=1
-                # and EXPORT_SYNC=0 (if sync is on, the stream is already flushed above).
-                if self._export_flush_probe and not self._export_sync:
-                    if self.verbose_performance and self._export_profile:
-                        _t_fp = time.perf_counter()
-                    _cuda.stream_query(self.ipc_stream)
-                    if self.verbose_performance and self._export_profile:
-                        _this_fp = (time.perf_counter() - _t_fp) * 1_000_000
-                        self._profile.record("flush_probe", _this_fp)
-
-            else:
-                # FALLBACK: Conditional CPU synchronization
-                if self.frame_count % self.sync_interval == 0:
-                    _cuda.synchronize()
-
-            # Publish: timestamp + clear shutdown_flag + fence + write_idx — in that order.
-            # publish_frame() encodes the C3 ordering guarantee; do not replicate inline.
-            if self.verbose_performance and self._export_profile:
-                _t_shm = time.perf_counter()
-            self.write_idx += 1
-            publish_frame(self.shm_handle.buf, self._layout, self.write_idx, time.perf_counter())
-            if self.verbose_performance and self._export_profile:
-                _this_shm = (time.perf_counter() - _t_shm) * 1_000_000
-                self._profile.record("shm_publish", _this_shm)
-
-            # Frame tracking
-            self.frame_count += 1
-
-            # Barrier settle countdown: release the cross-process activation barrier
-            # after settle_frames successful exports have elapsed post-init.
-            self._barrier.tick_and_maybe_release(os.getpid(), log_fn=self._log)
-
-            # Calculate total frame time (only if verbose)
-            if self.verbose_performance:
-                frame_time = (time.perf_counter() - frame_start) * 1_000_000
-                self._profile.record("export", frame_time)
-                if self._export_profile:
-                    _this_accounted = (
-                        _this_pre
-                        + cuda_mem_time
-                        + _this_post
-                        + memcpy_time
-                        + record_event_time
-                        + _this_sync
-                        + _this_sticky
-                        + _this_fp
-                        + _this_shm
-                    )
-                    self._profile.record("unaccounted", frame_time - _this_accounted)
-
-            # Detailed first-frame diagnostic (one-time, not affected by 100-frame interval)
-            if self.verbose_performance and self.frame_count == 1:
-                self._log(
-                    f"FIRST FRAME: cudaMemory={cuda_mem_time:.1f}us, "
-                    f"memcpy={memcpy_time:.1f}us, total={frame_time:.1f}us, "
-                    f"res={actual_width}x{actual_height}, size={actual_size / (1024 * 1024):.1f}MB",
-                    force=True,
-                )
-
-            # Log performance metrics every 97 frames (prime — avoids aliasing with slot counts 2,4,5)
-            if self.verbose_performance and self.frame_count % 97 == 0:
-                n = self.frame_count
-                avg_memcpy = self._profile.avg("memcpy", n)
-                avg_record = self._profile.avg("record_event", n) if all(self.ipc_events) else 0
-                avg_total = self._profile.avg("export", n)
-                avg_cuda_mem = self._profile.avg("cuda_memory", n)
-                sync_mode = (
-                    f"GPU-Events[{self.num_slots}]" if all(self.ipc_events) else f"CPU-Sync(1/{self.sync_interval})"
-                )
-
-                graphs_label = "ON" if self._use_graphs and not self._graphs_disabled else "OFF"
-                log_msg = (
-                    f"Frame {self.frame_count}: slot {slot}, "
-                    f"avg cudaMemory={avg_cuda_mem:.1f}us, "
-                    f"avg memcpy={avg_memcpy:.1f}us, record={avg_record:.1f}us, "
-                    f"total={avg_total:.1f}us, mode={sync_mode}, graphs={graphs_label}"
-                )
-
-                # Add GPU elapsed time if timing events available
-                if self._timing_start and self._timing_end:
-                    try:
-                        # Wait for timing events to complete before reading (prevents error 600)
-                        self.cuda.wait_event(self._timing_end)
-                        gpu_memcpy_ms = self.cuda.event_elapsed_time(self._timing_start, self._timing_end)
-                        log_msg += f", GPU memcpy={gpu_memcpy_ms * 1000:.1f}us (actual GPU time)"
-                    except RuntimeError as e:
-                        # Rare: event wait/query failed
-                        log_msg += f", GPU timing: {e}"
-
-                if self._nvml_observer is not None:
-                    snap = self._nvml_observer.snapshot()
-                    if snap.get("nvml_available"):
-                        log_msg += (
-                            f" | [NVML] gpu={snap.get('gpu_util_pct', '?')}%"
-                            f" mem={snap.get('mem_bw_util_pct', '?')}%"
-                            f" sm={snap.get('sm_clock_mhz', '?')}MHz"
-                            f" pcie_tx={snap.get('pcie_tx_kbps', '?')}kbps"
-                            f" pcie_rx={snap.get('pcie_rx_kbps', '?')}kbps"
-                            f" temp={snap.get('temp_c', '?')}C"
-                            f" power={snap.get('power_w', '?')}W"
-                        )
-                        reasons = snap.get("throttle_reasons") or []
-                        if reasons:
-                            log_msg += f" throttle={','.join(reasons)}"
-
-                if self._export_profile:
-                    avg_pre = self._profile.avg("pre_interop", n)
-                    avg_post = self._profile.avg("post_interop", n)
-                    avg_sync = self._profile.avg("sync", n)
-                    avg_sticky = self._profile.avg("sticky_check", n)
-                    avg_fp = self._profile.avg("flush_probe", n)
-                    avg_shm = self._profile.avg("shm_publish", n)
-                    avg_unacc = self._profile.avg("unaccounted", n)
-                    log_msg += (
-                        f" | [PROFILE] pre={avg_pre:.1f}us"
-                        f" interop={avg_cuda_mem:.1f}us"
-                        f" post={avg_post:.1f}us"
-                        f" memcpy={avg_memcpy:.1f}us"
-                        f" record={avg_record:.1f}us"
-                        f" sync={avg_sync:.1f}us"
-                        f" sticky={avg_sticky:.1f}us"
-                        f" flush_probe={avg_fp:.1f}us"
-                        f" shm={avg_shm:.1f}us"
-                        f" unacc={avg_unacc:.1f}us"
-                    )
-
-                self._log(log_msg, force=False)
-
-            return True
-
-        except (OSError, RuntimeError, AttributeError) as e:
-            self._log(f"Export failed: {e}", force=True)
-
-            traceback.print_exc()
+                self._warned_format = True
             return False
+        if self._warned_format:
+            self._host.clear_status()
+            self._log("Source pixel format now supported — transfer resumed", force=True)
+            self._warned_format = False
+
+        if self._exporter is None or not self._initialized:
+            # Lazy init: probe geometry from the first available frame, then skip this
+            # cook.  The Exporter opens here; the actual export starts on the next cook.
+            try:
+                cm_probe = top_op.cuda_memory()  # stream=None → default stream, safe for probe
+            except Exception as e:
+                self._log(f"Auto-init: cuda_memory() failed: {e}", force=True)
+                return False
+            # Use pixelFormatName as authoritative dtype/channel source at init time.
+            # cm.size may still reflect a stale allocation from the previous session
+            # (TD holds the old CUDA memory until ExportBuffer is explicitly re-cooked).
+            # pixelFormatName updates immediately when the source format changes, so it
+            # gives the correct dtype even before cm.size has caught up.
+            _pf_init = str(getattr(top_op, "pixel_format_name", "") or "")
+            _pf_init_mapped = (
+                _PIXEL_FMT_NAME_TO_DTYPE.get(_pf_init) if _pf_init and _pf_init not in ("useinput",) else None
+            )
+            if _pf_init_mapped is not None:
+                _init_dtype, _init_ch = _pf_init_mapped
+                # Compute the buffer_size that should correspond to the declared format.
+                # _guess_dtype_from_buffer_size will then derive the same dtype from it,
+                # ensuring _current_spec uses the correct dtype from the start.
+                _init_size = cm_probe.width * cm_probe.height * _init_ch * DtypeCodec.itemsize(_init_dtype)
+                self._last_pixel_fmt_name = _pf_init  # seed cache — first export frame won't re-override
+                self._log(
+                    f"Auto-init dtype from pixelFormatName={_pf_init!r}: {_init_dtype}/{_init_ch}ch",
+                    force=True,
+                )
+                _init_extra_flags = FLAGS_MONO_ALPHA if _pf_init.startswith("monoalpha") else 0
+                self.initialize(cm_probe.width, cm_probe.height, _init_ch, _init_size, extra_flags=_init_extra_flags)
+            else:
+                self.initialize(cm_probe.width, cm_probe.height, cm_probe.channels, cm_probe.size)
+            return False  # skip this frame; next cook exports normally
+
+        _nvtx_push(_NVTX_SENDER_SLOT_NAMES[self._exporter.write_idx % self.num_slots], "green")
+        try:
+            # Bridge step 1: request TD texture memory on the Exporter's IPC stream so
+            # that TD's CUDA work is enqueued on the same stream as the D2D copy — no
+            # explicit event ordering needed.
+            _pf_name = str(getattr(top_op, "pixel_format_name", "") or "")
+            try:
+                cm = top_op.cuda_memory(stream=int(self._exporter.ipc_stream.value))
+            except Exception as cuda_err:
+                self._log(f"cudaMemory() failed: {cuda_err}", force=True)
+                return False
+
+            # Dynamic geometry / dtype correction — close+reopen Exporter if needed.
+            #
+            # We use cm.size as the authoritative dtype signal because cm.data_type can be
+            # None or stale on the transition frame when the TD source switches texture
+            # format mid-stream.  Without this, a uint8→float32 flip produces 4× the
+            # expected byte count but _cm_dtype_to_str still returns "uint8", the guard
+            # sees "no change", and Exporter.export spams "Size mismatch" forever.
+            #
+            # cm.channels is the LIVE channel count from the CUDAMemoryRef — using the
+            # cached spec value would cause stale `px` computation when the TD source
+            # switches channel count (e.g. 4ch RGBA → 1ch mono), causing _resolve_frame_dtype
+            # to compute the wrong bytes-per-pixel and misidentify the dtype.
+            cm_channels = cm.channels
+            resolved_dtype = _resolve_frame_dtype(
+                cm.width, cm.height, cm_channels, cm.size, cm.data_type, self._current_spec.dtype
+            )
+
+            # pixelFormatName override — TD's immediate, authoritative format signal.
+            # Applied on every frame when the name maps to a known dtype so that
+            # dtype-shrink transitions (e.g. float32→uint8) are detected before TD's CUDA
+            # allocation has caught up: cm.size lags permanently on a shrink, but
+            # pixelFormatName and cm.data_type both update immediately.
+            #
+            # GpuFrame then uses self._exporter.data_size (dtype-derived) as the copy
+            # length, reading only the valid front region of the (still-oversized) GPU
+            # allocation — the same approach v1.5.1 uses with its fixed slot size.
+            #
+            _pf_name_override = False
+            if _pf_name and _pf_name not in ("useinput",):
+                _pf_mapped = _PIXEL_FMT_NAME_TO_DTYPE.get(_pf_name)
+                if _pf_mapped is not None:
+                    _pf_dtype, _pf_ch = _pf_mapped
+                    if _pf_name != self._last_pixel_fmt_name:
+                        # Format name changed — log the transition once.
+                        if _pf_dtype != resolved_dtype or _pf_ch != cm_channels:
+                            self._log(
+                                f"pixelFormatName changed to {_pf_name!r} "
+                                f"({_pf_dtype}/{_pf_ch}ch); cm-derived dtype is "
+                                f"{resolved_dtype}/{cm_channels}ch (cm.size={cm.size})",
+                                force=True,
+                            )
+                        self._last_pixel_fmt_name = _pf_name
+                    # Always apply — gives correct dtype even before cm.size/cm.data_type
+                    # catch up to the new format (they lag on dtype-shrink transitions).
+                    resolved_dtype = _pf_dtype
+                    cm_channels = _pf_ch
+                    _pf_name_override = True
+
+            # Defensive: if the byte count doesn't correspond to the resolved dtype AND no
+            # authoritative pixelFormatName override is active, try physical-channel
+            # inference (H2: RGBA-padded mono source where cm.channels=1 but the GPU
+            # allocation is 4-channel RGBA).  With _pf_name_override=True the size mismatch
+            # is expected on a dtype-shrink (cm.size still holds the old allocation); H2
+            # must not fire there or it would wrongly re-derive the old dtype.
+            px = cm.width * cm.height * cm_channels
+            _size_matches = px > 0 and bool(cm.size) and DtypeCodec.itemsize(resolved_dtype) * px == cm.size
+            if not _size_matches and not _pf_name_override:
+                # H2: try to infer physical channel count from the buffer size.
+                # TD may report cm.channels=1 (logical) for a mono TOP while allocating
+                # RGBA-padded CUDA memory — e.g. mono float32 TOP: cm.channels=1 but
+                # cm.size = W×H×4 comps×4 bytes.
+                _wh = cm.width * cm.height
+                _phys_dtype_map = {1: "uint8", 2: "uint16", 4: "float32"}
+                _inferred = False
+                for phys_ch in (4, 2):
+                    if _wh > 0 and phys_ch != cm_channels:
+                        phys_bytes = cm.size // (phys_ch * _wh) if (_wh * phys_ch) > 0 else 0
+                        phys_dtype = _phys_dtype_map.get(phys_bytes)
+                        if phys_dtype and phys_bytes * phys_ch * _wh == cm.size:
+                            if not self._warned_dtype_size:
+                                self._log(
+                                    f"cm.channels={cm.channels} inconsistent with "
+                                    f"cm.size={cm.size} (bpp={cm.size / px:.2f}); "
+                                    f"inferring {phys_ch}ch {phys_dtype} from physical "
+                                    "CUDA allocation (RGBA-padded mono source).",
+                                    force=True,
+                                )
+                            cm_channels = phys_ch
+                            resolved_dtype = phys_dtype
+                            px = _wh * phys_ch
+                            _inferred = True
+                            break
+                if not _inferred:
+                    if not self._warned_dtype_size:
+                        self._log(
+                            f"Unsupported bytes-per-pixel "
+                            f"({cm.size}/{px}={cm.size / px:.2f}); skipping frame. "
+                            "Supported: 1 (uint8), 2 (uint16), 4 (float32).",
+                            force=True,
+                        )
+                        self._warned_dtype_size = True
+                    return False
+            self._warned_dtype_size = False  # reset once a valid size is seen
+
+            if (
+                (cm.height, cm.width) != (self._current_spec.height, self._current_spec.width)
+                or cm_channels != self._current_spec.channels
+                or resolved_dtype != self._current_spec.dtype
+            ):
+                self._log(
+                    f"Geometry/dtype change: "
+                    f"{self._current_spec.width}x{self._current_spec.height}"
+                    f"x{self._current_spec.channels} {self._current_spec.dtype}"
+                    f" → {cm.width}x{cm.height}x{cm_channels} {resolved_dtype}",
+                    force=True,
+                )
+                with contextlib.suppress(Exception):
+                    self._exporter.close()
+                new_spec = FrameSpec(
+                    shm_name=self.shm_name,
+                    height=cm.height,
+                    width=cm.width,
+                    channels=cm_channels,
+                    dtype=resolved_dtype,
+                    num_slots=self.num_slots,
+                    device=self.device,
+                    extra_flags=FLAGS_MONO_ALPHA if _pf_name.startswith("monoalpha") else 0,
+                )
+                self._exporter = Exporter.open(new_spec, policy=self._policy, cuda=None)
+                self._current_spec = new_spec
+
+                # Force a monotonically-greater version in the SHM segment so the
+                # receiver's `version != last_version` guard always fires.
+                # On Windows the receiver's open handle keeps the old segment alive after
+                # close()+unlink(), so Exporter.open() re-attaches to the same segment
+                # (open-first logic, exporter.py:274-279).  set_version writes into that
+                # shared mapping — the receiver will see VERSION_CHANGED on the next tick.
+                self._ipc_version += 1
+                with contextlib.suppress(Exception):
+                    if self._exporter.shm_handle is not None:
+                        set_version(self._exporter.shm_handle.buf, self._ipc_version)
+
+                # Emit Status immediately on reopen — don't wait for the first PUBLISHED
+                # frame so the format change is visible in the UI right away.
+                _reopen_status = (
+                    f"{new_spec.width}x{new_spec.height} {_pf_name}"
+                    if _pf_name and _pf_name not in ("useinput",) and _pf_name in _PIXEL_FMT_NAME_TO_DTYPE
+                    else f"{new_spec.width}x{new_spec.height} {resolved_dtype} {cm_channels}ch"
+                )
+                self._host.set_info_status(_reopen_status)
+
+                # Re-fetch texture memory on the new Exporter's stream.
+                try:
+                    cm = top_op.cuda_memory(stream=int(self._exporter.ipc_stream.value))
+                except Exception as cuda_err:
+                    self._log(f"cudaMemory() after re-init failed: {cuda_err}", force=True)
+                    return False
+
+            # Grow-safety guard: after a dtype-grow reopen (e.g. uint8→float32 where the
+            # new spec needs more bytes), TD may not have reallocated its texture yet and
+            # cm.size is still the smaller value.  Skip this frame and force-cook to nudge
+            # TD into reallocating; retry next cook.
+            # On a dtype-shrink (e.g. float32→uint8) data_size < cm.size — guard never
+            # fires, so the shrink path is always unblocked.
+            if self._exporter.data_size > cm.size:
+                top_op.cook(force=True)
+                return False
+
+            # Bridge step 2: wrap raw GPU pointer into GpuFrame and hand to Exporter.
+            # Use self._exporter.data_size (dtype-derived) rather than cm.size so that on
+            # a dtype-shrink we copy only the valid front region of the stale allocation.
+            # In steady state and on grow (after TD reallocates) data_size == cm.size.
+            frame = GpuFrame(ptr=cm.ptr, size=self._exporter.data_size)
+            outcome = self._exporter.export(frame)
+
+            if outcome is FrameOutcome.PUBLISHED:
+                self._barrier.tick_and_maybe_release(os.getpid(), log_fn=self._log)
+                _pub_status = (
+                    f"{cm.width}x{cm.height} {_pf_name}"
+                    if _pf_name and _pf_name not in ("useinput",) and _pf_name in _PIXEL_FMT_NAME_TO_DTYPE
+                    else f"{cm.width}x{cm.height} {resolved_dtype} {cm_channels}ch"
+                )
+                self._host.set_info_status(_pub_status)
+                return True
+            return False
+
         finally:
             _nvtx_pop()
 
-    def _check_deferred_cleanup(self) -> None:
-        """Execute deferred GPU cleanup if scheduled and enough frames have passed.
-
-        Lightweight check meant to be called from onFrameStart for minimal overhead.
-        """
-        if self._pending_free_ptrs and self.frame_count >= self._deferred_free_at_frame:
-            self._deferred_free()
-
-    def _deferred_free(self) -> None:
-        """Free GPU resources queued from export_frame() when deferred frame threshold is reached.
-
-        Called via _check_deferred_cleanup() after receiver has had time to close IPC handles.
-        """
-        if self.cuda is None:
-            return
-
-        freed_count = 0
-        for ptr in self._pending_free_ptrs:
-            try:
-                self.cuda.free(ptr)
-                freed_count += 1
-            except (RuntimeError, OSError) as e:
-                self._log(f"Deferred free failed: {e}")
-        self._pending_free_ptrs.clear()
-
-        for event in self._pending_free_events:
-            try:
-                self.cuda.destroy_event(event)
-            except (RuntimeError, OSError) as e:
-                self._log(f"Deferred event destroy failed: {e}")
-        self._pending_free_events.clear()
-
-        if freed_count > 0:
-            self._log(
-                f"Deferred cleanup complete: freed {freed_count} GPU buffers",
-                force=True,
-            )
-
-    def _is_cuda_context_valid(self) -> bool:
-        """Check if CUDA context is still valid (TD may destroy it before __delTD__)."""
-        if self.cuda is None:
-            return False
-        try:
-            self.cuda.cudart.cudaGetLastError()
-            return True
-        except (OSError, RuntimeError):
-            return False
-
     def cleanup(self) -> None:
-        """Cleanup Sender CUDA IPC resources (all ring buffer slots).
+        """Release all CUDA/SHM resources via Exporter.close().
 
-        CRITICAL ORDER: Signal shutdown FIRST, then free GPU resources.
-        cudaFree() blocks until all processes close IPC handles.
+        Idempotent — safe to call multiple times (e.g. Active toggle + __delTD__).
         """
-        # Release activation barrier if still held (mid-settle cleanup path).
+        # Release activation barrier first (mid-settle cleanup path).
         self._barrier.force_release(os.getpid(), log_fn=self._log)
         self._barrier.close()
 
-        # Skip if already cleaned up (prevents double-cleanup from Active toggle + __delTD__)
-        if not self._initialized and self.shm_handle is None:
-            return
-
-        if self._nvml_observer is not None:
-            self._nvml_observer.stop()
-            self._nvml_observer = None
-
-        cuda_valid = self._is_cuda_context_valid()
-        if not cuda_valid:
-            self._log("CUDA context already destroyed — skipping GPU cleanup", force=True)
-
-        # Signal shutdown to consumer (before closing SharedMemory)
-        if self.shm_handle and self.shm_handle.buf is not None:
-            try:
-                shutdown_offset = SHM_HEADER_SIZE + (self.num_slots * SLOT_SIZE)
-                self.shm_handle.buf[shutdown_offset] = 1
-                self._log("Shutdown signal sent to consumer", force=True)
-            except (OSError, BufferError) as e:
-                self._log(f"Warning: Could not write shutdown signal: {e}", force=True)
-
-        # Zero out IPC handle bytes so any reader sees invalid handles.
-        # On Windows, unlink() is a no-op (SharedMemory uses CreateFileMapping kernel
-        # objects), so the SharedMemory may persist with stale non-zero handles that
-        # pass the all-zero validation check. Zeroing them prevents error 201 when a
-        # new Receiver reads before the SHM is destroyed or overwritten by a new producer.
-        if self.shm_handle and self.shm_handle.buf is not None:
-            try:
-                for slot in range(self.num_slots):
-                    base_offset = SHM_HEADER_SIZE + (slot * SLOT_SIZE)
-                    self.shm_handle.buf[base_offset : base_offset + SLOT_SIZE] = b"\x00" * SLOT_SIZE
-                self._log("Zeroed IPC handle bytes in SharedMemory", force=True)
-            except (OSError, BufferError) as e:
-                self._log(f"Warning: Could not zero IPC handles: {e}", force=True)
-
-        # Destroy CUDA Graph execs first — they hold references into the IPC stream
-        # and (transitively) the ring-buffer pointers, so they must be torn down before
-        # the events/stream/buffers below.
-        if cuda_valid and getattr(self, "_use_graphs", False):
-            self._destroy_export_graphs()
-
-        # Destroy IPC events (sender-side resources, safe to destroy)
-        if cuda_valid and hasattr(self, "ipc_events") and self.cuda:
-            for slot, event in enumerate(self.ipc_events):
-                if event:
-                    try:
-                        self.cuda.destroy_event(event)
-                        self._log(f"Destroyed IPC event slot {slot}", force=True)
-                    except (RuntimeError, OSError) as e:
-                        self._log(f"Error destroying event slot {slot}: {e}", force=True)
-
-        # Destroy GPU timing events (benchmarking resources)
-        if cuda_valid and self.cuda:
-            if hasattr(self, "_timing_start") and self._timing_start:
-                try:
-                    self.cuda.destroy_event(self._timing_start)
-                    self._log("Destroyed GPU timing start event", force=False)
-                except (RuntimeError, OSError) as e:
-                    self._log(f"Error destroying timing start event: {e}", force=True)
-                finally:
-                    self._timing_start = None
-            if hasattr(self, "_timing_end") and self._timing_end:
-                try:
-                    self.cuda.destroy_event(self._timing_end)
-                    self._log("Destroyed GPU timing end event", force=False)
-                except (RuntimeError, OSError) as e:
-                    self._log(f"Error destroying timing end event: {e}", force=True)
-                finally:
-                    self._timing_end = None
-
-        # Destroy dedicated IPC stream (set to None to prevent double-free).
-        # CUDALINK_TD_PERSIST_STREAM=1: skip destroy so the stream survives
-        # deactivate/reactivate cycles; initialize() reuses it via the existing
-        # `if self.ipc_stream is None` guard.
-        if cuda_valid and hasattr(self, "ipc_stream") and self.ipc_stream and self.cuda:
-            if self._persist_stream:
-                self._log(
-                    f"[PERSIST_STREAM] keeping ipc_stream=0x{int(self.ipc_stream.value):016x} across cleanup",
-                    force=True,
-                )
-            else:
-                try:
-                    self.cuda.destroy_stream(self.ipc_stream)
-                    self._log("Destroyed IPC stream", force=True)
-                    self.ipc_stream = None
-                except (RuntimeError, OSError) as e:
-                    self._log(f"Error destroying IPC stream: {e}", force=True)
-
-        # Close SharedMemory (but don't unlink yet)
-        if self.shm_handle:
-            try:
-                self.shm_handle.close()
-                self._log("Closed SharedMemory", force=True)
-            except (OSError, BufferError) as e:
-                self._log(f"Error closing SharedMemory: {e}", force=True)
-
-        # Grace period for receiver to close IPC handles
-        if cuda_valid:
-            time.sleep(0.1)  # 100ms for receiver to detect shutdown and close handles
-
-        # Free GPU buffers (now safe, receiver has closed IPC handles)
-        if cuda_valid and hasattr(self, "dev_ptrs") and self.cuda:
-            for slot, dev_ptr in enumerate(self.dev_ptrs):
-                if dev_ptr:
-                    try:
-                        self.cuda.free(dev_ptr)
-                        self._log(f"Freed GPU buffer slot {slot}", force=True)
-                    except (RuntimeError, OSError) as e:
-                        self._log(f"Error freeing GPU buffer slot {slot}: {e}", force=True)
-
-        # Free any pending deferred resources
-        if cuda_valid and hasattr(self, "_pending_free_ptrs"):
-            self._deferred_free()
-
-        if self._warned_format:
-            self._host.clear_status()
-            self._warned_format = False
-
-        # Unlink SharedMemory (sender is owner and should clean up)
-        if hasattr(self, "shm_name"):
-            try:
-                try:
-                    shm_temp = SharedMemory(name=self.shm_name)
-                    shm_temp.close()
-                    shm_temp.unlink()
-                    self._log("Unlinked SharedMemory", force=True)
-                except FileNotFoundError:
-                    pass  # Already unlinked
-            except (OSError, RuntimeError, AttributeError) as e:
-                self._log(f"Warning: Could not unlink SharedMemory: {e}", force=True)
-
-        # Reset state to prevent double-free on re-entry.
-        # Use empty lists — initialize() will resize to current self.num_slots.
-        self.dev_ptrs = []
-        self.ipc_events = []
-        self.ipc_handles = []
-        self.ipc_event_handles = []
-        if not self._persist_stream:
-            self.ipc_stream = None
-        self.shm_handle = None
-        self._warned_format = False
-        self._export_buffer = None
-
-        # Reset per-session counters so averages are accurate after reinit
-        # and slot selection starts from 0 (matching SharedMemory write_idx=0 written on init).
-        self.write_idx = 0
-        self.frame_count = 0
-        self._profile = FrameProfile(_SENDER_PROFILE_REGIONS)
-        self._last_status_tuple = None
+        if self._exporter is not None:
+            with contextlib.suppress(Exception):
+                self._exporter.close()
+            self._exporter = None
 
         self._initialized = False
-        self._log("Sender cleanup complete", force=True)
+        self._closed = True
+        self._export_buffer = None
+
+        # Reset per-session state so the next activation starts completely clean.
+        # Without this, _last_pixel_fmt_name, _warned_* etc. carry over from the
+        # previous session and cause wrong-dtype initialization or stale overrides.
+        self._last_pixel_fmt_name = ""
+        self._last_pixel_fmt = ""
+        self._last_fmt_needs_conv = False
+        self._warned_dtype_size = False
+        self._warned_format = False
+
+        self._host.clear_status()
+        self._host.set_param_enabled("Numslots", True)

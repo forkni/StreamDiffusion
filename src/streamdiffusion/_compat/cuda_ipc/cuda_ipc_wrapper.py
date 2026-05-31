@@ -30,8 +30,8 @@ if os.name == "nt":
 else:
     _kernel32 = None
 
-from .cuda_graphs import CUDAGraphsMixin
-from .cuda_runtime_types import (
+from .cuda_graphs import CUDAGraphsMixin  # noqa: E402
+from .cuda_runtime_types import (  # noqa: E402
     CUDAError,
     CUDAEvent_t,
     CUDAGraph_t,
@@ -112,29 +112,17 @@ class CUDARuntimeAPI(CUDAGraphsMixin):
         Raises:
             RuntimeError: If CUDA runtime cannot be loaded
         """
-        # Try by name FIRST: if cudart is already loaded in this process (e.g., by
-        # torch), Windows returns the cached handle — ensuring we share the same
-        # runtime instance and CUDA context. Loading by full path can create a second
-        # independent instance with its own state, breaking cross-process IPC.
-        # Probed in this order: prefer CUDA 12.x; fall back to 11.x for systems that
-        # haven't migrated (e.g. TouchDesigner historically shipped cudart64_110.dll).
-        dll_names = ["cudart64_12.dll", "cudart64_11.dll", "cudart64_110.dll"]
-        for name in dll_names:
-            try:
-                dll = ctypes.CDLL(name)
-                self._log_dll_path(dll, name)
-                return dll
-            except OSError as e:
-                _logger.debug("Skipped %s: %s (winerror=%s)", name, e, getattr(e, "winerror", None))
-                continue
-
-        # Fallback: try full toolkit paths when not already in PATH
+        # Try full CUDA Toolkit paths FIRST: these are deterministic and immune to
+        # DLL search-order side-effects (e.g. os.add_dll_directory calls from torch
+        # or other venvs added to sys.path via sitecustomize.py).  If the Toolkit is
+        # installed, we always prefer its cudart over a bundled copy.
         dll_paths = [
             r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin\cudart64_12.dll",
             r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin\cudart64_12.dll",
             r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\bin\cudart64_12.dll",
             r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.0\bin\cudart64_12.dll",
         ]
+        last_path_err: OSError | None = None
         for dll_path in dll_paths:
             if os.path.exists(dll_path):
                 try:
@@ -143,12 +131,51 @@ class CUDARuntimeAPI(CUDAGraphsMixin):
                     return dll
                 except OSError as e:
                     _logger.debug("Skipped %s: %s (winerror=%s)", dll_path, e, getattr(e, "winerror", None))
+                    last_path_err = e
                     continue
 
+        # Fallback: try by bare name — if cudart is already loaded in this process
+        # (e.g., by torch), Windows returns the cached handle, sharing the same runtime
+        # instance and CUDA context.  Probed in this order: prefer CUDA 12.x; fall back
+        # to 11.x for systems that haven't migrated (TouchDesigner ships cudart64_110.dll).
+        # Note: winmode is intentionally omitted here (unlike the absolute-path tier above
+        # which uses winmode=0).  For bare-name loads we rely on Windows returning the
+        # already-loaded handle from the process DLL cache — not a new DLL search — so
+        # the winmode DLL-search-path flags are irrelevant.
+        dll_names = ["cudart64_12.dll", "cudart64_11.dll", "cudart64_110.dll"]
+        last_name_err: OSError | None = None
+        for name in dll_names:
+            try:
+                dll = ctypes.CDLL(name)
+                self._log_dll_path(dll, name)
+                return dll
+            except OSError as e:
+                _logger.debug("Skipped %s: %s (winerror=%s)", name, e, getattr(e, "winerror", None))
+                last_name_err = e
+                continue
+
+        # Build a diagnostic message that includes the last OS error from each tier.
+        # The ctypes reference notes that WinError 126 ("The specified module could not
+        # be found") does NOT identify the *missing dependent DLL* — only the entry
+        # point that failed to load.  Surface the winerror code so the user can run a
+        # dependency tracer (e.g. Dependencies.exe or dumpbin /dependents).
+        last_err = last_name_err or last_path_err
+        winerror = getattr(last_err, "winerror", None)
+        err_detail = f"\nLast OS error: {last_err} (winerror={winerror})" if last_err else ""
+        hint_126 = (
+            (
+                "\nHint: winerror 126 means a *dependent* DLL of cudart was not found, "
+                "not cudart itself.  Run 'dumpbin /dependents cudart64_12.dll' or open "
+                "the DLL in Dependencies.exe to identify the missing dependency."
+            )
+            if winerror == 126
+            else ""
+        )
         raise RuntimeError(
             "Could not load CUDA runtime. Please ensure CUDA 12.x is installed.\n"
-            f"Tried names: {dll_names}\n"
-            f"Tried paths: {dll_paths}"
+            f"Tried paths: {dll_paths}\n"
+            f"Tried names: {dll_names}"
+            f"{err_detail}{hint_126}"
         )
 
     @staticmethod
@@ -162,11 +189,23 @@ class CUDARuntimeAPI(CUDAGraphsMixin):
         if _kernel32 is None:
             print(f"[CUDAIPC] cudart loaded: {hint} (path resolution unavailable)", flush=True)
             return
+        # dll._handle is an undocumented ctypes internal — guard it defensively so a
+        # future ctypes change degrades the log line gracefully instead of raising.
+        handle = getattr(dll, "_handle", None)
+        if not isinstance(handle, int):
+            print(f"[CUDAIPC] cudart loaded: {hint} (handle not available)", flush=True)
+            return
         try:
             buf = ctypes.create_unicode_buffer(260)
-            _kernel32.GetModuleFileNameW(ctypes.c_void_p(dll._handle), buf, 260)
-            print(f"[CUDAIPC] cudart loaded: {buf.value}", flush=True)
-        except (OSError, AttributeError) as e:
+            n = _kernel32.GetModuleFileNameW(ctypes.c_void_p(handle), buf, 260)
+            if n == 0:
+                # use_last_error=True on the WinDLL means ctypes captured the thread-local
+                # error code before restoring it — surface it via WinError for diagnosis.
+                err = ctypes.WinError(ctypes.get_last_error())
+                print(f"[CUDAIPC] cudart loaded: {hint} (GetModuleFileNameW failed: {err})", flush=True)
+            else:
+                print(f"[CUDAIPC] cudart loaded: {buf.value}", flush=True)
+        except OSError as e:
             print(f"[CUDAIPC] cudart loaded: {hint} (could not resolve path: {e})", flush=True)
 
     def _load_driver_api(self) -> ctypes.CDLL | None:
@@ -282,11 +321,9 @@ class CUDARuntimeAPI(CUDAGraphsMixin):
         self.cudart.cudaDeviceSynchronize.argtypes = []
         self.cudart.cudaDeviceSynchronize.restype = c_int
 
-        # cudaGetLastError()
-        self.cudart.cudaGetLastError.argtypes = []
-        self.cudart.cudaGetLastError.restype = c_int
-
         # cudaPeekAtLastError() — non-destructive sticky-error read (does NOT clear the error)
+        # cudaGetLastError() is intentionally NOT bound: it destructively clears the sticky
+        # error, making it unsafe to call in poll paths. Use cudaPeekAtLastError exclusively.
         self.cudart.cudaPeekAtLastError.argtypes = []
         self.cudart.cudaPeekAtLastError.restype = c_int
 
@@ -537,7 +574,7 @@ class CUDARuntimeAPI(CUDAGraphsMixin):
             error_name = CUDAError.get_name(result)
             raise RuntimeError(f"CUDA {operation} failed: {error_str} (error {result}: {error_name})")
 
-    def peek_at_last_error(self) -> int:
+    def peek_last_error(self) -> int:
         """Non-destructively read the thread-local sticky CUDA error.
 
         Returns SUCCESS (0) normally. A non-zero value means a prior async
@@ -550,7 +587,7 @@ class CUDARuntimeAPI(CUDAGraphsMixin):
         """Warn and raise if a sticky CUDA error is latched from a prior async op.
 
         No-op when CUDALINK_STICKY_ERROR_CHECK=0. Enabled by default.
-        Use peek_at_last_error() directly for the raw value without raising.
+        Use peek_last_error() directly for the raw value without raising.
         """
         if not self._sticky_check_enabled:
             return
@@ -740,6 +777,14 @@ class CUDARuntimeAPI(CUDAGraphsMixin):
         Raises:
             RuntimeError: If opening fails
         """
+        # Guard against ctypes class-identity mismatch: in TD's bare-name import namespace
+        # the caller's cudaIpcMemHandle_t may be a *different* class object than the one bound
+        # into argtypes (two independent imports of cuda_link.cuda_runtime_types, e.g. a
+        # CUDARuntimeTypes mirror Text DAT loaded alongside the library-mode package).
+        # ctypes validates by class identity, not structural equivalence, so the call would
+        # raise ArgumentError. Rebuild from raw bytes into THIS module's class — POD, 64 bytes.
+        if not isinstance(handle, cudaIpcMemHandle_t):
+            handle = cudaIpcMemHandle_t.from_buffer_copy(bytes(handle))
         dev_ptr = c_void_p()
         self.cudart.cudaIpcOpenMemHandle(byref(dev_ptr), handle, flags)
         return dev_ptr
@@ -854,6 +899,9 @@ class CUDARuntimeAPI(CUDAGraphsMixin):
         Raises:
             RuntimeError: If opening fails
         """
+        # Same class-identity guard as ipc_open_mem_handle — see note there.
+        if not isinstance(handle, cudaIpcEventHandle_t):
+            handle = cudaIpcEventHandle_t.from_buffer_copy(bytes(handle))
         event = CUDAEvent_t()
         self.cudart.cudaIpcOpenEventHandle(byref(event), handle)
         return event

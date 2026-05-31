@@ -25,7 +25,6 @@ import logging
 import os
 import struct
 import sys
-import threading
 import time
 
 
@@ -47,38 +46,33 @@ if _probe_log_file:
             _root_logger.setLevel(logging.INFO)
 
 # ---------------------------------------------------------------------------
+# Ensure cuda_link is importable for the console helper (may need sys.path
+# patch when run without a pip install, same pattern as main() below).
+# ---------------------------------------------------------------------------
+
+try:
+    from cuda_link._console import install_console_ctrl_handler, run_with_watchdog
+except ImportError:
+    _src = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+    if _src not in sys.path:
+        sys.path.insert(0, _src)
+    from cuda_link._console import install_console_ctrl_handler, run_with_watchdog
+
+# ---------------------------------------------------------------------------
 # Windows console control handler — ensures GPU IPC cleanup runs even when
 # the user closes the console window via the X button (CTRL_CLOSE_EVENT),
 # which does NOT raise KeyboardInterrupt in Python by default.
+#
+# defer_close=True: CTRL_CLOSE_EVENT sets _shutdown.stop_requested so the main
+# loop breaks and runs _do_cleanup() from the main thread.  This avoids the race
+# between the handler thread and an in-flight cudaMemcpy in _fill_ctypes.
 # ---------------------------------------------------------------------------
 
-if sys.platform == "win32":
-    from ctypes import wintypes as _wintypes
-
-    CTRL_C_EVENT = 0
-    CTRL_BREAK_EVENT = 1
-    CTRL_CLOSE_EVENT = 2
-    CTRL_LOGOFF_EVENT = 5
-    CTRL_SHUTDOWN_EVENT = 6
-
-    _HandlerRoutine = ctypes.WINFUNCTYPE(_wintypes.BOOL, _wintypes.DWORD)
-
-# Module-level refs so the handler thread can access them regardless of stack.
+# Module-level refs so _do_cleanup can access them regardless of call stack.
 _cuda_ref = None
 _exporter_ref = None
 _staging_ptr_ref = None
 _cleaned_up = False
-# Track which event triggered shutdown — controls end-of-main "Press Enter" pause:
-#   "ctrl_c" → user pressed Ctrl+C in console → pause (let user read messages).
-#   "ctrl_break" → launcher sent CTRL_BREAK_EVENT (graceful .toe close) → no pause.
-#   "ctrl_close" → console close / logoff / shutdown (incl. orchestrator-driven
-#                  taskkill, ncu/nsys captures) → no pause; OS is already exiting.
-#   None → main loop exited some other way → pause as a safety net.
-_shutdown_via: str | None = None
-# Set by CTRL_CLOSE_EVENT handler to request the main loop to break and run
-# finally: cleanup from the main thread instead of the handler thread.
-# Avoids the race where the handler freed staging_ptr while main was mid-cudaMemcpy.
-_stop_requested: bool = False
 
 
 def _do_cleanup() -> None:
@@ -91,9 +85,7 @@ def _do_cleanup() -> None:
     # Under ncu kernel-replay the GPU command queue is paused inside ncu's replay
     # state. cudaFree on the staging buffer implicitly synchronises the device and
     # blocks until the queue drains — which never happens in that state, causing a
-    # 30+ s hang. Wrap in a daemon thread with a 0.5 s watchdog; same pattern as
-    # cuda_ipc_exporter.cleanup() Step 6. The 1 MB staging buffer is reclaimed by
-    # the OS on process exit, so leaking it here is harmless.
+    # 30+ s hang. The 1 MB staging buffer is reclaimed by the OS on process exit.
     if _staging_ptr_ref is not None and _cuda_ref is not None:
 
         def _free_staging() -> None:
@@ -102,69 +94,26 @@ def _do_cleanup() -> None:
             except Exception as exc:
                 print(f"[sender] cleanup: cuda.free(staging) error: {exc}", flush=True)
 
-        t = threading.Thread(target=_free_staging, daemon=True)
-        t.start()
-        t.join(timeout=0.5)
-        if t.is_alive():
-            print("[sender] cudaFree(staging) timed out — OS will reclaim on process exit", flush=True)
+        run_with_watchdog(_free_staging, timeout_s=0.5, label="cudaFree(staging)", prefix="[sender]")
 
-    # Under ncu kernel-replay, Steps 1c/2/3 of exporter.cleanup()
+    # Under ncu kernel-replay, Steps 1c/2/3 of Exporter.close()
     # (graph_exec_destroy, destroy_event, destroy_stream) can block on a
-    # paused command queue. Bound total cleanup time so main returns and
-    # ncu finalizes. Same pattern as staging watchdog above and
-    # cuda_ipc_exporter.cleanup() Step 6.
+    # paused command queue.  Bound total cleanup time so main returns and ncu finalizes.
     if _exporter_ref is not None:
 
         def _do_exporter_cleanup() -> None:
             try:
-                _exporter_ref.cleanup()
+                _exporter_ref.close()
             except Exception as exc:
-                print(f"[sender] cleanup: exporter.cleanup error: {exc}", flush=True)
+                print(f"[sender] cleanup: exporter.close error: {exc}", flush=True)
 
-        t = threading.Thread(target=_do_exporter_cleanup, daemon=True)
-        t.start()
-        t.join(timeout=3.0)
-        if t.is_alive():
-            print("[sender] exporter.cleanup() timed out — OS will reclaim resources on process exit", flush=True)
+        run_with_watchdog(_do_exporter_cleanup, timeout_s=3.0, label="exporter.close()", prefix="[sender]")
 
 
-if sys.platform == "win32":
-
-    def _ctrl_handler(ctrl_type: int) -> bool:
-        global _shutdown_via
-        if ctrl_type == CTRL_C_EVENT:
-            _shutdown_via = "ctrl_c"
-            print("\n[sender] Ctrl+C — stopping ...", flush=True)
-            return False  # Chain to Python's default → raises KeyboardInterrupt in main.
-        if ctrl_type == CTRL_BREAK_EVENT:
-            _shutdown_via = "ctrl_break"
-            print("\n[sender] Ctrl+Break / launcher shutdown — stopping ...", flush=True)
-            return False  # Chain to Python's default → raises KeyboardInterrupt in main.
-        if ctrl_type in (CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT):
-            # Console X-button, user logoff, or system shutdown.
-            # OS allows ~5 s (CLOSE) or ~20 s (LOGOFF/SHUTDOWN) before forced termination.
-            # Signal main to break out of the loop; main's finally: runs _do_cleanup()
-            # from the main thread. Calling _do_cleanup() here (handler thread) races
-            # with an in-flight cudaMemcpy in _fill_ctypes → INVALID_VALUE crash.
-            global _stop_requested
-            _shutdown_via = "ctrl_close"
-            _stop_requested = True
-            print(
-                f"\n[sender] Console control event {ctrl_type} (close/logoff/shutdown) — signaling main loop to stop ...",
-                flush=True,
-            )
-            return True  # Handled — OS grace period covers main's exit + cleanup.
-        return False
-
-    # The launcher uses CREATE_NEW_PROCESS_GROUP, which DISABLES Ctrl+C delivery to the
-    # child process by default. SetConsoleCtrlHandler(NULL, FALSE) re-enables it before
-    # we install our own handler.
-    ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)
-
-    # MUST be module-level; a local variable would be GC'd and Windows would call freed memory.
-    _ctrl_handler_ref = _HandlerRoutine(_ctrl_handler)
-    if not ctypes.windll.kernel32.SetConsoleCtrlHandler(_ctrl_handler_ref, True):
-        print("[sender] WARNING: SetConsoleCtrlHandler failed — console-close cleanup unavailable")
+# _shutdown.shutdown_via tracks which event triggered shutdown (controls the
+# end-of-main "Press Enter" pause). _shutdown.stop_requested is polled by the
+# main loop instead of a raw global bool.
+_shutdown = install_console_ctrl_handler("[sender]", _do_cleanup, defer_close=True)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -231,16 +180,18 @@ def main() -> None:
     global _cuda_ref, _exporter_ref, _staging_ptr_ref
     # Ensure cuda_link is importable — try src/ relative to this script
     try:
-        from cuda_link import CUDAIPCExporter
+        from cuda_link import FrameSpec, GpuFrame
         from cuda_link.cuda_ipc_wrapper import get_cuda_runtime
+        from cuda_link.exporter import Exporter
     except ImportError:
         src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
         src_dir = os.path.normpath(src_dir)
         if src_dir not in sys.path:
             sys.path.insert(0, src_dir)
         try:
-            from cuda_link import CUDAIPCExporter
+            from cuda_link import FrameSpec, GpuFrame
             from cuda_link.cuda_ipc_wrapper import get_cuda_runtime
+            from cuda_link.exporter import Exporter
         except ImportError:
             print(f"[sender] ERROR: cuda_link not found. Searched: {src_dir}")
             print("[sender]   Run: pip install cuda-link  (from the project root)")
@@ -259,22 +210,23 @@ def main() -> None:
     print("  TD: CUDAIPCLink_from_Python  Mode=Receiver  Active=ON")
     print()
 
-    exporter = CUDAIPCExporter(
-        shm_name=SHM_NAME,
-        height=HEIGHT,
-        width=WIDTH,
-        channels=4,
-        dtype=DTYPE,
-        num_slots=NUM_SLOTS,
-        debug=False,
-    )
+    try:
+        exporter = Exporter.open(
+            FrameSpec(
+                shm_name=SHM_NAME,
+                height=HEIGHT,
+                width=WIDTH,
+                channels=4,
+                dtype=DTYPE,
+                num_slots=NUM_SLOTS,
+            )
+        )
+    except Exception as exc:
+        print(f"[sender] ERROR: Exporter.open() failed: {exc}")
+        sys.exit(1)
     _exporter_ref = exporter
 
-    if not exporter.initialize():
-        print("[sender] ERROR: exporter.initialize() failed.")
-        sys.exit(1)
-
-    graphs_active = bool(getattr(exporter, "_use_graphs", False) and not getattr(exporter, "_graphs_disabled", False))
+    graphs_active = bool(exporter._policy.use_graphs and not exporter._graphs_disabled)
     graphs_label = "ON" if graphs_active else "OFF"
     profile_on = os.environ.get("CUDALINK_EXPORT_PROFILE", "0") == "1"
     env_setting = os.environ.get("CUDALINK_USE_GRAPHS", "(default=1)")
@@ -298,16 +250,13 @@ def main() -> None:
     last_report = start_time
 
     try:
-        while not _stop_requested:
+        while not _shutdown.stop_requested:
             t0 = time.perf_counter()
             color_idx = (frame_count // FRAMES_PER_COLOR) % len(_COLORS)
             color = _COLORS[color_idx]
 
             _fill_ctypes(cuda, staging_ptr, exporter.data_size, color)
-            exporter.export_frame(
-                gpu_ptr=int(staging_ptr.value),
-                size=exporter.data_size,
-            )
+            exporter.export(GpuFrame(ptr=int(staging_ptr.value), size=exporter.data_size))
             frame_count += 1
 
             now = time.perf_counter()
@@ -361,7 +310,7 @@ def main() -> None:
         # Hold the console window open so the user can read the cleanup output —
         # but ONLY for user-initiated shutdowns. CTRL_BREAK_EVENT is also how the
         # launcher signals graceful .toe-close, so we skip the pause in that case.
-        if _shutdown_via not in ("ctrl_break", "ctrl_close"):
+        if _shutdown.shutdown_via not in ("ctrl_break", "ctrl_close"):
             with contextlib.suppress(EOFError, KeyboardInterrupt):
                 input("\n[sender] Press Enter to close this window ...")
 

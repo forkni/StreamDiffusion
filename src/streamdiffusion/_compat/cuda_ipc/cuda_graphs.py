@@ -14,7 +14,7 @@ from __future__ import annotations
 from ctypes import byref, c_int, c_size_t, c_uint64, c_void_p
 from typing import Any
 
-from .cuda_runtime_types import (
+from .cuda_runtime_types import (  # noqa: E402
     CUDAEvent_t,
     CUDAGraph_t,
     CUDAGraphExec_t,

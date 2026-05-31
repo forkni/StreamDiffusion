@@ -1,24 +1,44 @@
-version: 1.5.1
+version: 1.7.2
 source: F:\RD_PROJECTS\COMPONENTS\cuda-link\td_exporter\
-head_commit: 2d44ef8f29a8671601a58213b0ebd98da7eb8339
-vendored: 2026-05-22
+vendored: 2026-05-31
 
 NOTE: These files use flat-namespace imports (from SHMProtocol import ...) designed
 for TouchDesigner's Python environment where each Text DAT in a component is an
 importable module by its DAT name.  They cannot be imported as a regular Python
 package — there is intentionally no __init__.py here.
 
-To deploy into a .tox component: copy each file into a Text DAT whose name matches
-the filename (without .py), e.g. CUDAIPCExtension.py → Text DAT named CUDAIPCExtension.
-Use the upstream TOXES/CUDAIPCLink_v1.5.1.tox as the reference component template.
+LIBRARY MODE (v1.7.0+): With cuda_link installed via install_td_library.cmd (or
+pip install cuda_link), the COMP only needs the 6 core TD-glue DATs plus callback
+DATs.  The 14 mirror Text DATs (listed under files_mirror below) can be removed from
+the .tox — CUDALinkBootstrap.py injects sys.path and aliases them from the pip
+package.  Verify with: [CUDALinkBootstrap] Library mode active in the Textport.
 
-files_vendored:
-  ActivationBarrier.py
-  benchmark_timestamp.py
-  callbacks_template.py
-  CudaAdapters.py
-  CUDAGraphs.py
+CLASSIC/FALLBACK MODE: If no pip install is present, deploy ALL files (glue +
+mirrors + callbacks) as Text DATs.  CUDAIPCExtension.py detects the absent bootstrap
+and falls back to the DAT-based imports automatically.
+
+To deploy into a .tox component: copy each file into a Text DAT whose name matches
+the filename (without .py), e.g. CUDAIPCExtension.py -> Text DAT named CUDAIPCExtension.
+CUDALinkBootstrap must be the FIRST DAT loaded (first in COMP load order).
+Use the upstream TOXES/CUDAIPCLink_v1.7.2.tox as the reference component template.
+
+files_glue (always deploy — library mode):
+  CUDALinkBootstrap.py      <- NEW in v1.7.0; must be first DAT
   CUDAIPCExtension.py
+  TDHost.py
+  TDConfig.py
+  TDSender.py
+  TDReceiver.py
+
+files_callbacks (always deploy):
+  callbacks_template.py
+  parexecute_callbacks.py
+  script_top_callbacks.py
+
+files_mirror (classic/fallback mode only — not needed when cuda_link pip-installed):
+  ActivationBarrier.py
+  CUDAAdapters.py
+  CUDAGraphs.py
   CUDAIPCWrapper.py
   CUDARuntimeTypes.py
   Env.py
@@ -29,14 +49,10 @@ files_vendored:
   ImporterPort.py
   NVMLObserver.py
   NVTXShim.py
-  parexecute_callbacks.py
-  script_top_callbacks.py
   SHMProtocol.py
-  TDConfig.py
-  TDHost.py
-  TDReceiver.py
-  TDSender.py
-  warning_emitter_callbacks.py
+
+files_examples:
+  benchmark_timestamp.py
   _td_fakes.py
   example_receiver_launcher.py
   example_receiver_python.py

@@ -1,9 +1,10 @@
-version: 1.5.1
+version: 1.7.2
 source: F:\RD_PROJECTS\COMPONENTS\cuda-link
-head_commit: 2d44ef8f29a8671601a58213b0ebd98da7eb8339
-vendored: 2026-05-22
+head_commit: 9be8212d15253fa3b6c46b53a9774140e25100e1
+vendored: 2026-05-31
 files_vendored:
   __init__.py
+  _console.py
   _cuda_adapters.py
   _env.py
   _exporter_port.py
@@ -21,11 +22,17 @@ files_vendored:
   shm_protocol.py
 
 To re-sync: copy src/cuda_link/ from the source repo over this directory, then update head_commit and vendored date above.
-Remove any files present here that no longer exist upstream (e.g. cuda_ipc_exporter.py removed in v1.5.0).
+Remove any files present here that no longer exist upstream.
 
-RE-VENDORING TRAP (2026-05-23): After any re-vendoring, re-apply relative imports to these four files —
-upstream ships try/except dual-namespace blocks that break in SD's _compat/cuda_ipc/ package context:
-  cuda_ipc_wrapper.py: from ._env import env_bool; from .cuda_runtime_types import ...; from .cuda_graphs import CUDAGraphsMixin
-  cuda_graphs.py:      from .cuda_runtime_types import ...
-  nvml_observer.py:    from ._env import env_bool
+RE-VENDORING TRAP (2026-05-31): After any re-vendoring, re-apply relative imports to these three files —
+upstream ships try/except dual-namespace blocks that break in SD's _compat/cuda_ipc/ package context.
+Replace each dual-namespace try/except block with a single direct relative import:
+  cuda_ipc_wrapper.py:
+    - try/except for cuda_link._env / Env          → from ._env import env_bool
+    - try/except for CUDARuntimeTypes / cuda_link.cuda_runtime_types  → from .cuda_runtime_types import (...)
+    - try/except for cuda_link.cuda_graphs / CUDAGraphs               → from .cuda_graphs import CUDAGraphsMixin
+  cuda_graphs.py:
+    - try/except for cuda_link.cuda_runtime_types / CUDARuntimeTypes  → from .cuda_runtime_types import (...)
+  nvml_observer.py:
+    - try/except for cuda_link._env / Env          → from ._env import env_bool
 The td_exporter/ mirror is NOT patched (flat-namespace imports are correct there — TD COMP Text DATs).
