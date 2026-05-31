@@ -135,6 +135,8 @@ class StreamDiffusionWrapper:
         use_cuda_ipc_output: bool = False,
         cuda_ipc_shm_name: Optional[str] = None,
         cuda_ipc_num_slots: int = 2,
+        # Debug mode — gates IPC health tracking and other diagnostic instrumentation
+        debug_mode: bool = False,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -322,7 +324,8 @@ class StreamDiffusionWrapper:
         self._cuda_ipc_shm_name = cuda_ipc_shm_name
         self._cuda_ipc_num_slots = cuda_ipc_num_slots
         self._cuda_ipc_exporter = None  # lazy-init on first frame via _lazy_init_ipc_exporter
-        # IPC health tracking — updated per-frame in postprocess_image, read by get_ipc_health_status()
+        self.debug_mode = debug_mode
+        # IPC health tracking — updated per-frame only when debug_mode is True
         self._ipc_consecutive_failures: int = 0
         self._ipc_barrier_skip_count: int = 0
         self._ipc_graphs_degraded: bool = False
@@ -928,18 +931,20 @@ class StreamDiffusionWrapper:
             bgra = self._ipc_pack_rgba(image_tensor)
             exporter = self._lazy_init_ipc_exporter(bgra.shape[0], bgra.shape[1])
             outcome = exporter.export(GpuFrame(ptr=bgra.data_ptr(), size=bgra.numel()))
-            # Health tracking — defensive private-attr read; safe if vendored code changes.
-            self._ipc_graphs_degraded = getattr(exporter, "_graphs_disabled", False)
-            if outcome == FrameOutcome.PUBLISHED:
-                self._ipc_consecutive_failures = 0
-            elif outcome == FrameOutcome.FAILED:
-                self._ipc_consecutive_failures += 1
-                logger.warning(
-                    "CUDA IPC export failed (consecutive=%d); check GPU/SHM state",
-                    self._ipc_consecutive_failures,
-                )
-            elif outcome == FrameOutcome.SKIPPED_BARRIER:
-                self._ipc_barrier_skip_count += 1
+            if self.debug_mode:
+                # Health tracking — diagnostic only; gated behind debug_mode (par.Debugmode in TD UI).
+                # Reads private attr defensively; safe if vendored exporter.py is re-synced.
+                self._ipc_graphs_degraded = getattr(exporter, "_graphs_disabled", False)
+                if outcome == FrameOutcome.PUBLISHED:
+                    self._ipc_consecutive_failures = 0
+                elif outcome == FrameOutcome.FAILED:
+                    self._ipc_consecutive_failures += 1
+                    logger.warning(
+                        "CUDA IPC export failed (consecutive=%d); check GPU/SHM state",
+                        self._ipc_consecutive_failures,
+                    )
+                elif outcome == FrameOutcome.SKIPPED_BARRIER:
+                    self._ipc_barrier_skip_count += 1
             return None
 
         # Fast paths for non-PIL outputs (avoid unnecessary conversions)
