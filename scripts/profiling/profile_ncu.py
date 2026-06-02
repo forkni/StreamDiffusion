@@ -129,8 +129,10 @@ if args.config:
     target_cmd = [
         _PYTHON,
         os.path.join(_PROJECT_ROOT, "scripts", "profiling", "profile_nsys.py"),
-        "--target", "benchmark",
-        "--config", cfg_path,
+        "--target",
+        "benchmark",
+        "--config",
+        cfg_path,
     ]
     _target_label = f"config_{os.path.splitext(os.path.basename(args.config))[0]}"
 else:
@@ -138,16 +140,22 @@ else:
         "benchmark": [
             _PYTHON,
             os.path.join(_PROJECT_ROOT, "examples", "benchmark", "single.py"),
-            "--iterations", "1",
-            "--warmup", "0",
-            "--acceleration", "tensorrt",
+            "--iterations",
+            "1",
+            "--warmup",
+            "0",
+            "--acceleration",
+            "tensorrt",
         ],
         "infer": [
             _PYTHON,
             os.path.join(_PROJECT_ROOT, "examples", "benchmark", "single.py"),
-            "--iterations", "1",
-            "--warmup", "0",
-            "--acceleration", "tensorrt",
+            "--iterations",
+            "1",
+            "--warmup",
+            "0",
+            "--acceleration",
+            "tensorrt",
         ],
     }
     target_cmd = _TARGETS[args.target]
