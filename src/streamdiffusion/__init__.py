@@ -1,4 +1,4 @@
-from . import _compat  # noqa: F401 — applies kvo_cache patch before any diffusers import
+from . import _patches  # noqa: F401 — applies kvo_cache patch before any diffusers import
 from .config import create_wrapper_from_config, load_config, save_config
 from .pipeline import StreamDiffusion
 from .preprocessing.processors import list_preprocessors

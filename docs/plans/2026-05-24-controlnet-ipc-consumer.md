@@ -81,7 +81,7 @@ Changes inside `TouchDesignerManager`:
 
 **TD-side prerequisite (user-owned):** wire `shmem_out_cn` as a CUDA-IPC Sender publishing to
 `<stream>_control_ipc` (add `CUDAIPCExtension` + `cuda_ipc_parexec` ParExecute DAT, mirroring
-`shmem_out`; engine at `_compat/td_exporter/CUDAIPCExtension.py`). Until wired, the Python
+`shmem_out`; engine from pip `cuda_link` / `td_exporter/CUDAIPCExtension.py` canonical source). Until wired, the Python
 consumer logs "waiting for TD Sender" and uses CPU-SHM fallback.
 
 ### Part B — P3 GPU Canny hardening (`canny.py`)

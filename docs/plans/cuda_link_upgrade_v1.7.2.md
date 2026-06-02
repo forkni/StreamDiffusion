@@ -1,5 +1,8 @@
 # cuda-link v1.7.2 Integration Update — StreamDiffusion
 
+> **SUPERSEDED** — Upgraded to v1.8.1 with full vendoring removal (refactor: depend solely on
+> pip cuda-link v1.8.1, retire `_compat` mirrors). See `feat/cuda-ipc-output` commit history.
+
 ## Context
 
 The user upgraded the `cuda-link` library to **v1.7.2** (pip-installed in the project venv) and

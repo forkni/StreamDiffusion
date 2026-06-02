@@ -9,24 +9,24 @@ the StreamDiffusion implementation with MCP search and **identify + implement** 
 performance improvements.
 
 **Decisions captured:**
+
 - **Scope** = Python/PyTorch GPU efficiency (transfers, pinned memory, async overlap,
   redundant allocations, kernel fusion via existing torch ops, runtime flags). **No custom
   CUDA kernels.**
 - **Deliverable** = written report **and** implement everything found.
 - **Branch base** = cut the new branch from **`feat/cuda-ipc-output`** (it carries the
-  `_compat/cuda_ipc` module; the current branch `security/dep-audit-2026-05` does not).
+  cuda-link IPC integration; the current branch `security/dep-audit-2026-05` does not).
 
 **IPC reality (corrected):** the CUDA-IPC link **is** genuinely zero-copy — the importer
 builds *"per-slot zero-copy torch.Tensor views of GPU memory"* via
-`__cuda_array_interface__` (`src/streamdiffusion/_compat/cuda_ipc/importer.py:270-303`),
-and `CUDAIPCImporter.get_frame()` returns that **GPU tensor** (`cuda_ipc_importer.py:128`,
-docstring "Returns tensor"). The integration defeats it: the consumer calls
-`get_frame_numpy()` (`Scripts/streamdiffusionTD__Text__td_manager__td.py:682`), forcing a
-D2H copy to CPU numpy every frame, after which the input path re-uploads it. **The fix is
-in-reach and small** — consume `get_frame()` and keep the tensor on the GPU. The module
-lives only on `feat/cuda-ipc-output`; `_compat/td_exporter/` is synced into the
-distributed `.tox`, so TD-side changes ship in the binary. Note the consumer
-(`td_manager`) lives in the cwd `Scripts/` folder, **outside** the nested git repo.
+`__cuda_array_interface__` (pip `cuda_link.importer`, formerly
+`src/streamdiffusion/_compat/cuda_ipc/importer.py:270-303` — deleted in the v1.8.1
+refactor), and `Importer.open(ImportSpec).get_frame()` returns that **GPU tensor**.
+The integration defeats it: the consumer called `get_frame_numpy()` (forcing a D2H copy
+to CPU numpy every frame), after which the input path re-uploads it. **The fix is
+in-reach and small** — consume `get_frame()` and keep the tensor on the GPU. TD-side
+changes ship in the distributed `.tox`. Note the consumer (`td_manager`) lives in the
+cwd `Scripts/` folder, **outside** the nested git repo.
 
 ---
 
@@ -62,6 +62,7 @@ Currently none of `torch.backends.cuda.matmul.allow_tf32`, `torch.backends.cudnn
 `torch.backends.cudnn.benchmark`, `torch.set_float32_matmul_precision` are set anywhere.
 Benefits the PyTorch VAE/fallback paths and all preprocessing convs/`grid_sample` (UNet
 itself is TRT, so unaffected — safe). *Grounding: PMPP Ch. 5 roofline; CUDA HB Ch. 6.*
+
 - **File:** `src/streamdiffusion/pipeline.py` `StreamDiffusion.__init__` (~L57) or the
   wrapper init. Set TF32 on, `cudnn.benchmark=True`, `set_float32_matmul_precision("high")`.
 - Risk: **low**.
@@ -70,6 +71,7 @@ itself is TRT, so unaffected — safe). *Grounding: PMPP Ch. 5 roofline; CUDA HB
 `pipeline.py:1127-1130` does `end.record(); end.synchronize()` **every frame** purely to
 update `inference_time_ema` (consumed only by the similar-filter sleep at L1088). Per CUDA
 HB §6.1 this per-frame host stall breaks pipelining.
+
 - **Fix:** measure on a cadence (e.g. every 16th frame) and keep the EMA fed from those
   samples — preserves the sleep heuristic while removing ~15/16 of per-frame host stalls.
   `start.record()` stays cheap; only the blocking `end.synchronize()` is gated.
@@ -82,6 +84,7 @@ HB §6.1 this per-frame host stall breaks pipelining.
 "tensor" path. `canny.py:8` already carries `#TODO provide gpu native edge detection`.
 Sibling `soft_edge.py` already does GPU Sobel via `nn.Conv2d`. *Grounding: CUDA HB Ch. 11
 p. 353.*
+
 - **Fix:** implement Sobel-gradient magnitude + hysteresis-style thresholding on GPU
   (reuse the soft_edge Sobel pattern, or `kornia.filters.canny` if kornia is available),
   keyed off the existing `low_threshold`/`high_threshold` params. Keep the `cv2` CPU path
@@ -95,6 +98,7 @@ p. 353.*
 `td_manager._send_output_frame:750-761` does `output_image.cpu().numpy()` → CPU CHW→HWC
 transpose → CPU `*255 .astype(uint8)`. The float32 tensor is moved over PCIe, then scaled
 on the CPU. *Grounding: CUDA HB Ch. 5 (pinned) + Ch. 11 (fewer bytes).*
+
 - **Fix:** do `*255` + `uint8` cast + CHW→HWC **on the GPU**, then a single (pinned, if a
   reusable buffer fits) D2H copy of the uint8 frame. First confirm which output path is
   live — the wrapper already has a pinned uint8-NHWC path at `wrapper.py:928-933`; if that
@@ -108,6 +112,7 @@ on the CPU. *Grounding: CUDA HB Ch. 5 (pinned) + Ch. 11 (fewer bytes).*
 upload) before handing to `wrapper.img2img`. The pipeline already has a GPU-tensor fast
 path (`pipeline.py:1064-1079`) that **skips all preprocessing** when handed a normalized
 CUDA tensor of the right shape/dtype.
+
 - **Fix:** upload the uint8 frame to the GPU, do `/255` + layout/normalize on-device, and
   pass a GPU tensor so the fast path engages. Applies to the CPU-SHM fallback path (the
   IPC path is P6).
@@ -121,6 +126,7 @@ CUDA tensor of the right shape/dtype.
 (`importer.py:270-303` builds zero-copy torch views; `get_frame()` returns a GPU tensor),
 but `td_manager.py:682` calls `get_frame_numpy()` → D2H copy every frame, then P5
 re-uploads. *Grounding: CUDA HB Ch. 11 p. 353 — the canonical "don't round-trip" case.*
+
 - **Fix:** in the IPC branch of `_get_input_frame` (`td_manager.py:681-685`), call
   `get_frame()` to obtain the GPU tensor; strip alpha + permute to CHW + `/255` +
   dtype/range-normalize **on the GPU**; pass the resulting CUDA tensor straight into the
@@ -133,12 +139,14 @@ re-uploads. *Grounding: CUDA HB Ch. 11 p. 353 — the canonical "don't round-tri
 **P7. Confirm/enable IPC output export (likely already present).** `wrapper.py` on this
 branch has `_lazy_init_ipc_exporter` + `use_cuda_ipc_output`; when enabled the wrapper
 exports the frame via IPC and `_send_output_frame` receives `None` (`td_manager.py:744-745`).
+
 - **Action:** verify the IPC output path is wired and exercised end-to-end; only if a gap
   exists, route the GPU-side uint8 conversion (P4) into the exporter rather than CPU SHM.
   No reimplementation expected.
 - Risk: **low** (mostly verification).
 
 ### Not pursued (documented only)
+
 - Hot-loop micro-allocations (`stock_noise` cat `pipeline.py:989`, `x_t_latent_buffer`
   `:996`, CFG combine `:907`, `.float()` upcast in `scheduler_step_batch` `:697-706`): the
   loop is already aggressively pre-allocated; further micro-opt is high-regression-risk,
@@ -182,6 +190,7 @@ exports the frame via IPC and `_send_output_frame` receives `None` (`td_manager.
 **File path corrections.** This plan cited
 `Scripts/streamdiffusionTD__Text__td_manager__td.py` as a general reference, but the
 correct distinction is:
+
 - `Scripts/streamdiffusionTD__Text__td_manager__td.py` — **canonical TD Text-DAT source**
   (edits here sync to the running .tox immediately; this is where to make changes).
 - `StreamDiffusion/StreamDiffusionTD/td_manager.py` — **runtime target** written by TD on
@@ -190,6 +199,7 @@ correct distinction is:
 
 **P3 GPU Canny hardening (2026-05-24).**
 Two correctness bugs fixed in `src/streamdiffusion/preprocessing/processors/canny.py`:
+
 1. `mag / (mag.amax() + 1e-7)` → `(mag / 4.0).clamp(0.0, 1.0)` — fixed per-frame max
    normalization that made thresholds relative/flickering. New constant divisor (≈ max
    Sobel response for a [0,1] step edge) keeps thresholds stable across frames.
@@ -206,6 +216,7 @@ cause of the "no conditioning effect" regression.
 
 **ControlNet CUDA-IPC consumer implemented (2026-05-24).** The Python-side consumer was
 added to both td_manager copies:
+
 - `ipc_control_importer` / `_pending_ipc_control_name` state vars + throttled lazy-reconnect.
 - `_try_construct_ipc_control_importer()` helper (mirrors `_try_construct_ipc_importer`).
 - `_send_back_processed_controlnet()` helper (extracted from inline duplication).

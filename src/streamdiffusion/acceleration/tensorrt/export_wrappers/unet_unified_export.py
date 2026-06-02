@@ -3,7 +3,7 @@ from typing import List, Optional
 import torch
 from diffusers import UNet2DConditionModel
 
-from streamdiffusion._compat.diffusers_kvo_patch import apply as _apply_kvo_patch
+from streamdiffusion._patches.diffusers_kvo_patch import apply as _apply_kvo_patch
 
 
 _apply_kvo_patch()  # ensure kvo_cache patch is present even if diffusers was imported first
