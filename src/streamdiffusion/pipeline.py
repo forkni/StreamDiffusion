@@ -50,7 +50,7 @@ class StreamDiffusion:
         normalize_seed_weights: bool = True,
         scheduler: Literal["lcm", "tcd"] = "lcm",
         sampler: Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"] = "normal",
-        kvo_cache: List[torch.Tensor] = [],
+        kvo_cache: Optional[List[torch.Tensor]] = None,
         cache_interval: int = 1,
         cache_maxframes: int = 1,
     ) -> None:
@@ -173,7 +173,7 @@ class StreamDiffusion:
         self._cached_cfg_type: Optional[str] = None
         self._cached_guidance_scale: Optional[float] = None
 
-        self.kvo_cache = kvo_cache
+        self.kvo_cache = kvo_cache if kvo_cache is not None else []
         self._kvo_buckets = None
         self._kvo_outputs_by_bucket = None
         self.cache_interval = cache_interval
