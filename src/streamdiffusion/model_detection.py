@@ -246,12 +246,12 @@ def detect_model_from_diffusers_unet(unet: UNet2DConditionModel) -> str:
         return "SD21"
 
     if cross_attention_dim == 768:
-        print(
+        logger.warning(
             f"detect_model_from_diffusers_unet: Unknown SD1.5-like model with channels {block_out_channels}, defaulting to SD15"
         )
         return "SD15"
     elif cross_attention_dim == 1024:
-        print(
+        logger.warning(
             f"detect_model_from_diffusers_unet: Unknown SD2.1-like model with channels {block_out_channels}, defaulting to SD21"
         )
         return "SD21"
