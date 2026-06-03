@@ -339,6 +339,9 @@ class StreamDiffusionWrapper:
         self.set_nsfw_fallback_img(height, width)
         self.safety_checker_fallback_type = safety_checker_fallback_type
         self.safety_checker_threshold = safety_checker_threshold
+        # Caches the last clean (non-flagged) pipeline tensor for the "previous" fallback strategy.
+        # Operates in diffusion range [-1, 1]; set by _apply_safety_checker().
+        self._prev_clean_tensor: Optional[torch.Tensor] = None
         self.fp8 = fp8
         self.static_shapes = static_shapes
         self.fp8_allow_fp16_fallback = fp8_allow_fp16_fallback
@@ -824,17 +827,8 @@ class StreamDiffusionWrapper:
         else:
             image_tensor = self.stream.txt2img(self.frame_buffer_size)
 
+        image_tensor = self._apply_safety_checker(image_tensor)
         image = self.postprocess_image(image_tensor, output_type=self.output_type)
-
-        if self.use_safety_checker:
-            if self.output_type != "pt":
-                denormalized_image_tensor = (image_tensor / 2 + 0.5).clamp(0, 1).to(self.device)
-            else:
-                denormalized_image_tensor = image
-            if self.safety_checker(denormalized_image_tensor, self.safety_checker_threshold):
-                image = self.nsfw_fallback_img
-            elif self.safety_checker_fallback_type == "previous":
-                self.nsfw_fallback_img = image
 
         return image
 
@@ -865,17 +859,8 @@ class StreamDiffusionWrapper:
 
         # Full pipeline with diffusion
         image_tensor = self.stream(image)
+        image_tensor = self._apply_safety_checker(image_tensor)
         image = self.postprocess_image(image_tensor, output_type=self.output_type)
-        if self.use_safety_checker:
-            if self.output_type != "pt":
-                denormalized_image_tensor = (image_tensor / 2 + 0.5).clamp(0, 1).to(self.device)
-            else:
-                denormalized_image_tensor = image
-            if self.safety_checker(denormalized_image_tensor, self.safety_checker_threshold):
-                image = self.nsfw_fallback_img
-                logger.info(f"NSFW content detected, falling back to {self.nsfw_fallback_img} frame")
-            elif self.safety_checker_fallback_type == "previous":
-                self.nsfw_fallback_img = image
 
         return image
 
@@ -1135,6 +1120,43 @@ class StreamDiffusionWrapper:
                 pil_images.append(Image.fromarray(img_array))
 
         return pil_images
+
+    def _apply_safety_checker(self, image_tensor: torch.Tensor) -> torch.Tensor:
+        """Run the NSFW check on the raw pipeline tensor and substitute a fallback if flagged.
+
+        This MUST be called *before* postprocess_image so that the substitution also covers the
+        CUDA-IPC export path: postprocess_image() exports the frame inside its own body and
+        returns None, making any post-hoc substitution unreachable and unsafe.
+
+        Parameters
+        ----------
+        image_tensor : torch.Tensor
+            Raw pipeline output in diffusion range [-1, 1], NCHW.
+
+        Returns
+        -------
+        torch.Tensor
+            The original tensor when content is clean, or a fallback tensor (previous clean
+            frame, or all-black encoded as -1.0 in diffusion range) when content is flagged.
+        """
+        if not self.use_safety_checker:
+            return image_tensor
+
+        # Denormalize to [0, 1] NCHW for the classifier; stays on GPU.
+        denormalized = self._denormalize_on_gpu(image_tensor)
+
+        if self.safety_checker(denormalized, self.safety_checker_threshold):
+            logger.info("NSFW content detected, applying safety fallback frame")
+            if self.safety_checker_fallback_type == "previous" and self._prev_clean_tensor is not None:
+                return self._prev_clean_tensor
+            # -1.0 in diffusion range → 0.0 after denormalization → true black on every output
+            # path (pt, np, pil, CUDA-IPC).
+            return torch.full_like(image_tensor, -1.0)
+
+        # Content is clean — cache it for the "previous" fallback strategy.
+        if self.safety_checker_fallback_type == "previous":
+            self._prev_clean_tensor = image_tensor.clone()
+        return image_tensor
 
     def set_nsfw_fallback_img(self, height: int, width: int) -> None:
         """
