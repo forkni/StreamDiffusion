@@ -1035,7 +1035,7 @@ class StreamDiffusionWrapper:
             try:
                 self._cuda_ipc_exporter.close()
             except Exception:
-                pass
+                logger.debug("cleanup_cuda_ipc: _cuda_ipc_exporter.close() failed", exc_info=True)
             self._cuda_ipc_exporter = None
 
     def _denormalize_on_gpu(self, image_tensor: torch.Tensor) -> torch.Tensor:
@@ -1544,7 +1544,7 @@ class StreamDiffusionWrapper:
                 try:
                     stream.pipe.unload_lora_weights()
                 except Exception:
-                    pass
+                    logger.debug("LoRA cleanup: unload_lora_weights() failed after merge failure", exc_info=True)
 
         if use_tiny_vae:
             if vae_id is not None:
@@ -2625,7 +2625,7 @@ class StreamDiffusionWrapper:
                 self.stream._param_updater.clear_caches()
                 logger.info("   Cleared prompt caches")
             except Exception:
-                pass
+                logger.debug("cleanup_gpu_memory: clear_caches() failed", exc_info=True)
 
         # Enhanced TensorRT engine cleanup
         if hasattr(self, "stream") and self.stream:
@@ -2700,7 +2700,7 @@ class StreamDiffusionWrapper:
                 del self.stream
                 logger.info("   Cleared stream object")
             except Exception:
-                pass
+                logger.debug("cleanup_gpu_memory: del self.stream failed", exc_info=True)
             self.stream = None
 
         # Release wrapper-level frame buffers so the next model swap allocates fresh
