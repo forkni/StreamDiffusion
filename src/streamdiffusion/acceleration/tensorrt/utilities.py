@@ -43,13 +43,14 @@ from PIL import Image
 from polygraphy import cuda
 from polygraphy.backend.common import bytes_from_path
 from polygraphy.backend.trt import engine_from_bytes
+from polygraphy.backend.trt.util import get_trt_logger
 
 from .models.models import CLIP, VAE, BaseModel, UNet, VAEEncoder
 
 
 logger = logging.getLogger(__name__)
 
-TRT_LOGGER = trt.Logger(trt.Logger.ERROR)
+TRT_LOGGER = get_trt_logger()  # polygraphy singleton — shared with engine_from_bytes()
 
 from ...model_detection import detect_model
 
@@ -624,13 +625,12 @@ class Engine:
         # set_preview_feature, or SPARSE_WEIGHTS. We use the raw API (same as
         # the FP8 path) so all parameters are available for both precision paths.
 
-        build_logger = trt.Logger(trt.Logger.WARNING)
-        builder = trt.Builder(build_logger)
+        builder = trt.Builder(TRT_LOGGER)
 
         network_flags = 0
         network = builder.create_network(network_flags)
 
-        parser = trt.OnnxParser(network, build_logger)
+        parser = trt.OnnxParser(network, TRT_LOGGER)
         parser.set_flag(trt.OnnxParserFlag.NATIVE_INSTANCENORM)
         success = parser.parse_from_file(onnx_path)
         if not success:
@@ -732,16 +732,14 @@ class Engine:
             gpu_profile: Hardware-aware build parameters from detect_gpu_profile().
             dynamic_shapes: Whether the engine uses dynamic input shapes.
         """
-        build_logger = trt.Logger(trt.Logger.WARNING)
-
-        builder = trt.Builder(build_logger)
+        builder = trt.Builder(TRT_LOGGER)
 
         # STRONGLY_TYPED: required for FP8. Tells TRT to use the data-type annotations
         # from Q/DQ nodes rather than running its own precision heuristics.
         network_flags = 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
         network = builder.create_network(network_flags)
 
-        parser = trt.OnnxParser(network, build_logger)
+        parser = trt.OnnxParser(network, TRT_LOGGER)
         # NATIVE_INSTANCENORM: use TRT's fused InstanceNorm/GroupNorm kernel instead
         # of decomposing into primitive ops. Diffusion UNets use GroupNorm heavily.
         parser.set_flag(trt.OnnxParserFlag.NATIVE_INSTANCENORM)

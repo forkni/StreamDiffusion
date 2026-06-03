@@ -11,6 +11,7 @@ import torch
 
 from .models.models import BaseModel
 from .utilities import (
+    TRT_LOGGER,
     build_engine,
     export_onnx,
     optimize_onnx,
@@ -291,7 +292,7 @@ class EngineBuilder:
 
                 import tensorrt as trt
 
-                _rt = trt.Runtime(trt.Logger(trt.Logger.WARNING))
+                _rt = trt.Runtime(TRT_LOGGER)
                 with open(engine_path, "rb") as _f:
                     _eng = _rt.deserialize_cuda_engine(_f.read())
                 _insp = _eng.create_engine_inspector()
