@@ -177,3 +177,57 @@ class TestApplySafetyChecker:
         w._apply_safety_checker(dummy)
 
         assert w._prev_clean_tensor is None, "_prev_clean_tensor should stay None when fallback_type='blank'"
+
+    # ── Case 9: _process_skip_diffusion wiring — checker is called, result is black ──
+    def test_skip_diffusion_routes_through_safety_checker(self):
+        """
+        Verify that _process_skip_diffusion actually feeds its tensor through
+        _apply_safety_checker before postprocess_image, and that a flagged frame
+        produces the black substitution rather than passing through unscreened.
+
+        This is a wiring test — the behaviour of _apply_safety_checker itself is
+        covered by the earlier cases.  We stub all model-dependent calls with
+        identity/no-op lambdas so the test is CPU-only and model-free.
+        """
+        received: list = []
+
+        def capturing_checker(tensor, thr):
+            received.append(tensor)
+            return True  # always flag
+
+        w = _make_wrapper(fallback_type="blank")
+        w.safety_checker = capturing_checker
+        w.mode = "img2img"
+        w.device = torch.device("cpu")
+        w.dtype = torch.float32
+
+        # Stub the stream's pre/post hooks to identity
+        class _FakeStream:
+            def _apply_image_preprocessing_hooks(self, t):
+                return t
+
+            def _apply_image_postprocessing_hooks(self, t):
+                return t
+
+        w.stream = _FakeStream()
+
+        # _normalize_on_gpu / _denormalize_on_gpu are identity for this test
+        w._normalize_on_gpu = lambda t: t
+        w._denormalize_on_gpu = lambda t: t
+
+        # postprocess_image returns its input so we can inspect the tensor
+        w.postprocess_image = lambda t, output_type=None: t
+        w.output_type = "pt"
+
+        dummy_image = torch.randn(1, 3, 64, 64)
+        result = w._process_skip_diffusion(dummy_image)
+
+        # Checker must have been called exactly once with a real tensor
+        assert len(received) == 1, "safety checker should be called exactly once"
+        assert isinstance(received[0], torch.Tensor), "checker arg must be a Tensor, not None"
+
+        # Flagged frame must produce the black substitution (all -1.0 → denorm 0.0)
+        denorm = (result / 2 + 0.5).clamp(0, 1)
+        assert torch.allclose(denorm, torch.zeros_like(denorm)), (
+            "flagged skip-diffusion frame should produce a black output"
+        )

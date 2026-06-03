@@ -336,7 +336,6 @@ class StreamDiffusionWrapper:
         self.use_denoising_batch = use_denoising_batch
         # safety checker is only supported for TensorRT acceleration
         self.use_safety_checker = use_safety_checker and (acceleration == "tensorrt")
-        self.set_nsfw_fallback_img(height, width)
         self.safety_checker_fallback_type = safety_checker_fallback_type
         self.safety_checker_threshold = safety_checker_threshold
         # Caches the last clean (non-flagged) pipeline tensor for the "previous" fallback strategy.
@@ -773,8 +772,6 @@ class StreamDiffusionWrapper:
             The processed image with hooks applied.
         """
 
-        # TODO: add safety checker call somewhere in this method
-
         if self.mode == "txt2img":
             raise RuntimeError(
                 "_process_skip_diffusion: skip_diffusion mode not applicable for txt2img - no input image"
@@ -800,6 +797,9 @@ class StreamDiffusionWrapper:
 
         # Apply image postprocessing hooks (expect [-1,1] range - post-VAE decoding)
         processed_tensor = self.stream._apply_image_postprocessing_hooks(processed_tensor)
+
+        # Screen skip-diffusion output too (raw [-1, 1] tensor, before postprocess/IPC export).
+        processed_tensor = self._apply_safety_checker(processed_tensor)
 
         # Final postprocessing for output format
         return self.postprocess_image(processed_tensor, output_type=self.output_type)
@@ -1157,30 +1157,6 @@ class StreamDiffusionWrapper:
         if self.safety_checker_fallback_type == "previous":
             self._prev_clean_tensor = image_tensor.clone()
         return image_tensor
-
-    def set_nsfw_fallback_img(self, height: int, width: int) -> None:
-        """
-        Set the NSFW fallback image used when safety checker blocks content.
-
-        Creates a black RGB image of the specified dimensions that will be returned
-        when the safety checker determines content should be blocked.
-
-        Parameters
-        ----------
-        height : int
-            Height of the fallback image in pixels.
-        width : int
-            Width of the fallback image in pixels.
-
-        Returns
-        -------
-        None
-        """
-        self.nsfw_fallback_img = Image.new("RGB", (height, width), (0, 0, 0))
-        if self.output_type == "pt":
-            self.nsfw_fallback_img = torch.from_numpy(np.array(self.nsfw_fallback_img)).unsqueeze(0)
-        elif self.output_type == "np":
-            self.nsfw_fallback_img = np.expand_dims(np.array(self.nsfw_fallback_img), axis=0)
 
     def _load_model(
         self,
