@@ -169,7 +169,7 @@ def detect_model(model: torch.nn.Module, pipe: Optional[Any] = None) -> Dict[str
     return result
 
 
-def detect_unet_characteristics(unet: UNet2DConditionModel) -> Dict[str, any]:
+def detect_unet_characteristics(unet: UNet2DConditionModel) -> Dict[str, Any]:
     """Detect detailed UNet characteristics including SDXL-specific features"""
     config = unet.config
 
