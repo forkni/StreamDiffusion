@@ -379,12 +379,18 @@ def validate_architecture(arch_dict: Dict[str, Any], model_type: str) -> Dict[st
                 else:
                     arch_dict[key] = tuple(arch_dict[key])
             else:
-                arch_dict[key] = preset[key]
+                raise ValueError(
+                    f"validate_architecture: '{key}' has unsupported type {type(arch_dict[key]).__name__!r}; "
+                    f"expected list, int, or tuple"
+                )
 
     # Validate sequence lengths match
     expected_levels = len(arch_dict["channel_mult"])
     for key in ["num_res_blocks", "transformer_depth"]:
         if key in arch_dict and len(arch_dict[key]) != expected_levels:
-            arch_dict[key] = preset[key]
+            raise ValueError(
+                f"validate_architecture: '{key}' has {len(arch_dict[key])} levels but "
+                f"'channel_mult' has {expected_levels}; they must match"
+            )
 
     return arch_dict
