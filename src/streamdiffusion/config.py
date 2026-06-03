@@ -498,8 +498,8 @@ def _validate_config(config: Dict[str, Any]) -> None:
                 if not isinstance(seed_value, int) or seed_value < 0:
                     raise ValueError(f"_validate_config: Seed value {i} must be a non-negative integer")
 
-            if not isinstance(weight, (int, float)) or weight < 0:
-                raise ValueError(f"_validate_config: Seed weight {i} must be a non-negative number")
+                if not isinstance(weight, (int, float)) or weight < 0:
+                    raise ValueError(f"_validate_config: Seed weight {i} must be a non-negative number")
 
         interpolation_method = seed_blend_config.get("interpolation_method", "linear")
         if interpolation_method not in ["linear", "slerp"]:
