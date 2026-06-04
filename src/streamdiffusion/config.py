@@ -155,6 +155,13 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Feature Injection (StreamV2V §3.4.2) — requires use_cached_attn=True
     param_map["use_feature_injection"] = config.get("use_feature_injection", False)
+    # fi_strength: blend weight α (thesis §3.4.2 Eq 3.2, default 0.8; thesis uses 0.75).
+    # fi_threshold: cosine-similarity gate below which injection is skipped (default 0.98).
+    param_map["fi_strength"] = config.get("fi_strength", 0.8)
+    param_map["fi_threshold"] = config.get("fi_threshold", 0.98)
+    # max_cache_maxframes: allocation cap for the KVO/FI cache ring buffers (VRAM).
+    # cache_maxframes is the live logical write window; this is the hard upper bound.
+    param_map["max_cache_maxframes"] = config.get("max_cache_maxframes", 4)
 
 
     # Pipeline hook configurations (Phase 4: Configuration Integration)
