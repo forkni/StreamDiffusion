@@ -145,14 +145,18 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         param_map['use_ipadapter'] = True
         param_map['ipadapter_config'] = _prepare_ipadapter_configs(config)
     else:
-        param_map['use_ipadapter'] = config.get('use_ipadapter', False)
-        param_map['ipadapter_config'] = config.get('ipadapter_config')
-    
-    param_map['use_cached_attn'] = config.get('use_cached_attn', False)
-    
-    param_map['cache_maxframes'] = config.get('cache_maxframes', 1)
-    param_map['cache_interval'] = config.get('cache_interval', 1)
-    
+        param_map["use_ipadapter"] = config.get("use_ipadapter", False)
+        param_map["ipadapter_config"] = config.get("ipadapter_config")
+
+    param_map["use_cached_attn"] = config.get("use_cached_attn", False)
+
+    param_map["cache_maxframes"] = config.get("cache_maxframes", 1)
+    param_map["cache_interval"] = config.get("cache_interval", 1)
+
+    # Feature Injection (StreamV2V §3.4.2) — requires use_cached_attn=True
+    param_map["use_feature_injection"] = config.get("use_feature_injection", False)
+
+
     # Pipeline hook configurations (Phase 4: Configuration Integration)
     hook_configs = _prepare_pipeline_hook_configs(config)
     param_map.update(hook_configs)
