@@ -1,9 +1,12 @@
+import logging
 import os
 import sys
 import yaml
 import json
 from typing import Dict, List, Optional, Union, Any, Tuple
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 def load_config(config_path: Union[str, Path]) -> Dict[str, Any]:
     """Load StreamDiffusion configuration from YAML or JSON file"""
@@ -147,12 +150,19 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
     else:
         param_map['use_ipadapter'] = config.get('use_ipadapter', False)
         param_map['ipadapter_config'] = config.get('ipadapter_config')
-    
+
     param_map['use_cached_attn'] = config.get('use_cached_attn', False)
-    
+
     param_map['cache_maxframes'] = config.get('cache_maxframes', 1)
     param_map['cache_interval'] = config.get('cache_interval', 1)
-    
+    # cn_cache_interval: ControlNet residual reuse interval.
+    # 1 (default) = disabled, run CN every frame.
+    # N > 1 = run CN once every N frames; reuse residuals between (control latency = N-1 frames).
+    param_map['cn_cache_interval'] = config.get('cn_cache_interval', 1)
+    # max_cache_maxframes: allocation cap for the KVO/FI cache ring buffers (VRAM).
+    # cache_maxframes is the live logical write window; this is the hard upper bound.
+    param_map['max_cache_maxframes'] = config.get('max_cache_maxframes', 4)
+
     # Pipeline hook configurations (Phase 4: Configuration Integration)
     hook_configs = _prepare_pipeline_hook_configs(config)
     param_map.update(hook_configs)
