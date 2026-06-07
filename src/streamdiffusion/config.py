@@ -130,9 +130,9 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         'static_shapes': config.get('static_shapes', False),
         'fp8': config.get('fp8', False),
         'builder_optimization_level': config.get('builder_optimization_level'),
+        'vae_builder_optimization_level': config.get('vae_builder_optimization_level', 3),
         'build_engines_if_missing': config.get('build_engines_if_missing', True),
-        'fp8_allow_fp16_fallback': config.get('fp8_allow_fp16_fallback', False),
-    }
+        'fp8_allow_fp16_fallback': config.get('fp8_allow_fp16_fallback', False),    }
     if 'controlnets' in config and config['controlnets']:
         param_map['use_controlnet'] = True
         param_map['controlnet_config'] = _prepare_controlnet_configs(config)
