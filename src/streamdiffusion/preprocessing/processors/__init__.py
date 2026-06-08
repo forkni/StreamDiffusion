@@ -13,6 +13,7 @@ from .ipadapter_embedding import IPAdapterEmbeddingPreprocessor
 from .faceid_embedding import FaceIDEmbeddingPreprocessor
 from .feedback import FeedbackPreprocessor
 from .latent_feedback import LatentFeedbackPreprocessor
+from .scribble import ScribblePreprocessor
 from .sharpen import SharpenPreprocessor
 from .upscale import UpscalePreprocessor
 from .blur import BlurPreprocessor
@@ -65,6 +66,7 @@ _preprocessor_registry = {
     "external": ExternalPreprocessor,
     "soft_edge": SoftEdgePreprocessor,
     "hed": HEDPreprocessor,
+    "scribble": ScribblePreprocessor,
     "feedback": FeedbackPreprocessor,
     "latent_feedback": LatentFeedbackPreprocessor,
     "sharpen": SharpenPreprocessor,
@@ -168,6 +170,7 @@ __all__ = [
     "ExternalPreprocessor",
     "SoftEdgePreprocessor",
     "HEDPreprocessor",
+    "ScribblePreprocessor",
     "IPAdapterEmbeddingPreprocessor",
     "FaceIDEmbeddingPreprocessor",
     "FeedbackPreprocessor",
