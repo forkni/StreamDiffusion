@@ -158,7 +158,8 @@ class SoftEdgePreprocessor(BasePreprocessor):
     Uses multi-scale Sobel operations for extremely fast soft edge detection
     that mimics HED output quality at 50x+ the speed.
     """
-    
+
+    gpu_native = True  # _process_tensor_core uses torch ops under no_grad — no PIL round-trip
     _model_cache = {}
     
     @classmethod
