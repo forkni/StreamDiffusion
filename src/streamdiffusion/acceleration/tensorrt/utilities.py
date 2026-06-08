@@ -51,7 +51,29 @@ logger = logging.getLogger(__name__)
 
 TRT_LOGGER = trt.Logger(trt.Logger.ERROR)
 
-from ...model_detection import detect_model
+
+class _BuildLogFilter(trt.ILogger):
+    """Forwards TRT build messages to polygraphy's logger, dropping the known-benign
+    myelin tactic-skip spam (TRT 10.x catches this exception, skips the tactic, and
+    still builds a correct engine). Counts drops so the build can report a one-line
+    summary instead of ~140 identical [E] lines per VAE engine."""
+
+    # Match the inner message text (polygraphy adds the "[E]" prefix itself).
+    _BENIGN = ("setupProxyGraph", "g.nodes.size() == 0")
+
+    def __init__(self, inner):
+        trt.ILogger.__init__(self)
+        self._inner = inner
+        self.suppressed = 0
+
+    def log(self, severity, msg):
+        if all(s in msg for s in self._BENIGN):
+            self.suppressed += 1
+            return
+        self._inner.log(severity, msg)
+
+
+from ...model_detection import detect_model  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -624,7 +646,7 @@ class Engine:
         # set_preview_feature, or SPARSE_WEIGHTS. We use the raw API (same as
         # the FP8 path) so all parameters are available for both precision paths.
 
-        build_logger = trt.Logger(trt.Logger.WARNING)
+        build_logger = _BuildLogFilter(TRT_LOGGER)
         builder = trt.Builder(build_logger)
 
         network_flags = 0
@@ -689,6 +711,11 @@ class Engine:
         serialized = builder.build_serialized_network(network, config)
         if serialized is None:
             raise RuntimeError(f"TRT FP16 engine build failed for {onnx_path}. Check TRT logs above for details.")
+        if build_logger.suppressed:
+            logger.info(
+                f"[TRT Build] Suppressed {build_logger.suppressed} benign myelin tactic-skip "
+                f"messages (TRT Error Code 9 / setupProxyGraph) — engine built normally."
+            )
 
         with open(self.engine_path, "wb") as f:
             f.write(serialized)
@@ -732,8 +759,12 @@ class Engine:
             gpu_profile: Hardware-aware build parameters from detect_gpu_profile().
             dynamic_shapes: Whether the engine uses dynamic input shapes.
         """
+<<<<<<< HEAD
         build_logger = trt.Logger(trt.Logger.WARNING)
 
+=======
+        build_logger = _BuildLogFilter(TRT_LOGGER)
+>>>>>>> eacf9cc (fix: filter benign TRT myelin tactic-skip spam from VAE engine builds)
         builder = trt.Builder(build_logger)
 
         # STRONGLY_TYPED: required for FP8. Tells TRT to use the data-type annotations
@@ -804,6 +835,11 @@ class Engine:
         serialized = builder.build_serialized_network(network, config)
         if serialized is None:
             raise RuntimeError(f"TRT FP8 engine build failed for {onnx_path}. Check TRT logs above for details.")
+        if build_logger.suppressed:
+            logger.info(
+                f"[TRT Build] Suppressed {build_logger.suppressed} benign myelin tactic-skip "
+                f"messages (TRT Error Code 9 / setupProxyGraph) — engine built normally."
+            )
 
         with open(self.engine_path, "wb") as f:
             f.write(serialized)
