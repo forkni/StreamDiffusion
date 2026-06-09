@@ -9,9 +9,14 @@ logger = logging.getLogger(__name__)
 
 try:
     import tensorrt as trt
+
+    from streamdiffusion.acceleration.tensorrt.utilities import BUILD_TRT_LOGGER
+
+
     TENSORRT_AVAILABLE = True
 except ImportError:
     TENSORRT_AVAILABLE = False
+    BUILD_TRT_LOGGER = None
     logger.error("TensorRT not available. Please install it first.")
 
 try:
@@ -143,10 +148,11 @@ def build_tensorrt_engine(
     logger.info("This may take several minutes...")
     
     try:
-        builder = trt.Builder(trt.Logger(trt.Logger.INFO))
+        builder = trt.Builder(BUILD_TRT_LOGGER)
         network = builder.create_network()  # EXPLICIT_BATCH deprecated/ignored in TRT 10.x
-        parser = trt.OnnxParser(network, trt.Logger(trt.Logger.WARNING))
-        
+        parser = trt.OnnxParser(network, BUILD_TRT_LOGGER)
+
+
         logger.info("Parsing ONNX model...")
         with open(onnx_path, 'rb') as model:
             if not parser.parse(model.read()):
