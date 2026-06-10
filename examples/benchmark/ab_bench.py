@@ -22,6 +22,9 @@ GPU_PROFILER=1 python examples/benchmark/ab_bench.py \\
     --style-image /path/to/style.jpg \\
     --output-dir examples/benchmark/results
 
+# Save output frames as PNGs for visual before/after comparison:
+python examples/benchmark/ab_bench.py --save-goldens --n-golden-frames 5
+
 READING RESULTS
 ---------------
 Each run writes:
@@ -59,7 +62,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -147,13 +150,45 @@ def _fps_stats(frame_ms_stats: Dict[str, float]) -> Dict[str, float]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+def _to_pil(frame: Any) -> "Optional[PIL.Image.Image]":
+    """Best-effort conversion of a pipeline output to PIL Image for golden saving."""
+    import PIL.Image
+
+    if isinstance(frame, PIL.Image.Image):
+        return frame
+    if isinstance(frame, np.ndarray):
+        arr = frame
+        if arr.dtype != np.uint8:
+            arr = (arr * 255).clip(0, 255).astype(np.uint8)
+        if arr.ndim == 3 and arr.shape[0] in (1, 3, 4):
+            arr = arr.transpose(1, 2, 0)  # CHW → HWC
+        return PIL.Image.fromarray(arr.squeeze())
+    if hasattr(frame, "cpu"):  # torch.Tensor
+        arr = frame.cpu().float().numpy()
+        if arr.max() <= 1.0:
+            arr = (arr * 255).clip(0, 255).astype(np.uint8)
+        else:
+            arr = arr.clip(0, 255).astype(np.uint8)
+        if arr.ndim == 3 and arr.shape[0] in (1, 3, 4):
+            arr = arr.transpose(1, 2, 0)
+        return PIL.Image.fromarray(arr.squeeze())
+    return None
+
+
 def _run_loop(
     stream: Any,
     image_tensor: Any,
     iterations: int,
     warmup: int,
-) -> List[float]:
-    """Warmup then time `iterations` frames; return per-frame ms list."""
+    n_capture: int = 0,
+) -> Tuple[List[float], List[Any]]:
+    """Warmup then time `iterations` frames.
+
+    Returns
+    -------
+    frame_times : list of per-frame ms values (length == iterations)
+    captured    : first ``n_capture`` raw pipeline outputs (empty when n_capture=0)
+    """
 
     # ── warmup (no timing) ─────────────────────────────────────────────────
     print(f"[ab_bench] Warming up ({warmup} frames)…")
@@ -167,15 +202,18 @@ def _run_loop(
     start_evt = torch.cuda.Event(enable_timing=True)
     end_evt = torch.cuda.Event(enable_timing=True)
     frame_times: List[float] = []
+    captured: List[Any] = []
 
     for _ in tqdm(range(iterations)):
         start_evt.record()
-        stream(image=image_tensor)
+        output = stream(image=image_tensor)
         end_evt.record()
         torch.cuda.synchronize()
         frame_times.append(start_evt.elapsed_time(end_evt))
+        if n_capture > 0 and len(captured) < n_capture:
+            captured.append(output)
 
-    return frame_times
+    return frame_times, captured
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -200,6 +238,9 @@ def run(
     # ── behaviour flags ────────────────────────────────────────────────────
     gpu_profiler: bool = False,
     nvtx: bool = False,
+    # ── golden capture ─────────────────────────────────────────────────────
+    save_goldens: bool = False,
+    n_golden_frames: int = 5,
 ) -> None:
     """
     A/B benchmark harness for StreamDiffusion performance improvements.
@@ -236,6 +277,14 @@ def run(
         NVTX is off by default; set --nvtx to enable (breaks CUDA graphs).
     nvtx : bool
         Enable NVTX markers (only useful for Nsight Systems; disable with CUDA graphs).
+    save_goldens : bool
+        Capture the first ``n_golden_frames`` output frames and save them as
+        PNG files alongside the JSON result.  Useful for visual before/after
+        comparison after pipeline changes (e.g. the antialias resize fix).
+        Files are named ``<sha>_<cfg_hash>_golden_NN.png`` in ``output_dir``.
+    n_golden_frames : int
+        Number of output frames to capture when ``--save-goldens`` is set.
+        Default 5.
     """
     # ── activate profiler (env var takes precedence, flag is an alternative) ─
     _prof_configure(enabled=gpu_profiler, nvtx=nvtx)  # reads GPU_PROFILER env internally
@@ -308,7 +357,8 @@ def run(
         stream.update_style_image(pil_style)
 
     # ── run the loop ───────────────────────────────────────────────────────
-    frame_times = _run_loop(stream, image_tensor, iterations, warmup)
+    n_capture = n_golden_frames if save_goldens else 0
+    frame_times, captured_frames = _run_loop(stream, image_tensor, iterations, warmup, n_capture)
 
     # ── flush profiler and collect region stats ────────────────────────────
     profiler.flush()
@@ -359,6 +409,21 @@ def run(
 
     with open(result_path, "w") as fh:
         json.dump(result, fh, indent=2)
+
+    # ── save goldens ───────────────────────────────────────────────────────
+    if save_goldens and captured_frames:
+        import PIL.Image  # noqa: F811  (PIL already imported transitively above)
+
+        saved = 0
+        for i, frame in enumerate(captured_frames):
+            pil = _to_pil(frame)
+            if pil is None:
+                print(f"[ab_bench] --save-goldens: cannot serialise frame {i} (type {type(frame).__name__}), skipping")
+                continue
+            golden_path = out_path / f"{sha}_{cfg_hash}_golden_{i:02d}.png"
+            pil.save(str(golden_path))
+            saved += 1
+        print(f"[ab_bench] {saved}/{len(captured_frames)} goldens saved to {out_path}/")
 
     # ── human-readable summary ─────────────────────────────────────────────
     print()
