@@ -2,6 +2,7 @@ from typing import Union, Tuple, Optional, Any
 import torch
 from PIL import Image
 from .base import BasePreprocessor
+from streamdiffusion.tools.gpu_profiler import profiler
 
 
 class IPAdapterEmbeddingPreprocessor(BasePreprocessor):
@@ -34,11 +35,14 @@ class IPAdapterEmbeddingPreprocessor(BasePreprocessor):
         if self._ipadapter_stream is not None:
             # Use dedicated stream to avoid TensorRT stream capture conflicts
             with torch.cuda.stream(self._ipadapter_stream):
-                image_embeds, negative_embeds = self.ipadapter.get_image_embeds(images=[image])
-                
+                with profiler.region("ipa.clip_encode"):
+                    image_embeds, negative_embeds = self.ipadapter.get_image_embeds(images=[image])
+
             # Wait for stream completion and move tensors to default stream
-            self._ipadapter_stream.synchronize()
-            
+            with profiler.region("ipa.sync"):
+                self._ipadapter_stream.synchronize()
+
+
             # Ensure tensors are accessible from default stream
             if hasattr(image_embeds, 'record_stream'):
                 image_embeds.record_stream(torch.cuda.current_stream())
@@ -46,8 +50,10 @@ class IPAdapterEmbeddingPreprocessor(BasePreprocessor):
                 negative_embeds.record_stream(torch.cuda.current_stream())
         else:
             # Fallback for non-CUDA environments
-            image_embeds, negative_embeds = self.ipadapter.get_image_embeds(images=[image])
-            
+            with profiler.region("ipa.clip_encode"):
+                image_embeds, negative_embeds = self.ipadapter.get_image_embeds(images=[image])
+
+
         return image_embeds, negative_embeds
         
     def _process_tensor_core(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:

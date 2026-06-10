@@ -503,6 +503,13 @@ class StreamDiffusion:
 
         self.stock_noise = torch.zeros_like(self.init_noise)
 
+        # Ping-pong buffers for stock_noise rotation.
+        # Replaces the per-frame torch.cat((init_noise[0:1], stock_noise[:-1]))
+        # which allocates a new tensor every frame.  Two preallocated buffers
+        # are alternated so src and dst never alias.
+        self._stock_noise_bufs = [self.stock_noise.clone(), torch.empty_like(self.stock_noise)]
+        self._stock_noise_pong = 0  # next write-target index (0 or 1)
+
         # Handle scheduler-specific scaling calculations
         c_skip_list = []
         c_out_list = []
@@ -552,6 +559,21 @@ class StreamDiffusion:
         self.sub_timesteps_tensor = self.sub_timesteps_tensor.to(self.device)
         self.c_skip = self.c_skip.to(self.device)
         self.c_out = self.c_out.to(self.device)
+
+        # Precompute per-step expanded timestep tensors for the TCD / non-batched sequential loop.
+        # Avoids per-step t.view(1).repeat(frame_bff_size) tensor allocations inside predict_x0_batch.
+        # Only valid when sub_timesteps_tensor is a 1-D sequence (not the collapsed-scalar LCM path).
+        _use_seq_loop = not (self.use_denoising_batch and isinstance(self.scheduler, LCMScheduler))
+        if _use_seq_loop and self.sub_timesteps_tensor.dim() >= 1:
+            self._sub_timesteps_expanded = (
+                self.sub_timesteps_tensor
+                .view(-1)
+                .unsqueeze(1)
+                .expand(-1, self.frame_bff_size)
+                .contiguous()
+            )  # shape [loop_steps, frame_bff_size]
+        else:
+            self._sub_timesteps_expanded = None
 
         # Pre-compute shifted alpha/beta/init_noise (eliminates 5 mallocs + 8 kernel launches per frame)
         if self.use_denoising_batch and (self.cfg_type == "self" or self.cfg_type == "initialize"):
@@ -946,7 +968,14 @@ class StreamDiffusion:
                     self._combined_latent_buf[: self.frame_bff_size].copy_(x_t_latent)
                     self._combined_latent_buf[self.frame_bff_size :].copy_(prev_latent_batch)
                     x_t_latent = self._combined_latent_buf
-                    self.stock_noise = torch.cat((self.init_noise[0:1], self.stock_noise[:-1]), dim=0)
+                    # Ping-pong rotation: eliminates torch.cat malloc every frame.
+                    # _stock_noise_bufs[pong] is always a different tensor from self.stock_noise,
+                    # so src and dst never alias.
+                    _sn_dst = self._stock_noise_bufs[self._stock_noise_pong]
+                    _sn_dst[0].copy_(self.init_noise[0])
+                    _sn_dst[1:].copy_(self.stock_noise[:-1])
+                    self.stock_noise = _sn_dst
+                    self._stock_noise_pong = 1 - self._stock_noise_pong
                 with profiler.region("unet_step"):
                     x_0_pred_batch, model_pred = self.unet_step(x_t_latent, t_list)
 
@@ -966,20 +995,20 @@ class StreamDiffusion:
                 # Standard scheduler loop for TCD and non-batched LCM
                 sample = x_t_latent
                 for idx, timestep in enumerate(self.sub_timesteps_tensor):
-                    # Ensure timestep tensor on device with correct dtype
-                    if not isinstance(timestep, torch.Tensor):
-                        t = torch.tensor(timestep, device=self.device, dtype=torch.long)
+                    # Resolve scalar timestep tensor on device.
+                    # Avoid per-step t.view(1).repeat() allocations by using the
+                    # precomputed _sub_timesteps_expanded table from prepare().
+                    t = timestep if isinstance(timestep, torch.Tensor) else torch.tensor(
+                        timestep, device=self.device, dtype=torch.long
+                    )
+                    if self._sub_timesteps_expanded is not None:
+                        t_expanded = self._sub_timesteps_expanded[idx]  # [frame_bff_size], no alloc
                     else:
-                        t = timestep.to(self.device)
+                        t_expanded = t.view(1).repeat(self.frame_bff_size)  # fallback
 
                     # For TCD, use the same UNet calling logic as LCM to ensure ControlNet hooks are processed
                     if isinstance(self.scheduler, TCDScheduler):
                         # Use unet_step to process ControlNet hooks and get proper noise prediction
-                        t_expanded = t.view(
-                            1,
-                        ).repeat(
-                            self.frame_bff_size,
-                        )
                         with profiler.region("unet_step"):
                             x_0_pred, model_pred = self.unet_step(sample, t_expanded, idx)
 
@@ -991,13 +1020,8 @@ class StreamDiffusion:
                         )
                     else:
                         # Original LCM logic for non-batched mode
-                        t = t.view(
-                            1,
-                        ).repeat(
-                            self.frame_bff_size,
-                        )
                         with profiler.region("unet_step"):
-                            x_0_pred, model_pred = self.unet_step(sample, t, idx)
+                            x_0_pred, model_pred = self.unet_step(sample, t_expanded, idx)
                         if idx < len(self.sub_timesteps_tensor) - 1:
                             if self.do_add_noise:
                                 if self._noise_buf is None:

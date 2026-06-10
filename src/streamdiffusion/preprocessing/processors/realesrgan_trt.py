@@ -13,6 +13,7 @@ from pathlib import Path
 from collections import OrderedDict
 
 from .base import BasePreprocessor
+from streamdiffusion.tools.gpu_profiler import profiler
 
 # Try to import spandrel for model loading
 try:
@@ -111,15 +112,18 @@ class RealESRGANEngine:
         for name, tensor in self.tensors.items():
             addr = tensor.data_ptr()
             self.context.set_tensor_address(name, addr)
-        
-        with self._inference_lock:
-            success = self.context.execute_async_v3(stream)
-            
-            if not success:
-                raise RuntimeError("RealESRGANEngine: TensorRT inference failed")
-            
-            torch.cuda.synchronize()
-        
+
+        with profiler.region("esrgan.infer"):
+            with self._inference_lock:
+                success = self.context.execute_async_v3(stream)
+
+                if not success:
+                    raise RuntimeError("RealESRGANEngine: TensorRT inference failed")
+
+                with profiler.region("esrgan.sync"):
+                    torch.cuda.synchronize()
+
+
         return self.tensors
 
 logger = logging.getLogger(__name__)

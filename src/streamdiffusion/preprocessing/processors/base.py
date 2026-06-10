@@ -6,6 +6,8 @@ import torch.nn.functional as F
 import numpy as np
 from PIL import Image
 
+from streamdiffusion.tools.gpu_profiler import profiler
+
 
 _pil_fallback_warned: Set[str] = set()  # per-class warning dedup
 _base_logger = logging.getLogger(__name__)
@@ -62,7 +64,8 @@ class BasePreprocessor(ABC):
         Template method - handles all common operations
         """
         image = self.validate_input(image)
-        processed = self._process_core(image)
+        with profiler.region("proc.core"):
+            processed = self._process_core(image)
         return self._ensure_target_size(processed)
     
     def process_tensor(self, image_tensor: torch.Tensor) -> torch.Tensor:
@@ -70,7 +73,8 @@ class BasePreprocessor(ABC):
         Template method for GPU tensor processing
         """
         tensor = self.validate_tensor_input(image_tensor)
-        processed = self._process_tensor_core(tensor)
+        with profiler.region("proc.core"):
+            processed = self._process_tensor_core(tensor)
         return self._ensure_target_size_tensor(processed)
     
     @abstractmethod
@@ -98,10 +102,13 @@ class BasePreprocessor(ABC):
                 "Set gpu_native=True and override _process_tensor_core to eliminate "
                 "this CPU round-trip. (This warning fires once per class.)"
             )
-        pil_image = self.tensor_to_pil(tensor)
+        with profiler.region("proc.tensor_to_pil"):
+            pil_image = self.tensor_to_pil(tensor)
         processed_pil = self._process_core(pil_image)
-        return self.pil_to_tensor(processed_pil)
-    
+        with profiler.region("proc.pil_to_tensor"):
+            return self.pil_to_tensor(processed_pil)
+
+
     def _ensure_target_size(self, image: Image.Image) -> Image.Image:
         """
         Centralized PIL resize logic
@@ -148,13 +155,17 @@ class BasePreprocessor(ABC):
         if image_tensor.dim() == 3 and image_tensor.shape[0] not in [1, 3]:
             # Likely HWC format, convert to CHW
             image_tensor = image_tensor.permute(2, 0, 1)
-        
+
+        # Normalize to [0,1] range only if tensor is uint8 [0,255].
+        # Check dtype BEFORE the .to() cast so we don't force a D2H sync via
+        # .max() > 1.0 (scalar reduction onto CPU every frame).
+        # [-1,1] and [0,1] float tensors from the pipeline are left unchanged.
+        _was_uint8 = image_tensor.dtype == torch.uint8
+
         # Ensure correct device and dtype
         image_tensor = image_tensor.to(device=self.device, dtype=self.dtype)
-        
-        # Normalize to [0,1] range only if tensor is in [0,255] uint8 range
-        # Preserves [-1,1] and [0,1] ranges (max <= 1.0)
-        if image_tensor.max() > 1.0:
+
+        if _was_uint8:
             image_tensor = image_tensor / 255.0
         
         return image_tensor

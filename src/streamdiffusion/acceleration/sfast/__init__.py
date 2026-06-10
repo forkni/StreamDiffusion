@@ -24,8 +24,13 @@ def accelerate_with_stable_fast(
             config.enable_triton = True
         except ImportError:
             print("Triton not installed, skip")
-        # CUDA Graph is suggested for small batch sizes and small resolutions to reduce CPU overhead.
-        config.enable_cuda_graph = True
+        # CUDA Graph reduces CPU overhead for small batches/resolutions.
+        # Disable when the UNet is a TRT engine (which has its own CUDA-graph regime)
+        # to avoid double-capture overhead and potential replay conflicts.
+        # TRT engines expose `dump_profile`; standard nn.Module does not.
+        _unet = getattr(stream.pipe, "unet", None)
+        _trt_active = _unet is not None and hasattr(_unet, "dump_profile")
+        config.enable_cuda_graph = not _trt_active
     stream.pipe = compile(stream.pipe, config)
     stream.unet = stream.pipe.unet
     stream.vae = stream.pipe.vae
