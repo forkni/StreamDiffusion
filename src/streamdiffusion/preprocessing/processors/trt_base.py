@@ -85,7 +85,10 @@ class TensorRTEngine:
         self.engine = None
         self.context = None
         self.tensors = OrderedDict()
-        self._cuda_stream = None  # cached CUDA stream
+        self._cuda_stream: Optional[int] = None  # raw CUDA stream handle (int) for TRT
+        self._dedicated_stream: Optional[torch.cuda.Stream] = None  # backing non-default stream
+        self._pre_exec_event: Optional[torch.cuda.Event] = None  # current→dedicated barrier
+        self._post_exec_event: Optional[torch.cuda.Event] = None  # dedicated→current barrier
         # LRU cache: shape-signature → {name: tensor}.
         # Avoids repeated GPU malloc/free when a small set of input shapes alternates.
         self._buf_cache: OrderedDict = OrderedDict()
@@ -96,7 +99,17 @@ class TensorRTEngine:
 
     def activate(self):
         self.context = self.engine.create_execution_context()
-        self._cuda_stream = torch.cuda.current_stream().cuda_stream
+        # Create a dedicated non-default CUDA stream for this engine so that
+        # execute_async_v3 / enqueueV3 does NOT run on stream 0x0 (the default/null
+        # stream).  Using the default stream forces TensorRT to insert an implicit
+        # cudaStreamSynchronize on every enqueue call (TRT warning:
+        # "Using default stream in enqueueV3() may lead to performance issues").
+        # Cross-stream ordering with the surrounding PyTorch context is maintained
+        # via the CUDA events created below; see infer() for the sync protocol.
+        self._dedicated_stream = torch.cuda.Stream()
+        self._cuda_stream = self._dedicated_stream.cuda_stream  # raw int handle for TRT
+        self._pre_exec_event = torch.cuda.Event()  # current stream → dedicated stream barrier
+        self._post_exec_event = torch.cuda.Event()  # dedicated stream → current stream barrier
 
     def allocate_buffers(self, device: str = "cuda", input_shape: tuple = None):
         """
@@ -163,12 +176,8 @@ class TensorRTEngine:
         # --- Per-request shape reconciliation with LRU buffer cache ---
         # Fast path: no shape change (the common streaming case — zero overhead).
         # Slow path: shape changed → consult LRU before allocating new GPU memory.
-        new_input_shapes = {
-            name: tuple(buf.shape) for name, buf in feed_dict.items() if name in self.tensors
-        }
-        shapes_match = all(
-            new_input_shapes[n] == tuple(self.tensors[n].shape) for n in new_input_shapes
-        )
+        new_input_shapes = {name: tuple(buf.shape) for name, buf in feed_dict.items() if name in self.tensors}
+        shapes_match = all(new_input_shapes[n] == tuple(self.tensors[n].shape) for n in new_input_shapes)
 
         if not shapes_match:
             # Hashable signature for this input shape configuration.
@@ -225,9 +234,33 @@ class TensorRTEngine:
         for name, tensor in self.tensors.items():
             self.context.set_tensor_address(name, tensor.data_ptr())
 
-        success = self.context.execute_async_v3(stream)
+        # --- Cross-stream synchronization ---
+        # The input copy_() calls above ran on the CURRENT (default) stream.
+        # execute_async_v3 runs on _dedicated_stream.  Record a barrier event on
+        # the current stream so the dedicated stream cannot start reading inputs
+        # until the copies have landed.  (If no dedicated stream was created yet —
+        # e.g. engine not activated — fall back to the supplied stream directly.)
+        if self._pre_exec_event is not None and self._dedicated_stream is not None:
+            self._pre_exec_event.record()  # on current stream
+            self._dedicated_stream.wait_event(self._pre_exec_event)
+            exec_stream = self._cuda_stream
+        else:
+            exec_stream = stream
+
+        success = self.context.execute_async_v3(exec_stream)
         if not success:
             raise ValueError("TensorRTEngine: inference failed.")
+
+        # Output tensors were written by execute on _dedicated_stream.
+        # _postprocess (the next call after infer()) runs on the current stream and
+        # reads those tensors.  Make the current stream GPU-wait for execute
+        # completion, then record_stream so PyTorch's caching allocator knows the
+        # buffers are live on the current stream (prevents premature reuse).
+        if self._post_exec_event is not None and self._dedicated_stream is not None:
+            self._post_exec_event.record(self._dedicated_stream)
+            torch.cuda.current_stream().wait_event(self._post_exec_event)
+            for tensor in self.tensors.values():
+                tensor.record_stream(torch.cuda.current_stream())
 
         return self.tensors
 
@@ -525,8 +558,11 @@ class SelfBuildingTRTPreprocessor(BasePreprocessor):
         if engine_input is not None and image_resized.dtype != engine_input.dtype:
             image_resized = image_resized.to(dtype=engine_input.dtype)
 
-        cuda_stream = torch.cuda.current_stream().cuda_stream
-        outputs = self.engine.infer({"input": image_resized}, cuda_stream)
+        # Execute on the engine's dedicated non-default CUDA stream.
+        # Passing no stream lets infer() use self.engine._cuda_stream (the dedicated
+        # stream handle).  Cross-stream sync (copy_ → execute → _postprocess) is
+        # handled inside TensorRTEngine.infer() via CUDA events.
+        outputs = self.engine.infer({"input": image_resized})
         result = self._postprocess(outputs)
 
         # Ensure result is CHW (strip batch dim if present)

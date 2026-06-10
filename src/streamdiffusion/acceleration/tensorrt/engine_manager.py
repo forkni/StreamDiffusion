@@ -114,6 +114,7 @@ class EngineManager:
         fp8: bool = False,
         resolution: Optional[tuple] = None,
         builder_optimization_level: Optional[int] = None,
+        build_static_batch: Optional[bool] = None,
     ) -> Path:
         """
         Generate engine path using wrapper.py's current logic.
@@ -163,6 +164,14 @@ class EngineManager:
                     prefix += "--controlnet"
                 if fp8:
                     prefix += "--fp8v3"
+                # Encode the actual batch-profile policy so that a static-batch engine
+                # and a dynamic-batch engine never share the same directory.
+                # The capacity range (min_batch / max_batch above) is the same for both,
+                # so without this suffix a stale dynamic engine is silently reused after
+                # the static-batch switch — and TRT emits "l2tc doesn't take effect"
+                # because the loaded engine has a symbolic batch dim.
+                if build_static_batch is not None:
+                    prefix += f"--sbatch{int(build_static_batch)}"
 
             prefix += optlvl_suffix
 

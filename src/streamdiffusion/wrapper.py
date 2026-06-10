@@ -1573,6 +1573,9 @@ class StreamDiffusionWrapper:
                     fp8=fp8,
                     resolution=(self.height, self.width),
                     builder_optimization_level=self.builder_optimization_level,
+                    # Must match the hardcoded build_static_batch value below so the cache
+                    # key reflects the actual TRT profile policy (static vs dynamic batch).
+                    build_static_batch=True,
                 )
                 vae_encoder_path = engine_manager.get_engine_path(
                     EngineType.VAE_ENCODER,
@@ -1908,8 +1911,13 @@ class StreamDiffusionWrapper:
                 vae_dtype = stream.vae.dtype
 
                 try:
+                    # Note: the UNet always builds with build_static_batch=True /
+                    # build_dynamic_shape=False regardless of self.static_shapes.
+                    # static_shapes only controls the VAE enc/dec build flags.
                     logger.warning(
-                        f"[TRT] UNet engine: fp8={fp8}, static_shapes={self.static_shapes}, engine_path={unet_path}"
+                        f"[TRT] UNet engine: fp8={fp8}, "
+                        f"build_static_batch=True, build_dynamic_shape=False, "
+                        f"engine_path={unet_path}"
                     )
                     _unet_build_opts = {
                         "opt_image_height": self.height,
