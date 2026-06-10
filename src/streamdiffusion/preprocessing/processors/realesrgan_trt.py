@@ -103,25 +103,26 @@ class RealESRGANEngine:
         # Use provided stream or current stream context
         if stream is None:
             stream = torch.cuda.current_stream().cuda_stream
-        
-        # Copy input data to tensors
+
+        # Copy input data to tensors (safe outside lock — per-engine buffers, single caller path)
         for name, buf in feed_dict.items():
             self.tensors[name].copy_(buf)
 
-        # Set tensor addresses
-        for name, tensor in self.tensors.items():
-            addr = tensor.data_ptr()
-            self.context.set_tensor_address(name, addr)
+        # set_tensor_address + execute_async inside the lock.
+        # TRT execution contexts are not thread-safe; holding the lock only during enqueue
+        # (not during the GPU execution itself) keeps the critical section minimal.
+        # torch.cuda.synchronize() is removed: GPU stream ordering serialises downstream
+        # PyTorch ops (.clamp / .clone) that the caller enqueues on the same stream after
+        # this method returns — no explicit CPU-side wait needed.
+        with self._inference_lock:
+            for name, tensor in self.tensors.items():
+                self.context.set_tensor_address(name, tensor.data_ptr())
 
-        with profiler.region("esrgan.infer"):
-            with self._inference_lock:
+            with profiler.region("esrgan.infer"):
                 success = self.context.execute_async_v3(stream)
 
-                if not success:
-                    raise RuntimeError("RealESRGANEngine: TensorRT inference failed")
-
-                with profiler.region("esrgan.sync"):
-                    torch.cuda.synchronize()
+            if not success:
+                raise RuntimeError("RealESRGANEngine: TensorRT inference failed")
 
 
         return self.tensors

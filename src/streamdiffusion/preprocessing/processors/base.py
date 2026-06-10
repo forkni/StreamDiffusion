@@ -129,7 +129,9 @@ class BasePreprocessor(ABC):
         if current_size != target_size:
             if tensor.dim() == 3:
                 tensor = tensor.unsqueeze(0)
-            tensor = F.interpolate(tensor, size=target_size, mode='bilinear', align_corners=False)
+            # antialias=True applies a Gaussian pre-filter before downscaling, reducing
+            # aliasing artifacts in ControlNet conditioning maps (no-op when upscaling).
+            tensor = F.interpolate(tensor, size=target_size, mode="bilinear", align_corners=False, antialias=True)
             if tensor.shape[0] == 1:
                 tensor = tensor.squeeze(0)
         return tensor
