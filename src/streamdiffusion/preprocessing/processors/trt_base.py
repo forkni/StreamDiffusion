@@ -76,12 +76,19 @@ class TensorRTEngine:
     those modules import this class instead of redefining it.
     """
 
+    # Max number of distinct input-shape configurations whose GPU buffers are kept alive.
+    # Covers typical resolution-switching scenarios (e.g., 256/512/768/1024).
+    _BUF_CACHE_MAXSIZE: int = 4
+
     def __init__(self, engine_path: str):
         self.engine_path = engine_path
         self.engine = None
         self.context = None
         self.tensors = OrderedDict()
         self._cuda_stream = None  # cached CUDA stream
+        # LRU cache: shape-signature → {name: tensor}.
+        # Avoids repeated GPU malloc/free when a small set of input shapes alternates.
+        self._buf_cache: OrderedDict = OrderedDict()
 
     def load(self):
         logger.info(f"Loading TensorRT engine: {self.engine_path}")
@@ -140,46 +147,70 @@ class TensorRTEngine:
                         "Provide input_shape to resolve all dimensions."
                     )
 
+            # Allocate directly on the target device — avoids CPU alloc + H2D copy
+            # that `torch.empty(...).to(device=device)` would incur.
             tensor = torch.empty(
                 shape,
                 dtype=numpy_to_torch_dtype_dict[dtype],
-            ).to(device=device)
+                device=device,
+            )
             self.tensors[name] = tensor
 
     def infer(self, feed_dict: dict, stream=None) -> OrderedDict:
         if stream is None:
             stream = self._cuda_stream
 
-        # --- Per-request shape reconciliation ---
-        # Keeps output aligned to the fed input resolution (critical for dynamic engines
-        # where detect_resolution may differ from the built opt shape).
-        # This is a no-op when detect_resolution is constant (zero per-frame overhead).
-        shape_changed = False
-        for name, buf in feed_dict.items():
-            if name not in self.tensors:
-                continue
-            fed_shape = tuple(buf.shape)
-            if fed_shape != tuple(self.tensors[name].shape):
-                self.context.set_input_shape(name, fed_shape)
-                self.tensors[name] = torch.empty(
-                    fed_shape,
-                    dtype=self.tensors[name].dtype,
-                    device=self.tensors[name].device,
-                )
-                shape_changed = True
+        # --- Per-request shape reconciliation with LRU buffer cache ---
+        # Fast path: no shape change (the common streaming case — zero overhead).
+        # Slow path: shape changed → consult LRU before allocating new GPU memory.
+        new_input_shapes = {
+            name: tuple(buf.shape) for name, buf in feed_dict.items() if name in self.tensors
+        }
+        shapes_match = all(
+            new_input_shapes[n] == tuple(self.tensors[n].shape) for n in new_input_shapes
+        )
 
-        if shape_changed:
-            # Re-query and reallocate output buffers with TRT-resolved shapes.
-            for out_idx in range(self.engine.num_io_tensors):
-                out_name = self.engine.get_tensor_name(out_idx)
-                if self.engine.get_tensor_mode(out_name) == trt.TensorIOMode.OUTPUT:
-                    new_out_shape = tuple(self.context.get_tensor_shape(out_name))
-                    if new_out_shape != tuple(self.tensors[out_name].shape):
-                        self.tensors[out_name] = torch.empty(
-                            new_out_shape,
-                            dtype=self.tensors[out_name].dtype,
-                            device=self.tensors[out_name].device,
+        if not shapes_match:
+            # Hashable signature for this input shape configuration.
+            shape_sig = tuple(sorted(new_input_shapes.items()))
+
+            if shape_sig in self._buf_cache:
+                # LRU hit: reuse pre-allocated GPU buffers, no malloc needed.
+                self._buf_cache.move_to_end(shape_sig)  # promote to MRU
+                cached = self._buf_cache[shape_sig]
+                for name in list(self.tensors.keys()):
+                    if name in cached:
+                        self.tensors[name] = cached[name]
+                # Re-apply input shapes to TRT context (context state is NOT cached).
+                for name, shape in new_input_shapes.items():
+                    self.context.set_input_shape(name, shape)
+            else:
+                # LRU miss: reallocate changed inputs, re-derive output shapes.
+                for name, fed_shape in new_input_shapes.items():
+                    if fed_shape != tuple(self.tensors[name].shape):
+                        self.context.set_input_shape(name, fed_shape)
+                        self.tensors[name] = torch.empty(
+                            fed_shape,
+                            dtype=self.tensors[name].dtype,
+                            device=self.tensors[name].device,
                         )
+
+                # Re-query and reallocate output buffers with TRT-resolved shapes.
+                for out_idx in range(self.engine.num_io_tensors):
+                    out_name = self.engine.get_tensor_name(out_idx)
+                    if self.engine.get_tensor_mode(out_name) == trt.TensorIOMode.OUTPUT:
+                        new_out_shape = tuple(self.context.get_tensor_shape(out_name))
+                        if new_out_shape != tuple(self.tensors[out_name].shape):
+                            self.tensors[out_name] = torch.empty(
+                                new_out_shape,
+                                dtype=self.tensors[out_name].dtype,
+                                device=self.tensors[out_name].device,
+                            )
+
+                # Store the new buffer set in the LRU cache.
+                self._buf_cache[shape_sig] = OrderedDict(self.tensors)
+                if len(self._buf_cache) > self._BUF_CACHE_MAXSIZE:
+                    self._buf_cache.popitem(last=False)  # evict LRU (oldest) entry
 
         # --- Copy inputs with dtype validation ---
         for name, buf in feed_dict.items():

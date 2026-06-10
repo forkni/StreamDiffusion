@@ -29,21 +29,31 @@ def bytes_to_pil(image_bytes: bytes) -> Image.Image:
 
 def bytes_to_pt(image_bytes: bytes) -> torch.Tensor:
     """
-    Convert JPEG/PNG bytes directly to PyTorch tensor using torchvision
-    
+    Convert JPEG bytes directly to a GPU float32 tensor via torchvision nvJPEG.
+
+    Decodes on CUDA when available (nvJPEG path), eliminating the CPU decode +
+    host→device DMA transfer that the CPU path incurs.  Falls back to CPU decode
+    on machines without CUDA.
+
     Args:
-        image_bytes: Raw image bytes (JPEG/PNG format)
-        
+        image_bytes: Raw JPEG bytes (PNG bytes fall back to CPU automatically
+                     since nvJPEG only handles JPEG)
+
+
     Returns:
-        torch.Tensor: Image tensor with shape (C, H, W), values in [0, 1], dtype float32
+        torch.Tensor: Image tensor with shape (C, H, W), values in [0, 1],
+                      dtype float32, on the same device as the decode.
     """
-    # Convert bytes to tensor for torchvision
     byte_tensor = torch.frombuffer(image_bytes, dtype=torch.uint8)
-    
-    # Decode JPEG/PNG directly to tensor (C, H, W) format, uint8 [0, 255]
-    image_tensor = decode_jpeg(byte_tensor)
-    
-    # Convert to float32 and normalize to [0, 1]
+
+    # Decode directly on GPU when CUDA is available — nvJPEG avoids the
+    # CPU decode + H2D copy incurred by the plain decode_jpeg(byte_tensor) call.
+    if torch.cuda.is_available():
+        image_tensor = decode_jpeg(byte_tensor, device="cuda")
+    else:
+        image_tensor = decode_jpeg(byte_tensor)
+
+    # Normalise to [0, 1] on the decode device (fused kernel on GPU).
     image_tensor = image_tensor.float() / 255.0
     
     return image_tensor
