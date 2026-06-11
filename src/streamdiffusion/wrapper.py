@@ -147,6 +147,9 @@ class StreamDiffusionWrapper:
         cuda_ipc_num_slots: int = 2,
         # CUDA IPC CN-preview (SD→TD zero-copy preprocessor output display, fixed name, display-only)
         cuda_ipc_cn_processed_shm_name: Optional[str] = None,
+        # When True, forces the preprocessor to run even when conditioning_scale==0 so that
+        # controlnet_images[index] is populated for the preview. No diffusion effect.
+        controlnet_preview_passthrough: bool = False,
         # Debug mode — gates IPC health tracking and other diagnostic instrumentation
         debug_mode: bool = False,
         vae_builder_optimization_level: Optional[int] = None,
@@ -339,6 +342,7 @@ class StreamDiffusionWrapper:
         self._cuda_ipc_exporter = None  # lazy-init on first frame via _lazy_init_ipc_exporter
         self._cuda_ipc_cn_processed_shm_name = cuda_ipc_cn_processed_shm_name
         self._cuda_ipc_cn_exporter = None  # lazy-init on first CN frame via _lazy_init_cn_ipc_exporter
+        self._controlnet_preview_passthrough = controlnet_preview_passthrough
         self.debug_mode = debug_mode
         # IPC health tracking — updated per-frame only when debug_mode is True
         self._ipc_consecutive_failures: int = 0
@@ -1115,6 +1119,10 @@ class StreamDiffusionWrapper:
         This is a display-only path — no health tracking, no return value.
         No-op if cuda_ipc_cn_processed_shm_name was not configured.
         """
+        logger.info(  # [DEBUG-cnprev] — remove after preview confirmed
+            "[DEBUG-cnprev] export_controlnet_preview_ipc called, shm_name=%r",
+            self._cuda_ipc_cn_processed_shm_name,
+        )
         if not self._cuda_ipc_cn_processed_shm_name:
             return
         try:
@@ -2479,6 +2487,10 @@ class StreamDiffusionWrapper:
                     cn_module.add_controlnet(cn_cfg, control_image=cfg.get("control_image"))
                 # Expose for later updates if needed by caller code
                 stream._controlnet_module = cn_module
+                # Enable always_preprocess so controlnet_images is populated even at scale==0,
+                # which is required for the IPC/CPU preview path to have something to export.
+                if self._controlnet_preview_passthrough:
+                    cn_module.always_preprocess = True
                 # Apply startup cache interval from config (1 = disabled, no-op).
                 if cn_cache_interval > 1:
                     cn_module.set_cn_cache_interval(cn_cache_interval)
