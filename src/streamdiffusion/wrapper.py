@@ -145,6 +145,8 @@ class StreamDiffusionWrapper:
         use_cuda_ipc_output: bool = False,
         cuda_ipc_shm_name: Optional[str] = None,
         cuda_ipc_num_slots: int = 2,
+        # CUDA IPC CN-preview (SD→TD zero-copy preprocessor output display, fixed name, display-only)
+        cuda_ipc_cn_processed_shm_name: Optional[str] = None,
         # Debug mode — gates IPC health tracking and other diagnostic instrumentation
         debug_mode: bool = False,
         vae_builder_optimization_level: Optional[int] = None,
@@ -335,6 +337,8 @@ class StreamDiffusionWrapper:
         self._cuda_ipc_shm_name = cuda_ipc_shm_name
         self._cuda_ipc_num_slots = cuda_ipc_num_slots
         self._cuda_ipc_exporter = None  # lazy-init on first frame via _lazy_init_ipc_exporter
+        self._cuda_ipc_cn_processed_shm_name = cuda_ipc_cn_processed_shm_name
+        self._cuda_ipc_cn_exporter = None  # lazy-init on first CN frame via _lazy_init_cn_ipc_exporter
         self.debug_mode = debug_mode
         # IPC health tracking — updated per-frame only when debug_mode is True
         self._ipc_consecutive_failures: int = 0
@@ -1071,6 +1075,63 @@ class StreamDiffusionWrapper:
         )
         return self._cuda_ipc_exporter
 
+    def _ipc_pack_unit_rgba(self, image_tensor: torch.Tensor) -> torch.Tensor:
+        """Convert a [0,1] CHW/NCHW tensor to HWC uint8 BGRA on GPU for cuda-link wire contract.
+
+        Like _ipc_pack_rgba but skips _denormalize_on_gpu — the ControlNet preprocessor
+        output is already in [0, 1] (not the diffusion [-1, 1] range).
+        """
+        with profiler.region("glue.ipc_pack_unit_rgba"):
+            t = image_tensor
+            if t.dim() == 4:
+                t = t[0]  # NCHW → CHW [0,1]
+            rgb_u8 = (t * 255).clamp(0, 255).to(torch.uint8)  # CHW uint8
+            rgb_hwc = rgb_u8.permute(1, 2, 0).contiguous()  # HWC RGB
+            alpha = torch.full_like(rgb_hwc[..., :1], 255)
+            return torch.cat([rgb_hwc[..., 2:3], rgb_hwc[..., 1:2], rgb_hwc[..., 0:1], alpha], dim=-1).contiguous()
+
+    def _lazy_init_cn_ipc_exporter(self, height: int, width: int):
+        """Initialize the CN-preview Exporter on first frame (lazy, mirrors _lazy_init_ipc_exporter)."""
+        if self._cuda_ipc_cn_exporter is not None:
+            return self._cuda_ipc_cn_exporter
+        from cuda_link import Exporter, FrameSpec
+
+        self._cuda_ipc_cn_exporter = Exporter.open(
+            FrameSpec(
+                shm_name=self._cuda_ipc_cn_processed_shm_name,
+                height=height,
+                width=width,
+                channels=4,
+                dtype="uint8",
+                num_slots=self._cuda_ipc_num_slots,
+            ),
+        )
+        return self._cuda_ipc_cn_exporter
+
+    def export_controlnet_preview_ipc(self, tensor: torch.Tensor) -> None:
+        """Export a ControlNet preprocessor output tensor to TD via zero-copy GPU IPC.
+
+        The tensor must be in [0, 1] range (CHW or NCHW); it is NOT denormalized.
+        This is a display-only path — no health tracking, no return value.
+        No-op if cuda_ipc_cn_processed_shm_name was not configured.
+        """
+        if not self._cuda_ipc_cn_processed_shm_name:
+            return
+        try:
+            from cuda_link import GpuFrame
+
+            bgra = self._ipc_pack_unit_rgba(tensor)
+            exporter = self._lazy_init_cn_ipc_exporter(bgra.shape[0], bgra.shape[1])
+            exporter.export(
+                GpuFrame(
+                    ptr=bgra.data_ptr(),
+                    size=bgra.numel(),
+                    producer_stream=torch.cuda.current_stream().cuda_stream,
+                )
+            )
+        except Exception:
+            logger.debug("export_controlnet_preview_ipc: export failed", exc_info=True)
+
     def get_ipc_health_status(self) -> str:
         """Return a short health string for the CUDA-IPC zero-copy output path.
 
@@ -1099,13 +1160,19 @@ class StreamDiffusionWrapper:
         return "ok"
 
     def cleanup_cuda_ipc(self) -> None:
-        """Tear down the CUDA IPC exporter and release its SHM + GPU resources."""
+        """Tear down the CUDA IPC exporters and release their SHM + GPU resources."""
         if self._cuda_ipc_exporter is not None:
             try:
                 self._cuda_ipc_exporter.close()
             except Exception:
                 logger.debug("cleanup_cuda_ipc: _cuda_ipc_exporter.close() failed", exc_info=True)
             self._cuda_ipc_exporter = None
+        if self._cuda_ipc_cn_exporter is not None:
+            try:
+                self._cuda_ipc_cn_exporter.close()
+            except Exception:
+                logger.debug("cleanup_cuda_ipc: _cuda_ipc_cn_exporter.close() failed", exc_info=True)
+            self._cuda_ipc_cn_exporter = None
 
     def _denormalize_on_gpu(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """
