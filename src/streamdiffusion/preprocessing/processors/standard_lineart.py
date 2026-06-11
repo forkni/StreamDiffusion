@@ -200,12 +200,14 @@ class StandardLineartPreprocessor(BasePreprocessor):
         intensity = torch.clamp(intensity, 0, 255)
         
         threshold_mask = intensity > intensity_threshold
-        if torch.any(threshold_mask):
-            median_val = torch.median(intensity[threshold_mask])
-            normalization_factor = max(16, float(median_val))
-        else:
-            normalization_factor = 16
-            
+        # Sync-free: nanmedian over thresholded pixels equals median(intensity[threshold_mask]).
+        # All-False mask → every element is nan → nan_to_num floors to 16.
+        # normalization_factor stays as a 0-dim CUDA tensor — no .item() / host sync.
+        masked = torch.where(threshold_mask, intensity, torch.full_like(intensity, float("nan")))
+        median_val = torch.nanmedian(masked)
+        normalization_factor = torch.clamp_min(torch.nan_to_num(median_val, nan=16.0), 16.0)
+
+
         intensity = intensity / normalization_factor
         intensity = intensity * 127
         

@@ -1,8 +1,7 @@
 import numpy as np
 from PIL import Image
-import torch
-from typing import Union, Optional
-from .base import BasePreprocessor
+
+from .base import BasePreprocessor, _base_logger, _pil_fallback_warned
 
 try:
     import torch
@@ -99,9 +98,21 @@ class DepthPreprocessor(BasePreprocessor):
     
     def _process_tensor_core(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """
-        Process tensor directly on GPU for depth estimation
+        Process tensor directly on GPU for depth estimation.
+
+        Note: HF depth pipeline requires PIL input, so this method round-trips through
+        PIL (tensor → CPU → PIL → depth model → GPU tensor) every frame.
+        For fully GPU-resident depth estimation use DepthAnythingTensorrtPreprocessor.
         """
-        detect_resolution = self.params.get('detect_resolution', 512)
+        cls_name = type(self).__name__
+        if cls_name not in _pil_fallback_warned:
+            _pil_fallback_warned.add(cls_name)
+            _base_logger.warning(
+                f"[GPU-residency] {cls_name}._process_tensor_core round-trips through PIL "
+                "every frame (HF depth pipeline requires PIL input). For full GPU residency "
+                "use the TensorRT variant (depth_tensorrt). (Fires once per class.)"
+            )
+        detect_resolution = self.params.get("detect_resolution", 512)
         current_size = image_tensor.shape[-2:]
         
         if current_size != (detect_resolution, detect_resolution):

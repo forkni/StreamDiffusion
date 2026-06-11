@@ -53,16 +53,20 @@ GPU_PROFILER env vars
   GPU_PROFILER_NVTX=0     - disable NVTX (required when CUDA graphs active)
   GPU_PROFILER_EVENTS=1   - (default) CUDA-event timing
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+
+if TYPE_CHECKING:
+    import PIL.Image  # noqa: F401 — used in type annotations only
 
 import numpy as np
 import torch
@@ -103,7 +107,7 @@ def _config_hash(config: Dict[str, Any]) -> str:
     return hashlib.sha1(blob).hexdigest()[:8]
 
 
-def _make_synthetic_image(width: int, height: int) -> "PIL.Image.Image":
+def _make_synthetic_image(width: int, height: int) -> PIL.Image.Image:
     """Create a solid grey PIL image so the benchmark runs without a real photo."""
     import PIL.Image
     import PIL.ImageDraw
@@ -118,9 +122,10 @@ def _make_synthetic_image(width: int, height: int) -> "PIL.Image.Image":
     return img
 
 
-def _load_or_synth_image(path: Optional[str], width: int, height: int) -> "PIL.Image.Image":
+def _load_or_synth_image(path: Optional[str], width: int, height: int) -> PIL.Image.Image:
     if path:
         import PIL.Image
+
         return PIL.Image.open(path).convert("RGB").resize((width, height))
     return _make_synthetic_image(width, height)
 
@@ -139,10 +144,7 @@ def _percentile_stats(samples: List[float]) -> Dict[str, float]:
 
 def _fps_stats(frame_ms_stats: Dict[str, float]) -> Dict[str, float]:
     """Convert ms-per-frame stats to FPS stats (note: p50 ms → median FPS, etc.)."""
-    return {
-        k: round(1000.0 / v, 2) if v > 0 else 0.0
-        for k, v in frame_ms_stats.items()
-    }
+    return {k: round(1000.0 / v, 2) if v > 0 else 0.0 for k, v in frame_ms_stats.items()}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -150,7 +152,7 @@ def _fps_stats(frame_ms_stats: Dict[str, float]) -> Dict[str, float]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _to_pil(frame: Any) -> "Optional[PIL.Image.Image]":
+def _to_pil(frame: Any) -> Optional[PIL.Image.Image]:
     """Best-effort conversion of a pipeline output to PIL Image for golden saving."""
     import PIL.Image
 
@@ -412,8 +414,6 @@ def run(
 
     # ── save goldens ───────────────────────────────────────────────────────
     if save_goldens and captured_frames:
-        import PIL.Image  # noqa: F811  (PIL already imported transitively above)
-
         saved = 0
         for i, frame in enumerate(captured_frames):
             pil = _to_pil(frame)
@@ -440,10 +440,7 @@ def run(
         print(f"  {'Region':<30} {'p50':>8}  {'p95':>8}  {'count':>6}")
         print("  " + "-" * 58)
         for r in top:
-            print(
-                f"  {r['name']:<30} {r['p50_ms']:>7.2f}ms  "
-                f"{r['p95_ms']:>7.2f}ms  {r['count']:>6}"
-            )
+            print(f"  {r['name']:<30} {r['p50_ms']:>7.2f}ms  {r['p95_ms']:>7.2f}ms  {r['count']:>6}")
     print()
     print(f"  JSON -> {result_path}")
     print("=" * 60)

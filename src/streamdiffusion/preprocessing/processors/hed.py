@@ -1,8 +1,8 @@
 import torch
 import numpy as np
 from PIL import Image
-from typing import Union, Optional
-from .base import BasePreprocessor
+
+from .base import BasePreprocessor, _base_logger, _pil_fallback_warned
 
 try:
     from controlnet_aux import HEDdetector
@@ -90,11 +90,20 @@ class HEDPreprocessor(BasePreprocessor):
     
     def _process_tensor_core(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """
-        GPU-optimized HED processing using tensors
-        
-        Note: controlnet_aux doesn't support direct tensor input, so we convert to PIL and back.
-        This is still reasonably fast due to optimized conversions in the base class.
+        HED processing via tensor I/O.
+
+        Note: controlnet_aux HEDdetector requires PIL input, so this method round-trips
+        through PIL (tensor → CPU → PIL → HEDdetector → GPU tensor) every frame.
+        For fully GPU-resident edge detection use the TensorRT variant (hed_tensorrt).
         """
+        cls_name = type(self).__name__
+        if cls_name not in _pil_fallback_warned:
+            _pil_fallback_warned.add(cls_name)
+            _base_logger.warning(
+                f"[GPU-residency] {cls_name}._process_tensor_core round-trips through PIL "
+                "every frame (controlnet_aux requires PIL input). For full GPU residency "
+                "use the TensorRT variant (hed_tensorrt). (Fires once per class.)"
+            )
         # Convert tensor to PIL, process, then back to tensor
         pil_image = self.tensor_to_pil(image_tensor)
         processed_pil = self._process_core(pil_image)
