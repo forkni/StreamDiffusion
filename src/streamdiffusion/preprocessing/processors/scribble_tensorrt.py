@@ -95,9 +95,12 @@ class ScribbleTensorrtPreprocessor(HEDTensorrtPreprocessor):
             "parameters": {
                 "scribble_threshold": {
                     "type": "float",
-                    "default": 0.5,
-                    "range": [0.0, 1.0],
-                    "description": "Binarization threshold for scribble edge NMS (0–1). Lower values keep more edges.",
+                    "default": 0.01,  # was 0.5 — post-NMS ridge values live near zero (~0.005–0.05)
+                    "range": [0.0, 0.05],  # was [0.0, 1.0] — spreads useful control across full travel
+                    "description": (
+                        "Binarization threshold for scribble edge NMS. Operates on the post-NMS ridge map "
+                        "whose values are small (~0.005–0.05); lower keeps more edges."
+                    ),
                 },
                 **EDGE_SMOOTHNESS_PARAM,
             },
