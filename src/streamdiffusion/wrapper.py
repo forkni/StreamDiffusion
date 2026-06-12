@@ -1064,7 +1064,17 @@ class StreamDiffusionWrapper:
         """Initialize Exporter on first frame (lazy to defer CUDA IPC SHM creation)."""
         if self._cuda_ipc_exporter is not None:
             return self._cuda_ipc_exporter
-        from cuda_link import Exporter, FrameSpec
+        from dataclasses import replace as _dc_replace
+
+        from cuda_link import Exporter, ExportPolicy, FrameSpec
+
+        # SD source buffers (_ipc_pack_rgba output) are transient torch tensors recycled by
+        # PyTorch's caching allocator the moment the caller returns.  Async export would read
+        # recycled memory → torn frames (ADR-0001 source-buffer lifetime race).  Force
+        # blocking unless the user explicitly opted into async with CUDALINK_EXPORT_SYNC=0.
+        policy = ExportPolicy.from_env()
+        if os.environ.get("CUDALINK_EXPORT_SYNC") is None:
+            policy = _dc_replace(policy, export_sync=True)
 
         self._cuda_ipc_exporter = Exporter.open(
             FrameSpec(
@@ -1075,7 +1085,7 @@ class StreamDiffusionWrapper:
                 dtype="uint8",
                 num_slots=self._cuda_ipc_num_slots,
             ),
-            # policy=None → ExportPolicy.from_env() respects all CUDALINK_* env vars
+            policy=policy,
         )
         return self._cuda_ipc_exporter
 
@@ -1098,7 +1108,16 @@ class StreamDiffusionWrapper:
         """Initialize the CN-preview Exporter on first frame (lazy, mirrors _lazy_init_ipc_exporter)."""
         if self._cuda_ipc_cn_exporter is not None:
             return self._cuda_ipc_cn_exporter
-        from cuda_link import Exporter, FrameSpec
+        from dataclasses import replace as _dc_replace
+
+        from cuda_link import Exporter, ExportPolicy, FrameSpec
+
+        # Same source-buffer lifetime race as _lazy_init_ipc_exporter: _ipc_pack_unit_rgba
+        # returns a transient tensor that the caching allocator recycles on return.
+        # Force blocking unless CUDALINK_EXPORT_SYNC=0 explicitly opts into async.
+        policy = ExportPolicy.from_env()
+        if os.environ.get("CUDALINK_EXPORT_SYNC") is None:
+            policy = _dc_replace(policy, export_sync=True)
 
         self._cuda_ipc_cn_exporter = Exporter.open(
             FrameSpec(
@@ -1109,6 +1128,7 @@ class StreamDiffusionWrapper:
                 dtype="uint8",
                 num_slots=self._cuda_ipc_num_slots,
             ),
+            policy=policy,
         )
         return self._cuda_ipc_cn_exporter
 
