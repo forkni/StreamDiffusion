@@ -4,6 +4,7 @@ from PIL import Image
 import torch
 from typing import Union
 from .base import BasePreprocessor
+from .category_params import EDGE_SMOOTHNESS_PARAM, apply_edge_smoothness
 
 #TODO provide gpu native edge detection
 class CannyPreprocessor(BasePreprocessor):
@@ -29,8 +30,9 @@ class CannyPreprocessor(BasePreprocessor):
                     "type": "int", 
                     "default": 200,
                     "range": [1, 255],
-                    "description": "Upper threshold for edge detection. Higher values are more selective."
-                }
+                    "description": "Upper threshold for edge detection. Higher values are more selective.",
+                },
+                **EDGE_SMOOTHNESS_PARAM,
             },
             "use_cases": ["Line art", "Architecture", "Technical drawings", "Clean edge detection"]
         }
@@ -60,10 +62,21 @@ class CannyPreprocessor(BasePreprocessor):
             gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
         else:
             gray = image_np
-        
-        low_threshold = self.params.get('low_threshold', 100)
-        high_threshold = self.params.get('high_threshold', 200)
-        
+
+        # Optional smoothness pre-blur (category-standard edge param).
+        # Applied before cv2.Canny so that coarser smoothing suppresses high-frequency
+        # texture, yielding sparser / softer edges without changing threshold semantics.
+        smoothness = float(self.params.get("smoothness", 0.0))
+        if smoothness > 0.0:
+            sigma = smoothness * 2.0
+            radius = max(1, int(sigma * 3.0 + 0.5))
+            k_size = 2 * radius + 1
+            gray = cv2.GaussianBlur(gray, (k_size, k_size), sigma)
+
+        low_threshold = self.params.get("low_threshold", 100)
+        high_threshold = self.params.get("high_threshold", 200)
+
+
         edges = cv2.Canny(gray, low_threshold, high_threshold)
         edges_rgb = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
         
@@ -77,18 +90,26 @@ class CannyPreprocessor(BasePreprocessor):
             gray_tensor = 0.299 * image_tensor[0] + 0.587 * image_tensor[1] + 0.114 * image_tensor[2]
         else:
             gray_tensor = image_tensor[0] if image_tensor.shape[0] == 1 else image_tensor
-        
+
         gray_cpu = gray_tensor.cpu()
         gray_np = (gray_cpu * 255).clamp(0, 255).to(torch.uint8).numpy()
-        
-        low_threshold = self.params.get('low_threshold', 100)
-        high_threshold = self.params.get('high_threshold', 200)
-        
+
+        # Optional smoothness pre-blur (category-standard edge param).
+        smoothness = float(self.params.get("smoothness", 0.0))
+        if smoothness > 0.0:
+            sigma = smoothness * 2.0
+            radius = max(1, int(sigma * 3.0 + 0.5))
+            k_size = 2 * radius + 1
+            gray_np = cv2.GaussianBlur(gray_np, (k_size, k_size), sigma)
+
+        low_threshold = self.params.get("low_threshold", 100)
+        high_threshold = self.params.get("high_threshold", 200)
+
         edges = cv2.Canny(gray_np, low_threshold, high_threshold)
-        
+
         edges_tensor = torch.from_numpy(edges).float() / 255.0
         edges_tensor = edges_tensor.to(device=self.device, dtype=self.dtype)
-        
+
         edges_rgb = edges_tensor.unsqueeze(0).repeat(3, 1, 1)
-        
-        return edges_rgb 
+
+        return edges_rgb
