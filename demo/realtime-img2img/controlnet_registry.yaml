@@ -121,3 +121,118 @@ available_controlnets:
       description: "Uses image feedback for enhanced details (SDXL)"
       preprocessor_params:
         image_resolution: 512
+
+    - id: "depth_xinsir_sdxl"
+      name: "Depth Detection (xinsir)"
+      model_id: "xinsir/controlnet-depth-sdxl-1.0"
+      default_preprocessor: "depth_tensorrt"
+      default_scale: 0.8
+      description: "Estimates depth information from images — xinsir SDXL variant"
+      preprocessor_params:
+        detect_resolution: 518
+        image_resolution: 512
+
+    - id: "scribble_sdxl"
+      name: "Scribble"
+      model_id: "xinsir/controlnet-scribble-sdxl-1.0"
+      default_preprocessor: "scribble_tensorrt"
+      default_scale: 0.8
+      description: "Produces sketch-like scribble edge conditioning (SDXL)"
+      preprocessor_params:
+        image_resolution: 512
+
+  sd21:
+    - id: "canny_sd21"
+      name: "Canny Edge Detection"
+      model_id: "thibaud/controlnet-sd21-canny-diffusers"
+      default_preprocessor: "canny"
+      default_scale: 0.8
+      description: "Detects edges and outlines in images (SD2.1)"
+      preprocessor_params:
+        low_threshold: 100
+        high_threshold: 200
+
+    - id: "depth_sd21"
+      name: "Depth Estimation"
+      model_id: "thibaud/controlnet-sd21-depth-diffusers"
+      default_preprocessor: "depth_tensorrt"
+      default_scale: 0.8
+      description: "Estimates depth from images (SD2.1)"
+      preprocessor_params:
+        detect_resolution: 518
+        image_resolution: 512
+
+    - id: "openpose_sd21"
+      name: "OpenPose"
+      model_id: "thibaud/controlnet-sd21-openpose-diffusers"
+      default_preprocessor: "pose_tensorrt"
+      default_scale: 0.8
+      description: "Detects human body pose (SD2.1)"
+      preprocessor_params:
+        detect_resolution: 640
+        image_resolution: 512
+
+    - id: "scribble_sd21"
+      name: "Scribble"
+      model_id: "thibaud/controlnet-sd21-scribble-diffusers"
+      default_preprocessor: "scribble_tensorrt"
+      default_scale: 0.8
+      description: "Generates from rough sketches (SD2.1)"
+      preprocessor_params:
+        image_resolution: 512
+
+    - id: "hed_sd21"
+      name: "HED Soft Edge"
+      model_id: "thibaud/controlnet-sd21-hed-diffusers"
+      default_preprocessor: "hed_tensorrt"
+      default_scale: 0.8
+      description: "Soft edge / HED boundary detection (SD2.1)"
+      preprocessor_params:
+        image_resolution: 512
+
+    - id: "normalbae_sd21"
+      name: "Normal Map (BAE)"
+      model_id: "thibaud/controlnet-sd21-normalbae-diffusers"
+      default_preprocessor: "normal_bae_tensorrt"
+      default_scale: 0.8
+      description: "Surface normal estimation (SD2.1)"
+      preprocessor_params:
+        image_resolution: 512
+
+    - id: "lineart_sd21"
+      name: "Lineart"
+      model_id: "thibaud/controlnet-sd21-lineart-diffusers"
+      default_preprocessor: "standard_lineart"
+      default_scale: 0.8
+      description: "Line-art extraction (SD2.1)"
+      preprocessor_params:
+        gaussian_sigma: 6.0
+        intensity_threshold: 8
+
+    - id: "zoedepth_sd21"
+      name: "ZoeDepth"
+      model_id: "thibaud/controlnet-sd21-zoedepth-diffusers"
+      default_preprocessor: "depth_tensorrt"
+      default_scale: 0.8
+      description: "Metric depth estimation (SD2.1)"
+      preprocessor_params:
+        detect_resolution: 518
+        image_resolution: 512
+
+    - id: "color_sd21"
+      name: "Color"
+      model_id: "thibaud/controlnet-sd21-color-diffusers"
+      default_preprocessor: "passthrough"
+      default_scale: 0.8
+      description: "Color/palette conditioning (SD2.1)"
+      preprocessor_params:
+        image_resolution: 512
+
+    - id: "ade20k_sd21"
+      name: "Segmentation (ADE20K)"
+      model_id: "thibaud/controlnet-sd21-ade20k-diffusers"
+      default_preprocessor: "passthrough"
+      default_scale: 0.8
+      description: "Semantic segmentation conditioning (SD2.1)"
+      preprocessor_params:
+        image_resolution: 512
