@@ -2,10 +2,8 @@ from typing import Optional
 
 import torch
 import torch.nn.functional as F
-
 from diffusers.models.attention_processor import Attention
 from diffusers.utils import USE_PEFT_BACKEND
-
 
 
 def get_nn_feats(
@@ -35,7 +33,6 @@ def get_nn_feats(
     nn_feats = torch.gather(y, 1, idx_exp)
     gate = (max_cos >= threshold).unsqueeze(-1)  # [B, N, 1]
     return torch.where(gate, nn_feats, x)
-
 
 
 class CachedSTAttnProcessor2_0:
@@ -76,9 +73,9 @@ class CachedSTAttnProcessor2_0:
         # clone/contiguous path. Set to True by wrapper.py after engine build.
         self._curr_key_buf: Optional[torch.Tensor] = None
         self._curr_value_buf: Optional[torch.Tensor] = None
-        self._cached_key_tr_buf: Optional[torch.Tensor] = None    # transposed cache key
+        self._cached_key_tr_buf: Optional[torch.Tensor] = None  # transposed cache key
         self._cached_value_tr_buf: Optional[torch.Tensor] = None  # transposed cache value
-        self._kvo_out_buf: Optional[torch.Tensor] = None          # (2, 1, B, S, H)
+        self._kvo_out_buf: Optional[torch.Tensor] = None  # (2, 1, B, S, H)
         self._use_prealloc: bool = False
 
         # FI input attributes — set by the export wrapper before each forward pass.
