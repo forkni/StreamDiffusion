@@ -17,6 +17,12 @@ from .tools.gpu_profiler import profiler
 
 logger = logging.getLogger(__name__)
 
+# Text-encoder CPU offload frees ~1.6 GB VRAM but each prompt update pays a
+# CPU<->GPU round-trip plus torch.cuda.empty_cache() — a measurable stall
+# mid-stream on high-VRAM GPUs. Default off (encoders stay resident on GPU);
+# set SD_TEXT_ENCODER_OFFLOAD=1 to restore offloading on VRAM-constrained GPUs.
+_TEXT_ENCODER_OFFLOAD: bool = os.environ.get("SD_TEXT_ENCODER_OFFLOAD", "0") == "1"
+
 torch.set_grad_enabled(False)
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -62,8 +68,8 @@ class StreamDiffusionWrapper:
     ## Weight Management:
     - Prompt weights are normalized by default (sum to 1.0) unless normalize_prompt_weights=False
     - Seed weights are normalized by default (sum to 1.0) unless normalize_seed_weights=False
-    - Use update_prompt_weights([0.8, 0.2]) to change weights without re-encoding prompts
-    - Use update_seed_weights([0.3, 0.7]) to change weights without regenerating noise
+    - To change blend weights, pass the full prompt_list/seed_list to update_stream_params —
+      unchanged texts/seeds hit the embedding/noise cache, so only re-blending occurs (no re-encode)
 
     ## Cache Management:
     - Prompt embeddings and seed noise tensors are automatically cached for performance
@@ -432,7 +438,7 @@ class StreamDiffusionWrapper:
         guidance_scale: float = 1.2,
         delta: float = 1.0,
         # Blending-specific parameters (only used when prompt is a list)
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
+        prompt_interpolation_method: Literal["linear", "slerp", "cosine_weighted"] = "slerp",
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
     ) -> None:
@@ -524,7 +530,13 @@ class StreamDiffusionWrapper:
 
         Called automatically after initial prepare() when using TRT acceleration.
         Text encoders are reloaded to GPU before each prompt re-encoding call.
+
+        No-op when SD_TEXT_ENCODER_OFFLOAD is not set (default). High-VRAM GPUs
+        (RTX 4090, A100…) benefit from keeping encoders resident to avoid the
+        CPU<->GPU transfer + empty_cache() stall on every prompt update.
         """
+        if not _TEXT_ENCODER_OFFLOAD:
+            return
         pipe = self.stream.pipe
         if hasattr(pipe, "text_encoder") and pipe.text_encoder is not None:
             if next(pipe.text_encoder.parameters(), None) is not None:
@@ -536,7 +548,13 @@ class StreamDiffusionWrapper:
         logger.debug("[VRAM] Text encoders offloaded to CPU")
 
     def _reload_text_encoders(self) -> None:
-        """Move text encoders back to GPU before prompt re-encoding."""
+        """Move text encoders back to GPU before prompt re-encoding.
+
+        No-op when SD_TEXT_ENCODER_OFFLOAD is not set (default) because
+        encoders were never offloaded.
+        """
+        if not _TEXT_ENCODER_OFFLOAD:
+            return
         pipe = self.stream.pipe
         if hasattr(pipe, "text_encoder") and pipe.text_encoder is not None:
             pipe.text_encoder = pipe.text_encoder.to(self.device)
@@ -548,7 +566,7 @@ class StreamDiffusionWrapper:
         self,
         prompt: Union[str, List[Tuple[str, float]]],
         negative_prompt: str = "",
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
+        prompt_interpolation_method: Literal["linear", "slerp", "cosine_weighted"] = "slerp",
         clear_blending: bool = True,
         warn_about_conflicts: bool = True,
     ) -> None:
@@ -568,7 +586,7 @@ class StreamDiffusionWrapper:
             - Blending: [("cat", 0.7), ("dog", 0.3)]
         negative_prompt : str, optional
             The negative prompt (used with blending), by default "".
-        prompt_interpolation_method : Literal["linear", "slerp"], optional
+        prompt_interpolation_method : Literal["linear", "slerp", "cosine_weighted"], optional
             Method for interpolating between prompt embeddings (used with blending), by default "slerp".
         clear_blending : bool, optional
             Whether to clear existing blending when switching to single prompt, by default True.
@@ -626,7 +644,7 @@ class StreamDiffusionWrapper:
         # Prompt blending parameters
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
+        prompt_interpolation_method: Literal["linear", "slerp", "cosine_weighted"] = "slerp",
         normalize_prompt_weights: Optional[bool] = None,
         # Seed blending parameters
         seed_list: Optional[List[Tuple[int, float]]] = None,
@@ -666,7 +684,7 @@ class StreamDiffusionWrapper:
             Example: [("cat", 0.7), ("dog", 0.3)]
         negative_prompt : Optional[str]
             The negative prompt to apply to all blended prompts.
-        prompt_interpolation_method : Literal["linear", "slerp"]
+        prompt_interpolation_method : Literal["linear", "slerp", "cosine_weighted"]
             Method for interpolating between prompt embeddings, by default "slerp".
         normalize_prompt_weights : Optional[bool]
             Whether to normalize prompt weights in blending to sum to 1, by default None (no change).
@@ -691,6 +709,23 @@ class StreamDiffusionWrapper:
         safety_checker_threshold : Optional[float]
             The threshold for the safety checker.
         """
+        # Skip re-encoding if the incoming prompt_list is identical to the cached one.
+        # OSC delivers list-of-lists from JSON; normalise to (str, float) tuples before
+        # comparing so type mismatches don't cause spurious cache misses.
+        if prompt_list is not None:
+            _normalized = [(str(p), float(w)) for p, w in prompt_list]
+            _current = self.stream._param_updater.get_current_prompts()
+            _neg_unchanged = (
+                negative_prompt is None
+                or negative_prompt == self.stream._param_updater._current_negative_prompt
+            )
+            if _normalized == _current and _neg_unchanged:
+                logger.debug(
+                    "update_stream_params: prompt_list unchanged (%d prompt(s)) -- skipping re-encode",
+                    len(_normalized),
+                )
+                prompt_list = None
+
         # Reload text encoders to GPU if a new prompt needs encoding.
         needs_encoding = prompt_list is not None or negative_prompt is not None
         if needs_encoding:

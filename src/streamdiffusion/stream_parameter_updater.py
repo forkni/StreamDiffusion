@@ -59,6 +59,13 @@ class StreamParameterUpdater(OrchestratorUser):
         # Use the shared orchestrator attached via OrchestratorUser
         self._embedding_orchestrator = self._preprocessing_orchestrator
 
+        # Tracks the last prompt interpolation method used; read by td_manager for
+        # IPAdapter style-image re-blends (td_manager.py:1147).
+        self._last_prompt_interpolation_method: str = "slerp"
+        # Warn-once set: emit one logger.warning per unique unknown method string so
+        # that per-frame weight-drag calls don't flood the log.
+        self._warned_unknown_interp_methods: set = set()
+
     def get_cache_info(self) -> Dict:
         """Get cache statistics for monitoring performance."""
         total_requests = self._prompt_cache_stats.hits + self._prompt_cache_stats.misses
@@ -243,7 +250,7 @@ class StreamParameterUpdater(OrchestratorUser):
         seed: Optional[int] = None,
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
+        prompt_interpolation_method: Literal["linear", "slerp", "cosine_weighted"] = "slerp",
         normalize_prompt_weights: Optional[bool] = None,
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
@@ -320,6 +327,13 @@ class StreamParameterUpdater(OrchestratorUser):
 
             # Handle prompt blending if prompt_list is provided
             if prompt_list is not None:
+                # Log at INFO only when the prompt *texts* change (real new prompt).
+                # Weight-only changes during a drag produce a different list each frame
+                # but don't warrant INFO noise — demote those to DEBUG.
+                _texts_changed = [str(p) for p, _ in prompt_list] != [p for p, _ in self._current_prompt_list]
+                _log = logger.info if _texts_changed else logger.debug
+                _excerpts = [p[:40] + ("…" if len(p) > 40 else "") for p, _ in prompt_list]
+                _log(f"update_stream_params: prompt_list -> {len(prompt_list)} prompt(s): {_excerpts!r}")
                 self._update_blended_prompts(
                     prompt_list=prompt_list,
                     negative_prompt=negative_prompt or self._current_negative_prompt,
@@ -389,61 +403,11 @@ class StreamParameterUpdater(OrchestratorUser):
                         logger.info(f"update_stream_params: Cache maxframes set to {cache_maxframes}")
 
     @torch.inference_mode()
-    def update_prompt_weights(
-        self, prompt_weights: List[float], prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
-    ) -> None:
-        """Update weights for current prompt list without re-encoding prompts."""
-        if not self._current_prompt_list:
-            logger.warning("update_prompt_weights: Warning: No current prompt list to update weights for")
-            return
-
-        if len(prompt_weights) != len(self._current_prompt_list):
-            logger.warning(
-                f"update_prompt_weights: Warning: Weight count {len(prompt_weights)} doesn't match prompt count {len(self._current_prompt_list)}"
-            )
-            return
-
-        # Update the current prompt list with new weights
-        updated_prompt_list = []
-        for i, (prompt_text, _) in enumerate(self._current_prompt_list):
-            updated_prompt_list.append((prompt_text, prompt_weights[i]))
-
-        self._current_prompt_list = updated_prompt_list
-
-        # Recompute blended embeddings with new weights
-        self._apply_prompt_blending(prompt_interpolation_method)
-
-    @torch.inference_mode()
-    def update_seed_weights(
-        self, seed_weights: List[float], interpolation_method: Literal["linear", "slerp"] = "linear"
-    ) -> None:
-        """Update weights for current seed list without regenerating noise."""
-        if not self._current_seed_list:
-            logger.warning("update_seed_weights: Warning: No current seed list to update weights for")
-            return
-
-        if len(seed_weights) != len(self._current_seed_list):
-            logger.warning(
-                f"update_seed_weights: Warning: Weight count {len(seed_weights)} doesn't match seed count {len(self._current_seed_list)}"
-            )
-            return
-
-        # Update the current seed list with new weights
-        updated_seed_list = []
-        for i, (seed_value, _) in enumerate(self._current_seed_list):
-            updated_seed_list.append((seed_value, seed_weights[i]))
-
-        self._current_seed_list = updated_seed_list
-
-        # Recompute blended noise with new weights
-        self._apply_seed_blending(interpolation_method)
-
-    @torch.inference_mode()
     def _update_blended_prompts(
         self,
         prompt_list: List[Tuple[str, float]],
         negative_prompt: str = "",
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
+        prompt_interpolation_method: Literal["linear", "slerp", "cosine_weighted"] = "slerp",
     ) -> None:
         """Update prompt embeddings using multiple weighted prompts."""
         # Store current state
@@ -478,7 +442,9 @@ class StreamParameterUpdater(OrchestratorUser):
                 # Cache hit
                 self._prompt_cache_stats.record_hit()
 
-    def _apply_prompt_blending(self, prompt_interpolation_method: Literal["linear", "slerp"]) -> None:
+    def _apply_prompt_blending(
+        self, prompt_interpolation_method: Literal["linear", "slerp", "cosine_weighted"]
+    ) -> None:
         """Apply weighted blending of cached prompt embeddings."""
         if not self._current_prompt_list:
             return
@@ -495,16 +461,38 @@ class StreamParameterUpdater(OrchestratorUser):
             logger.warning("_apply_prompt_blending: Warning: No cached embeddings found")
             return
 
+        # Record last method used (consumed by td_manager IPAdapter re-blend at 1147).
+        self._last_prompt_interpolation_method = prompt_interpolation_method
+
         # Normalize weights
         weights = self._normalize_weights(weights, self.normalize_prompt_weights)
 
         # Apply interpolation
-        if prompt_interpolation_method == "slerp" and len(embeddings) == 2:
-            # Spherical linear interpolation for 2 prompts
-            embed1, embed2 = embeddings[0], embeddings[1]
-            t = weights[1].item()  # Use second weight as interpolation factor
-            combined_embeds = self._slerp(embed1, embed2, t)
+        if prompt_interpolation_method == "slerp":
+            if len(embeddings) == 2:
+                # Original 2-way slerp path — identical output to before.
+                embed1, embed2 = embeddings[0], embeddings[1]
+                t = weights[1].item()  # Use second weight as interpolation factor
+                combined_embeds = self._slerp(embed1, embed2, t)
+            else:
+                # N-way iterative slerp (ported from reference multi_slerp).
+                combined_embeds = self._multi_slerp(embeddings, weights.tolist())
+        elif prompt_interpolation_method == "cosine_weighted":
+            # Genuine cosine-similarity weighting: emphasise embeddings aligned with the
+            # weighted consensus direction, de-emphasise outliers, then N-way slerp.
+            combined_embeds = self._cosine_weighted_blend(embeddings, weights.tolist())
         else:
+            # Unknown method — warn once per unique string so weight-drag updates don't
+            # flood the log, then fall back to linear interpolation.
+            if prompt_interpolation_method != "linear" and (
+                prompt_interpolation_method not in self._warned_unknown_interp_methods
+            ):
+                self._warned_unknown_interp_methods.add(prompt_interpolation_method)
+                logger.warning(
+                    "_apply_prompt_blending: unknown interpolation method %r - "
+                    "falling back to linear (valid: linear, slerp, cosine_weighted)",
+                    prompt_interpolation_method,
+                )
             # Linear interpolation (weighted average)
             combined_embeds = torch.zeros_like(embeddings[0])
             for embed, weight in zip(embeddings, weights):
@@ -600,6 +588,74 @@ class StreamParameterUpdater(OrchestratorUser):
 
         return result.view(original_shape)
 
+    def _multi_slerp(self, embeddings: List[torch.Tensor], weights: List[float]) -> torch.Tensor:
+        """N-way iterative SLERP over a list of embeddings, ported from the reference fork.
+
+        Embeddings are sorted by weight (desc) and folded pairwise with the standard 2-way
+        ``_slerp``.  The result is scaled by ``max(1, sum(weights))`` so that weights > 1
+        amplify the output magnitude rather than being silently clipped.
+
+        Args:
+            embeddings: List of embedding tensors (all same shape).
+            weights: Corresponding raw (already-normalised by caller) weights as plain floats.
+
+        Returns:
+            Interpolated embedding tensor with the same shape as each input.
+        """
+        total_weight = sum(weights)
+        scale_factor = max(1.0, total_weight)
+        if len(embeddings) == 1:
+            return embeddings[0] * scale_factor
+        scaled_weights = [w / scale_factor for w in weights]
+        sorted_pairs = sorted(zip(embeddings, scaled_weights), key=lambda x: x[1], reverse=True)
+        sorted_embeddings, sorted_weights = zip(*sorted_pairs)
+        result = sorted_embeddings[0]
+        accumulated_weight = sorted_weights[0]
+        for i in range(1, len(sorted_embeddings)):
+            if sorted_weights[i] == 0:
+                continue
+            t = sorted_weights[i] / (accumulated_weight + sorted_weights[i])
+            result = self._slerp(result, sorted_embeddings[i], t)
+            accumulated_weight += sorted_weights[i]
+        return result * scale_factor
+
+    def _cosine_weighted_blend(self, embeddings: List[torch.Tensor], weights: List[float]) -> torch.Tensor:
+        """Blend embeddings with cosine-similarity weighting toward the weighted consensus direction.
+
+        Computes a weighted-mean direction across all embeddings, then adjusts each embedding's
+        weight by its cosine similarity to that consensus.  Embeddings that agree with the
+        consensus are up-weighted; outliers are down-weighted.  The adjusted weights preserve
+        total weight mass so that overall embedding magnitude is unchanged.  The final blend
+        is performed with ``_multi_slerp`` for perceptually smooth interpolation.
+
+        This is the genuine implementation of what the reference fork named
+        "cosine_weighted_interpolation" but never actually computed (its implementation
+        was a dead-code alias for plain multi_slerp).
+
+        Args:
+            embeddings: List of embedding tensors (all same shape).
+            weights: Corresponding raw (already-normalised by caller) weights as plain floats.
+
+        Returns:
+            Interpolated embedding tensor with the same shape as each input.
+        """
+        if len(embeddings) == 1:
+            return embeddings[0]
+        # Work in float32 regardless of model dtype for numerical stability.
+        ref_device = embeddings[0].device
+        flats = torch.stack([e.flatten().float() for e in embeddings])  # [N, D]
+        w = torch.tensor(weights, device=ref_device, dtype=torch.float32)  # [N]
+        # Weighted consensus direction.
+        mean_dir = F.normalize((flats * w.unsqueeze(1)).sum(0), dim=0)  # [D]
+        # Cosine similarity of each embedding to the consensus.
+        cos_sims = (F.normalize(flats, dim=1) @ mean_dir).clamp(min=1e-4)  # [N]
+        # Adjust weights by cosine similarity; keep total weight mass constant.
+        adj = w * cos_sims
+        total_w = w.sum()
+        if adj.sum() > 1e-8:
+            adj = adj * (total_w / adj.sum())
+        return self._multi_slerp(embeddings, adj.tolist())
+
     @torch.inference_mode()
     def _update_blended_seeds(
         self, seed_list: List[Tuple[int, float]], interpolation_method: Literal["linear", "slerp"] = "linear"
@@ -675,9 +731,19 @@ class StreamParameterUpdater(OrchestratorUser):
                 sum_sq = (weights * weights).sum()
                 combined_noise = combined_noise / torch.sqrt(sum_sq)
 
-        # Update stream noise
+        # Update stream noise.
+        # IMPORTANT: do NOT zero stock_noise here. Resetting it destroys the RCFG residual
+        # continuity established over previous frames, causing a cold-restart artifact on every
+        # per-frame seed blend. The reference fork (main_sdtd.py:4058) preserves stock_noise
+        # across reseeds intentionally. Only init_noise is replaced; stock_noise evolves from
+        # whatever the scheduler accumulated, which produces the smooth, coherent evolution.
         self.stream.init_noise = combined_noise
-        self.stream.stock_noise = torch.zeros_like(self.stream.init_noise)
+
+        # Keep pre-computed rotation in sync with the new init_noise (same as _update_seed:728-731).
+        if self.stream._init_noise_rotated is not None:
+            self.stream._init_noise_rotated = torch.cat(
+                [self.stream.init_noise[1:], self.stream.init_noise[0:1]], dim=0
+            )
 
     def _slerp_noise(self, noise1: torch.Tensor, noise2: torch.Tensor, t: float) -> torch.Tensor:
         """Spherical linear interpolation between two noise tensors.
@@ -825,6 +891,57 @@ class StreamParameterUpdater(OrchestratorUser):
             dim=0,
         )
 
+        # F2: Keep pre-computed shifted tensors in sync with the new alpha/beta values.
+        # _alpha_next / _beta_next / _init_noise_rotated are built only in prepare()
+        # (pipeline.py:595-605) and the error-fallback _refresh_derived_tensors().
+        # Without this sync they go stale when t_index_list is updated at runtime,
+        # causing incorrect stock_noise rotation at guidance > 1.0 (RCFG-self path,
+        # pipeline.py:979-984).  _init_noise_rotated is a rotation of init_noise which
+        # is unchanged by a t_index value-only update, so we re-derive from the live tensor
+        # rather than re-sampling (mirrors the _update_seed precedent at :749-753).
+        if (
+            self.stream.use_denoising_batch
+            and (self.stream.cfg_type == "self" or self.stream.cfg_type == "initialize")
+            and self.stream._alpha_next is not None
+        ):
+            self.stream._alpha_next = torch.cat(
+                [self.stream.alpha_prod_t_sqrt[1:], torch.ones_like(self.stream.alpha_prod_t_sqrt[0:1])],
+                dim=0,
+            )
+            self.stream._beta_next = torch.cat(
+                [self.stream.beta_prod_t_sqrt[1:], torch.ones_like(self.stream.beta_prod_t_sqrt[0:1])],
+                dim=0,
+            )
+            self.stream._init_noise_rotated = torch.cat(
+                [self.stream.init_noise[1:], self.stream.init_noise[0:1]], dim=0
+            )
+
+        # Warn about known-bad do_add_noise=False regime for multi-step denoising batches.
+        # With do_add_noise=False, inter-step x_t_latent_buffer lacks noise content:
+        #   buffer = alpha_sqrt[1:] * x0_pred   (pipeline.py:1082)
+        # vs. the expected:  alpha_sqrt * x0 + beta_sqrt * epsilon
+        # When beta_sqrt at any inter-step timestep is large (high-noise regime), the UNet
+        # mis-interprets the clean buffer, causing ghost bleed from previous frames.
+        # Threshold 0.75 matches the empirically observed perceptual onset (~t_index 30 in
+        # a 50-step LCM schedule where beta_sqrt crosses 0.78).
+        if (
+            self.stream.use_denoising_batch
+            and not self.stream.do_add_noise
+            and len(self.stream.t_list) > 1
+        ):
+            inter_step_betas = beta_prod_t_sqrt[1:, 0, 0, 0]  # per-step, before repeat_interleave
+            max_beta = inter_step_betas.max().item()
+            _BLEED_THRESHOLD = 0.75
+            if max_beta > _BLEED_THRESHOLD:
+                logger.warning(
+                    "do_add_noise=False + use_denoising_batch: inter-step beta_sqrt=%.3f "
+                    "(t_index=%s) exceeds %.2f. Previous-frame ghost bleed likely — "
+                    "consider enabling do_add_noise (reference fork default).",
+                    max_beta,
+                    self.stream.t_list[1:],
+                    _BLEED_THRESHOLD,
+                )
+
     def _update_timestep_values_only(self, t_index_list: List[int]) -> None:
         """Update only timestep-dependent values when t_index_list values change but length stays same.
         This preserves the working branch behavior for value-only changes."""
@@ -927,7 +1044,10 @@ class StreamParameterUpdater(OrchestratorUser):
 
     @torch.inference_mode()
     def update_prompt_at_index(
-        self, index: int, new_prompt: str, prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
+        self,
+        index: int,
+        new_prompt: str,
+        prompt_interpolation_method: Literal["linear", "slerp", "cosine_weighted"] = "slerp",
     ) -> None:
         """Update a single prompt at the specified index without re-encoding others."""
         if not self._validate_index(index, self._current_prompt_list, "update_prompt_at_index"):
@@ -975,7 +1095,10 @@ class StreamParameterUpdater(OrchestratorUser):
 
     @torch.inference_mode()
     def add_prompt(
-        self, prompt: str, weight: float = 1.0, prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
+        self,
+        prompt: str,
+        weight: float = 1.0,
+        prompt_interpolation_method: Literal["linear", "slerp", "cosine_weighted"] = "slerp",
     ) -> None:
         """Add a new prompt to the current list."""
         new_index = len(self._current_prompt_list)
@@ -997,7 +1120,9 @@ class StreamParameterUpdater(OrchestratorUser):
 
     @torch.inference_mode()
     def remove_prompt_at_index(
-        self, index: int, prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
+        self,
+        index: int,
+        prompt_interpolation_method: Literal["linear", "slerp", "cosine_weighted"] = "slerp",
     ) -> None:
         """Remove a prompt at the specified index."""
         if not self._validate_index(index, self._current_prompt_list, "remove_prompt_at_index"):
