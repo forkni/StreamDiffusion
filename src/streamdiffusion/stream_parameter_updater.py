@@ -560,7 +560,12 @@ class StreamParameterUpdater(OrchestratorUser):
             self.stream.negative_prompt_embeds = final_negative_embeds
 
     def _slerp(self, embed1: torch.Tensor, embed2: torch.Tensor, t: float) -> torch.Tensor:
-        """Spherical linear interpolation between two embeddings."""
+        """Spherical linear interpolation between two embeddings.
+
+        Traces the geodesic on the unit sphere (MML §3.3), then rescales to the
+        linearly-interpolated norm so embeddings of unequal magnitude are handled
+        correctly.
+        """
         # Handle case where t is 0 or 1
         if t <= 0:
             return embed1
@@ -572,23 +577,26 @@ class StreamParameterUpdater(OrchestratorUser):
         flat1 = embed1.view(-1)
         flat2 = embed2.view(-1)
 
-        # Normalize
+        # Preserve norms for magnitude interpolation, then normalize for angle calc.
+        norm1 = flat1.norm()
+        norm2 = flat2.norm()
         flat1_norm = F.normalize(flat1, dim=0)
         flat2_norm = F.normalize(flat2, dim=0)
 
-        # Calculate angle
+        # Calculate angle between unit vectors
         dot_product = torch.clamp(torch.dot(flat1_norm, flat2_norm), -1.0, 1.0)
         theta = torch.acos(dot_product)
 
-        # Handle parallel vectors
+        # Handle parallel vectors (degenerate SLERP → LERP)
         if theta.abs() < 1e-6:
             result = (1 - t) * flat1 + t * flat2
         else:
-            # SLERP formula
+            # SLERP on unit sphere, rescaled to linearly-interpolated magnitude.
             sin_theta = torch.sin(theta)
             w1 = torch.sin((1 - t) * theta) / sin_theta
             w2 = torch.sin(t * theta) / sin_theta
-            result = w1 * flat1 + w2 * flat2
+            unit_result = w1 * flat1_norm + w2 * flat2_norm
+            result = unit_result * ((1 - t) * norm1 + t * norm2)
 
         return result.view(original_shape)
 
@@ -648,6 +656,7 @@ class StreamParameterUpdater(OrchestratorUser):
         weights = self._normalize_weights(weights, self.normalize_seed_weights)
 
         # Apply interpolation
+        # SLERP only activates for exactly 2 seeds; 3+ seeds always use linear blending.
         if interpolation_method == "slerp" and len(noise_tensors) == 2:
             # Spherical linear interpolation for 2 seeds
             noise1, noise2 = noise_tensors[0], noise_tensors[1]
@@ -659,19 +668,25 @@ class StreamParameterUpdater(OrchestratorUser):
             for noise, weight in zip(noise_tensors, weights):
                 combined_noise += weight * noise
 
-            # Preserve noise magnitude when weights are normalized
+            # For normalized weights (Σwᵢ=1), Var(Σwᵢεᵢ)=Σwᵢ² ≤ 1 — the blend is
+            # under-dispersed.  Restore 𝒩(0,I) variance with the exact closed-form
+            # factor 1/√(Σwᵢ²) (MML §6.4 / Bishop §2.3 variance of a sum).
             if self.normalize_seed_weights and len(noise_tensors) > 1:
-                original_magnitude = torch.mean(torch.stack([torch.norm(noise) for noise in noise_tensors]))
-                current_magnitude = torch.norm(combined_noise)
-                if current_magnitude > 1e-8:  # Avoid division by zero
-                    combined_noise = combined_noise * (original_magnitude / current_magnitude)
+                sum_sq = (weights * weights).sum()
+                combined_noise = combined_noise / torch.sqrt(sum_sq)
 
         # Update stream noise
         self.stream.init_noise = combined_noise
         self.stream.stock_noise = torch.zeros_like(self.stream.init_noise)
 
     def _slerp_noise(self, noise1: torch.Tensor, noise2: torch.Tensor, t: float) -> torch.Tensor:
-        """Spherical linear interpolation between two noise tensors."""
+        """Spherical linear interpolation between two noise tensors.
+
+        NOTE: weights are applied to the raw (un-normalised) flats.  For independent
+        Gaussian tensors this is benign — both norms ≈ √N, so the equal-magnitude
+        assumption nearly holds; at θ≈90° the blend also preserves 𝒩(0,I) variance.
+        For embeddings of unequal norm use ``_slerp`` (exact magnitude-rescaling).
+        """
         # Handle case where t is 0 or 1
         if t <= 0:
             return noise1

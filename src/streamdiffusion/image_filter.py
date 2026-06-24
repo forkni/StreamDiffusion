@@ -6,6 +6,16 @@ import torch.nn.functional as F
 
 
 class SimilarImageFilter:
+    """Stochastic frame-skip filter (StreamDiffusion §3.3).
+
+    NOTE: the StreamDiffusion paper describes cosine similarity in latent space to
+    compute the skip probability.  This implementation uses pixel-space MSE for
+    simplicity and speed.  `threshold` is remapped via ``mse_threshold = 1 − threshold``,
+    so ``threshold=0.98`` means frames with MSE < 0.02 have a non-zero skip probability.
+    The stochastic skip logic uses a 1-frame delay (skip probability is computed
+    asynchronously and applied on the next frame) to avoid GPU stalls.
+    """
+
     def __init__(self, threshold: float = 0.98, max_skip_frame: float = 10) -> None:
         self.threshold = threshold
         self._mse_threshold: float = max(1e-7, 1.0 - threshold)

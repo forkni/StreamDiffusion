@@ -59,7 +59,7 @@ _deps = [
     "Pillow>=12.2.0",  # CVE-2026-25990: out-of-bounds write in PSD loading; 12.2.0 verified
     "fire==0.7.1",
     "omegaconf==2.3.0",
-    "onnx==1.19.1",  # IR 11; modelopt needs FLOAT4E2M1 (added in 1.18); onnx-gs 0.6.1 no longer needs float32_to_bfloat16
+    "onnx==1.19.1",  # IR 11; modelopt FLOAT4E2M1 (1.18+); 1.21.0 breaks FP8 quant (external-data loading → negative QDQ scale); 6 path-traversal CVEs accepted: require untrusted model loading
     "onnxruntime-gpu==1.24.4",  # TRT EP, supports IR 11; never co-install CPU onnxruntime — shared files conflict
     "onnxoptimizer==0.4.2",
     "onnxslim==0.1.91",
