@@ -52,7 +52,76 @@ logger = logging.getLogger(__name__)
 
 TRT_LOGGER = get_trt_logger()  # polygraphy singleton — shared with engine_from_bytes()
 
-from ...model_detection import detect_model
+
+class _BuildLogFilter(trt.ILogger):
+    """Forwards TRT build messages to polygraphy's logger, dropping known-benign messages:
+
+    - Myelin tactic-skip spam (TRT 10.x catches this exception, skips the tactic, and
+      still builds a correct engine). Counted so builds emit a one-line summary instead
+      of ~140 identical [E] lines per VAE engine.
+    - Logger-mismatch notice ("logger passed into createInferBuilder differs") — a
+      singleton bookkeeping warning with no effect on engine correctness. Counted so
+      users see a single summary line instead of repeated [W] noise.
+    """
+
+    # Myelin tactic-skip: ALL tokens must appear in the same message.
+    _BENIGN = ("setupProxyGraph", "g.nodes.size() == 0")
+    # Logger-mismatch singleton warning: any of these tokens suffices.
+    _BENIGN_WARN = ("logger passed into createInferBuilder differs",)
+
+    def __init__(self, inner):
+        trt.ILogger.__init__(self)
+        self._inner = inner
+        self.suppressed = 0
+        self.suppressed_warn = 0
+
+    def log(self, severity, msg):
+        if all(s in msg for s in self._BENIGN):
+            self.suppressed += 1
+            return
+        if any(s in msg for s in self._BENIGN_WARN):
+            self.suppressed_warn += 1
+            return
+        self._inner.log(severity, msg)
+
+
+# Single shared instance. TensorRT registers ONE logger globally (first
+# builder/runtime/refitter wins); reusing one instance for every trt.Builder,
+# trt.Runtime, and trt.Refitter we create avoids the "logger differs from one
+# already registered" warning while still filtering the benign myelin spam.
+BUILD_TRT_LOGGER = _BuildLogFilter(TRT_LOGGER)
+
+_BUILD_LOGGER_REGISTERED = False
+
+
+def _ensure_build_logger_registered() -> None:
+    """Force BUILD_TRT_LOGGER to win the global TRT logger registration race.
+
+    TRT registers exactly ONE ILogger globally (first trt.Builder / trt.Runtime /
+    trt.Refitter wins via ``nvinfer1::getLogger()``).  Calling this once — before any
+    polygraphy ``engine_from_bytes()`` or any other ``trt.Builder()`` — guarantees that
+    subsequent "logger differs" warnings (from loads that use TRT_LOGGER, or from
+    standalone compile tools with a fresh logger) route through BUILD_TRT_LOGGER and are
+    silently suppressed by its ``_BENIGN_WARN`` filter.
+
+    Idempotent: the throwaway builder is created at most once per process.
+    """
+    global _BUILD_LOGGER_REGISTERED
+    if _BUILD_LOGGER_REGISTERED:
+        return
+    _BUILD_LOGGER_REGISTERED = True
+    try:
+        trt.Builder(BUILD_TRT_LOGGER)  # registers BUILD_TRT_LOGGER as the global TRT logger
+    except Exception:
+        pass  # no CUDA device or TRT init failure — skip; filter still active for any msgs received
+
+
+# Register on import so the first polygraphy engine_from_bytes() (which uses TRT_LOGGER)
+# cannot claim the global slot before BUILD_TRT_LOGGER.
+_ensure_build_logger_registered()
+
+
+from ...model_detection import detect_model  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -535,7 +604,7 @@ class Engine:
 
         # Construct refit dictionary
         refit_dict = {}
-        refitter = trt.Refitter(self.engine, TRT_LOGGER)
+        refitter = trt.Refitter(self.engine, BUILD_TRT_LOGGER)
         all_weights = refitter.get_all()
         for layer_name, role in zip(all_weights[0], all_weights[1]):
             # for speciailized roles, use a unique name in the map:
@@ -625,7 +694,10 @@ class Engine:
         # set_preview_feature, or SPARSE_WEIGHTS. We use the raw API (same as
         # the FP8 path) so all parameters are available for both precision paths.
 
-        builder = trt.Builder(TRT_LOGGER)
+        build_logger = BUILD_TRT_LOGGER
+        suppressed_before = build_logger.suppressed
+        suppressed_warn_before = build_logger.suppressed_warn
+        builder = trt.Builder(build_logger)
 
         network_flags = 0
         network = builder.create_network(network_flags)
@@ -689,6 +761,18 @@ class Engine:
         serialized = builder.build_serialized_network(network, config)
         if serialized is None:
             raise RuntimeError(f"TRT FP16 engine build failed for {onnx_path}. Check TRT logs above for details.")
+        suppressed = build_logger.suppressed - suppressed_before
+        if suppressed:
+            logger.info(
+                f"[TRT Build] Suppressed {suppressed} benign myelin tactic-skip "
+                f"messages (TRT Error Code 9 / setupProxyGraph) — engine built normally."
+            )
+        suppressed_warn = build_logger.suppressed_warn - suppressed_warn_before
+        if suppressed_warn:
+            logger.info(
+                f"[TRT Build] Suppressed {suppressed_warn} benign logger-mismatch "
+                f"notice(s) (createInferBuilder singleton warning) — no impact on engine."
+            )
 
         with open(self.engine_path, "wb") as f:
             f.write(serialized)
@@ -732,7 +816,10 @@ class Engine:
             gpu_profile: Hardware-aware build parameters from detect_gpu_profile().
             dynamic_shapes: Whether the engine uses dynamic input shapes.
         """
-        builder = trt.Builder(TRT_LOGGER)
+        build_logger = BUILD_TRT_LOGGER
+        suppressed_before = build_logger.suppressed
+        suppressed_warn_before = build_logger.suppressed_warn
+        builder = trt.Builder(build_logger)
 
         # STRONGLY_TYPED: required for FP8. Tells TRT to use the data-type annotations
         # from Q/DQ nodes rather than running its own precision heuristics.
@@ -802,6 +889,18 @@ class Engine:
         serialized = builder.build_serialized_network(network, config)
         if serialized is None:
             raise RuntimeError(f"TRT FP8 engine build failed for {onnx_path}. Check TRT logs above for details.")
+        suppressed = build_logger.suppressed - suppressed_before
+        if suppressed:
+            logger.info(
+                f"[TRT Build] Suppressed {suppressed} benign myelin tactic-skip "
+                f"messages (TRT Error Code 9 / setupProxyGraph) — engine built normally."
+            )
+        suppressed_warn = build_logger.suppressed_warn - suppressed_warn_before
+        if suppressed_warn:
+            logger.info(
+                f"[TRT Build] Suppressed {suppressed_warn} benign logger-mismatch "
+                f"notice(s) (createInferBuilder singleton warning) — no impact on engine."
+            )
 
         with open(self.engine_path, "wb") as f:
             f.write(serialized)

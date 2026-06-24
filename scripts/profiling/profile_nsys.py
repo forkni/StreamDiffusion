@@ -77,6 +77,24 @@ parser.add_argument(
     help="Print subprocess commands without executing (td_main target only)",
 )
 parser.add_argument(
+    "--cn-scale",
+    type=float,
+    default=0.0,
+    metavar="SCALE",
+    help="[benchmark] ControlNet conditioning scale (0 = disabled, default). "
+    "When > 0, activates the first registered ControlNet at this scale using a dummy "
+    "gray control image. Lets you measure CN per-frame cost alongside the UNet baseline.",
+)
+parser.add_argument(
+    "--cn-cache-interval",
+    type=int,
+    default=1,
+    metavar="N",
+    help="[benchmark] ControlNet residual cache interval (default 1 = disabled). "
+    "N>1: CN forward runs once every N frames; residuals reused between. "
+    "Requires --cn-scale > 0.",
+)
+parser.add_argument(
     "--config",
     default="",
     metavar="PATH",
@@ -256,6 +274,33 @@ import PIL.Image
 
 
 dummy_img = PIL.Image.new("RGB", (_WIDTH, _HEIGHT), (128, 128, 128))
+
+# ── ControlNet activation (--cn-scale > 0) ────────────────────────────────────
+if args.cn_scale > 0.0:
+    try:
+        cn_mod = getattr(stream.stream, "_controlnet_module", None)
+        if cn_mod is None:
+            raise RuntimeError("No _controlnet_module found — ensure config has a ControlNet")
+        # Set scale
+        cn_mod.update_controlnet_scale(0, args.cn_scale)
+        # update_control_image_efficient bails if _preprocessing_orchestrator is None (offline mode).
+        # Bypass it: directly inject a dummy control tensor ([1,3,H,W] fp16 on GPU) so the hook's
+        # 'img is not None' gate passes.  prepare_frame_tensors will expand it to the right batch.
+        with cn_mod._collections_lock:
+            if len(cn_mod.controlnet_images) > 0:
+                dummy_cn = torch.ones(1, 3, _HEIGHT, _WIDTH, dtype=torch.float16, device="cuda") * 0.5
+                cn_mod.controlnet_images[0] = dummy_cn
+                cn_mod._prepared_tensors = []
+                cn_mod._images_version += 1
+            else:
+                raise RuntimeError("ControlNet registered but controlnet_images list is empty")
+        print(f"[profile] ControlNet[0] enabled: scale={args.cn_scale}, image=dummy gray tensor {_WIDTH}x{_HEIGHT}")
+        if args.cn_cache_interval > 1:
+            cn_mod.set_cn_cache_interval(args.cn_cache_interval)
+            print(f"[profile] ControlNet residual cache: interval={args.cn_cache_interval} (CN forward every {args.cn_cache_interval} frames)")
+    except Exception as _cn_err:
+        print(f"[profile] WARNING: Could not activate ControlNet — {_cn_err}")
+        print("  Make sure the config includes a ControlNet and its engine is built.")
 
 # ── Preprocess once ────────────────────────────────────────────────────────────
 image_tensor = stream.preprocess_image(dummy_img)

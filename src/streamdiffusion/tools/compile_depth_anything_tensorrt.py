@@ -9,27 +9,30 @@ Usage:
     python -m streamdiffusion.tools.compile_depth_anything_tensorrt --model_size small --resolution 518
 """
 
-import logging
-from pathlib import Path
-
-import fire
 import torch
+import logging
+import os
+from pathlib import Path
+from typing import Optional
+import fire
 
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 try:
-    import tensorrt as trt
+    import tensorrt as trt  # noqa: E402
+
+    from streamdiffusion.acceleration.tensorrt.utilities import BUILD_TRT_LOGGER
+
 
     TENSORRT_AVAILABLE = True
 except ImportError:
     TENSORRT_AVAILABLE = False
+    BUILD_TRT_LOGGER = None
     logger.warning("TensorRT not available. Please install it first.")
 
 try:
     import onnx
-
     ONNX_AVAILABLE = True
 except ImportError:
     ONNX_AVAILABLE = False
@@ -52,7 +55,10 @@ DEPTH_ANYTHING_MODELS = {
 
 
 def export_depth_anything_to_onnx(
-    onnx_path: Path, model_size: str = "small", resolution: int = 518, device: str = "cuda"
+    onnx_path: Path,
+    model_size: str = "small",
+    resolution: int = 518,
+    device: str = "cuda"
 ) -> bool:
     """Export Depth Anything model to ONNX format"""
     try:
@@ -101,7 +107,6 @@ def export_depth_anything_to_onnx(
     except Exception as e:
         logger.error(f"Failed to export ONNX: {e}")
         import traceback
-
         traceback.print_exc()
         return False
 
@@ -120,13 +125,12 @@ def build_tensorrt_engine(
     logger.info(f"Building TensorRT engine: {engine_path}")
 
     try:
-        trt_logger = trt.Logger(trt.Logger.INFO)
-        builder = trt.Builder(trt_logger)
+        builder = trt.Builder(BUILD_TRT_LOGGER)
         network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
-        parser = trt.OnnxParser(network, trt_logger)
+        parser = trt.OnnxParser(network, BUILD_TRT_LOGGER)
 
         # Parse ONNX
-        with open(onnx_path, "rb") as f:
+        with open(onnx_path, 'rb') as f:
             if not parser.parse(f.read()):
                 for i in range(parser.num_errors):
                     logger.error(f"ONNX parse error: {parser.get_error(i)}")
@@ -142,12 +146,10 @@ def build_tensorrt_engine(
 
         # Set optimization profile for fixed resolution
         profile = builder.create_optimization_profile()
-        profile.set_shape(
-            "input",
-            (1, 3, resolution, resolution),  # min
-            (1, 3, resolution, resolution),  # opt
-            (1, 3, resolution, resolution),
-        )  # max
+        profile.set_shape("input",
+                          (1, 3, resolution, resolution),  # min
+                          (1, 3, resolution, resolution),  # opt
+                          (1, 3, resolution, resolution))  # max
         config.add_optimization_profile(profile)
 
         # Build engine
@@ -160,7 +162,7 @@ def build_tensorrt_engine(
 
         # Save engine
         engine_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(engine_path, "wb") as f:
+        with open(engine_path, 'wb') as f:
             f.write(serialized_engine)
 
         logger.info(f"TensorRT engine saved: {engine_path}")
@@ -169,7 +171,6 @@ def build_tensorrt_engine(
     except Exception as e:
         logger.error(f"Failed to build TensorRT engine: {e}")
         import traceback
-
         traceback.print_exc()
         return False
 
@@ -209,7 +210,7 @@ def compile_depth_anything(
     # Check if engine already exists
     if engine_path.exists():
         logger.info(f"Engine already exists: {engine_path}")
-        overwrite = input("Overwrite? (y/N): ").lower().strip() == "y"
+        overwrite = input("Overwrite? (y/N): ").lower().strip() == 'y'
         if not overwrite:
             return
 
@@ -231,9 +232,9 @@ def compile_depth_anything(
         logger.info("Removed intermediate ONNX file")
 
     logger.info(f"\nSuccess! Engine saved to: {engine_path}")
-    logger.info("\nTo use in config:")
-    logger.info('  preprocessor: "depth_tensorrt"')
-    logger.info("  preprocessor_params:")
+    logger.info(f"\nTo use in config:")
+    logger.info(f'  preprocessor: "depth_tensorrt"')
+    logger.info(f'  preprocessor_params:')
     logger.info(f'    engine_path: "{engine_path}"')
 
 

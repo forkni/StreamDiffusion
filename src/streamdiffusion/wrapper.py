@@ -133,6 +133,7 @@ class StreamDiffusionWrapper:
         cache_interval: int = 1,
         min_cache_maxframes: int = 1,
         max_cache_maxframes: int = 4,
+        cn_cache_interval: int = 1,
         fp8: bool = False,
         static_shapes: bool = False,
         fp8_allow_fp16_fallback: bool = False,
@@ -388,6 +389,7 @@ class StreamDiffusionWrapper:
             cache_interval=cache_interval,
             min_cache_maxframes=min_cache_maxframes,
             max_cache_maxframes=max_cache_maxframes,
+            cn_cache_interval=cn_cache_interval,
             fp8=fp8,
         )
 
@@ -663,6 +665,8 @@ class StreamDiffusionWrapper:
         safety_checker_threshold: Optional[float] = None,
         cache_maxframes: Optional[int] = None,
         cache_interval: Optional[int] = None,
+        # ControlNet residual cache interval (1=off, N>1=reuse residuals for N-1 frames)
+        cn_cache_interval: Optional[int] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -753,6 +757,7 @@ class StreamDiffusionWrapper:
                 latent_postprocessing_config=latent_postprocessing_config,
                 cache_maxframes=cache_maxframes,
                 cache_interval=cache_interval,
+                cn_cache_interval=cn_cache_interval,
             )
         finally:
             if needs_encoding:
@@ -1231,6 +1236,7 @@ class StreamDiffusionWrapper:
         cache_interval: int = 1,
         min_cache_maxframes: int = 1,
         max_cache_maxframes: int = 4,
+        cn_cache_interval: int = 1,
         fp8: bool = False,
     ) -> StreamDiffusion:
         """
@@ -1739,6 +1745,9 @@ class StreamDiffusionWrapper:
                     fp8=fp8,
                     resolution=(self.height, self.width),
                     builder_optimization_level=self.builder_optimization_level,
+                    # Must match the hardcoded build_static_batch value below so the cache
+                    # key reflects the actual TRT profile policy (static vs dynamic batch).
+                    build_static_batch=True,
                 )
                 # Effective VAE optlvl: per-engine override first, then global fallback.
                 _vae_optlvl = (
@@ -2080,8 +2089,13 @@ class StreamDiffusionWrapper:
                 vae_dtype = stream.vae.dtype
 
                 try:
+                    # Note: the UNet always builds with build_static_batch=True /
+                    # build_dynamic_shape=False regardless of self.static_shapes.
+                    # static_shapes only controls the VAE enc/dec build flags.
                     logger.warning(
-                        f"[TRT] UNet engine: fp8={fp8}, static_shapes={self.static_shapes}, engine_path={unet_path}"
+                        f"[TRT] UNet engine: fp8={fp8}, "
+                        f"build_static_batch=True, build_dynamic_shape=False, "
+                        f"engine_path={unet_path}"
                     )
                     _unet_build_opts = {
                         "opt_image_height": self.height,
@@ -2312,6 +2326,9 @@ class StreamDiffusionWrapper:
                     cn_module.add_controlnet(cn_cfg, control_image=cfg.get("control_image"))
                 # Expose for later updates if needed by caller code
                 stream._controlnet_module = cn_module
+                # Apply startup cache interval from config (1 = disabled, no-op).
+                if cn_cache_interval > 1:
+                    cn_module.set_cn_cache_interval(cn_cache_interval)
 
                 if acceleration == "tensorrt":
                     try:

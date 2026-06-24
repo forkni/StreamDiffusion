@@ -1,9 +1,15 @@
+import logging
+import os
+import sys
+import yaml
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
 
 import yaml
 
+
+logger = logging.getLogger(__name__)
 
 def load_config(config_path: Union[str, Path]) -> Dict[str, Any]:
     """Load StreamDiffusion configuration from YAML or JSON file"""
@@ -157,6 +163,13 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
 
     param_map["cache_maxframes"] = config.get("cache_maxframes", 1)
     param_map["cache_interval"] = config.get("cache_interval", 1)
+    # cn_cache_interval: ControlNet residual reuse interval.
+    # 1 (default) = disabled, run CN every frame.
+    # N > 1 = run CN once every N frames; reuse residuals between (control latency = N-1 frames).
+    param_map["cn_cache_interval"] = config.get("cn_cache_interval", 1)
+    # max_cache_maxframes: allocation cap for the KVO/FI cache ring buffers (VRAM).
+    # cache_maxframes is the live logical write window; this is the hard upper bound.
+    param_map["max_cache_maxframes"] = config.get("max_cache_maxframes", 4)
 
     # CUDA IPC output (SD→TD zero-copy GPU transport via cuda-link)
     param_map["use_cuda_ipc_output"] = config.get("use_cuda_ipc_output", False)
@@ -218,6 +231,22 @@ def _prepare_controlnet_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
             "control_guidance_start": cn_config.get("control_guidance_start", 0.0),
             "control_guidance_end": cn_config.get("control_guidance_end", 1.0),
         }
+
+        # --- Profile knob injection ---
+        # Thread the active UI build profile into preprocessor_params so self-building
+        # TRT preprocessors (HED, Scribble, NormalBae) apply the same
+        # builder_optimization_level as the main UNet/VAE build.  FP8 is flagged so
+        # the preprocessor can log a one-time info message and fall back to FP16.
+        # Per-CN overrides in the YAML take precedence over the top-level value.
+        pp = dict(controlnet_config["preprocessor_params"] or {})
+        global_opt_level = config.get("builder_optimization_level")
+        if global_opt_level is not None and "builder_optimization_level" not in pp:
+            pp["builder_optimization_level"] = global_opt_level
+        if config.get("fp8", False) and "build_fp8" not in pp:
+            pp["build_fp8"] = True
+        if pp:
+            controlnet_config["preprocessor_params"] = pp
+
         controlnet_configs.append(controlnet_config)
 
     return controlnet_configs

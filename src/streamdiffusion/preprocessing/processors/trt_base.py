@@ -1,0 +1,602 @@
+"""
+Shared TensorRT infrastructure for ControlNet preprocessors.
+
+Provides:
+  TensorRTEngine              — low-level TRT engine wrapper (load/activate/infer).
+                                Extracted from the verbatim copies in depth_tensorrt.py
+                                and pose_tensorrt.py; those files now import from here.
+
+  SelfBuildingTRTPreprocessor — base class for preprocessors that self-build their TRT
+                                engine from a torch model at first use.  Subclasses only
+                                need to implement two hooks:
+                                  _export_onnx(onnx_path)           — model-specific ONNX export
+                                  _postprocess(engine_outputs) -> T  — GPU-only output shaping
+                                plus three class attributes:
+                                  engine_filename, onnx_filename, default_detect_resolution
+"""
+
+import logging
+import threading
+from abc import abstractmethod
+from collections import OrderedDict
+from pathlib import Path
+from typing import Dict, Optional
+
+import torch
+import torch.nn.functional as F
+from PIL import Image
+
+from .base import BasePreprocessor
+
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Optional TRT / polygraphy imports
+# ---------------------------------------------------------------------------
+try:
+    import numpy as np
+    import tensorrt as trt
+    from polygraphy.backend.common import bytes_from_path
+    from polygraphy.backend.trt import engine_from_bytes
+
+    numpy_to_torch_dtype_dict: Dict = {
+        np.uint8: torch.uint8,
+        np.int8: torch.int8,
+        np.int16: torch.int16,
+        np.int32: torch.int32,
+        np.int64: torch.int64,
+        np.float16: torch.float16,
+        np.float32: torch.float32,
+        np.float64: torch.float64,
+        np.complex64: torch.complex64,
+        np.complex128: torch.complex128,
+    }
+    if np.version.full_version >= "1.24.0":
+        numpy_to_torch_dtype_dict[np.bool_] = torch.bool
+    else:
+        numpy_to_torch_dtype_dict[np.bool] = torch.bool  # type: ignore[attr-defined]
+
+    TENSORRT_AVAILABLE = True
+except ImportError:
+    TENSORRT_AVAILABLE = False
+    numpy_to_torch_dtype_dict = {}
+
+
+# ---------------------------------------------------------------------------
+# Shared TensorRT engine wrapper
+# ---------------------------------------------------------------------------
+
+
+class TensorRTEngine:
+    """
+    Thin wrapper around a TensorRT ICudaEngine + IExecutionContext.
+
+    Identical to the copies in depth_tensorrt.py and pose_tensorrt.py;
+    those modules import this class instead of redefining it.
+    """
+
+    # Max number of distinct input-shape configurations whose GPU buffers are kept alive.
+    # Covers typical resolution-switching scenarios (e.g., 256/512/768/1024).
+    _BUF_CACHE_MAXSIZE: int = 4
+
+    def __init__(self, engine_path: str):
+        self.engine_path = engine_path
+        self.engine = None
+        self.context = None
+        self.tensors = OrderedDict()
+        self._cuda_stream: Optional[int] = None  # raw CUDA stream handle (int) for TRT
+        self._dedicated_stream: Optional[torch.cuda.Stream] = None  # backing non-default stream
+        self._pre_exec_event: Optional[torch.cuda.Event] = None  # current→dedicated barrier
+        self._post_exec_event: Optional[torch.cuda.Event] = None  # dedicated→current barrier
+        # LRU cache: shape-signature → {name: tensor}.
+        # Avoids repeated GPU malloc/free when a small set of input shapes alternates.
+        self._buf_cache: OrderedDict = OrderedDict()
+
+    def load(self):
+        logger.info(f"Loading TensorRT engine: {self.engine_path}")
+        self.engine = engine_from_bytes(bytes_from_path(self.engine_path))
+
+    def activate(self):
+        self.context = self.engine.create_execution_context()
+        # Create a dedicated non-default CUDA stream for this engine so that
+        # execute_async_v3 / enqueueV3 does NOT run on stream 0x0 (the default/null
+        # stream).  Using the default stream forces TensorRT to insert an implicit
+        # cudaStreamSynchronize on every enqueue call (TRT warning:
+        # "Using default stream in enqueueV3() may lead to performance issues").
+        # Cross-stream ordering with the surrounding PyTorch context is maintained
+        # via the CUDA events created below; see infer() for the sync protocol.
+        self._dedicated_stream = torch.cuda.Stream()
+        self._cuda_stream = self._dedicated_stream.cuda_stream  # raw int handle for TRT
+        self._pre_exec_event = torch.cuda.Event()  # current stream → dedicated stream barrier
+        self._post_exec_event = torch.cuda.Event()  # dedicated stream → current stream barrier
+
+    def allocate_buffers(self, device: str = "cuda", input_shape: tuple = None):
+        """
+        Allocate GPU buffers for all engine I/O tensors.
+
+        For dynamic-shape engines the caller must pass ``input_shape`` (concrete
+        NCHW tuple) so input dims are resolved before output shapes are queried.
+        Without it, ``get_tensor_shape`` returns -1 for dynamic dims and the
+        subsequent ``torch.empty`` call fails or allocates with a stale shape.
+
+        Args:
+            device:      CUDA device string (default ``"cuda"``)
+            input_shape: Concrete ``(N, C, H, W)`` shape for the engine's INPUT tensor.
+                         Required when the engine was built with a dynamic-shape
+                         optimization profile.
+        """
+        # Pass 1: set all INPUT shapes so TRT can resolve downstream output shapes.
+        for idx in range(self.engine.num_io_tensors):
+            name = self.engine.get_tensor_name(idx)
+            if self.engine.get_tensor_mode(name) != trt.TensorIOMode.INPUT:
+                continue
+            if input_shape is not None:
+                self.context.set_input_shape(name, input_shape)
+            else:
+                static_shape = tuple(self.context.get_tensor_shape(name))
+                if any(d < 0 for d in static_shape):
+                    raise RuntimeError(
+                        f"TensorRTEngine.allocate_buffers: tensor '{name}' has dynamic "
+                        f"shape {static_shape} but no input_shape was provided. "
+                        "Pass input_shape=(N, C, H, W) when using a dynamic engine."
+                    )
+                self.context.set_input_shape(name, static_shape)
+
+        # Pass 2: allocate buffers for ALL tensors (output shapes resolved by TRT now).
+        for idx in range(self.engine.num_io_tensors):
+            name = self.engine.get_tensor_name(idx)
+            dtype = trt.nptype(self.engine.get_tensor_dtype(name))
+            is_input = self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT
+
+            if is_input and input_shape is not None:
+                shape = input_shape
+            else:
+                shape = tuple(self.context.get_tensor_shape(name))
+                if any(d < 0 for d in shape):
+                    raise RuntimeError(
+                        f"TensorRTEngine.allocate_buffers: tensor '{name}' still has "
+                        f"unresolved dynamic dims {shape} after setting input shapes. "
+                        "Provide input_shape to resolve all dimensions."
+                    )
+
+            # Allocate directly on the target device — avoids CPU alloc + H2D copy
+            # that `torch.empty(...).to(device=device)` would incur.
+            tensor = torch.empty(
+                shape,
+                dtype=numpy_to_torch_dtype_dict[dtype],
+                device=device,
+            )
+            self.tensors[name] = tensor
+
+    def infer(self, feed_dict: dict, stream=None) -> OrderedDict:
+        if stream is None:
+            stream = self._cuda_stream
+
+        # --- Per-request shape reconciliation with LRU buffer cache ---
+        # Fast path: no shape change (the common streaming case — zero overhead).
+        # Slow path: shape changed → consult LRU before allocating new GPU memory.
+        new_input_shapes = {name: tuple(buf.shape) for name, buf in feed_dict.items() if name in self.tensors}
+        shapes_match = all(new_input_shapes[n] == tuple(self.tensors[n].shape) for n in new_input_shapes)
+
+        if not shapes_match:
+            # Hashable signature for this input shape configuration.
+            shape_sig = tuple(sorted(new_input_shapes.items()))
+
+            if shape_sig in self._buf_cache:
+                # LRU hit: reuse pre-allocated GPU buffers, no malloc needed.
+                self._buf_cache.move_to_end(shape_sig)  # promote to MRU
+                cached = self._buf_cache[shape_sig]
+                for name in list(self.tensors.keys()):
+                    if name in cached:
+                        self.tensors[name] = cached[name]
+                # Re-apply input shapes to TRT context (context state is NOT cached).
+                for name, shape in new_input_shapes.items():
+                    self.context.set_input_shape(name, shape)
+            else:
+                # LRU miss: reallocate changed inputs, re-derive output shapes.
+                for name, fed_shape in new_input_shapes.items():
+                    if fed_shape != tuple(self.tensors[name].shape):
+                        self.context.set_input_shape(name, fed_shape)
+                        self.tensors[name] = torch.empty(
+                            fed_shape,
+                            dtype=self.tensors[name].dtype,
+                            device=self.tensors[name].device,
+                        )
+
+                # Re-query and reallocate output buffers with TRT-resolved shapes.
+                for out_idx in range(self.engine.num_io_tensors):
+                    out_name = self.engine.get_tensor_name(out_idx)
+                    if self.engine.get_tensor_mode(out_name) == trt.TensorIOMode.OUTPUT:
+                        new_out_shape = tuple(self.context.get_tensor_shape(out_name))
+                        if new_out_shape != tuple(self.tensors[out_name].shape):
+                            self.tensors[out_name] = torch.empty(
+                                new_out_shape,
+                                dtype=self.tensors[out_name].dtype,
+                                device=self.tensors[out_name].device,
+                            )
+
+                # Store the new buffer set in the LRU cache.
+                self._buf_cache[shape_sig] = OrderedDict(self.tensors)
+                if len(self._buf_cache) > self._BUF_CACHE_MAXSIZE:
+                    self._buf_cache.popitem(last=False)  # evict LRU (oldest) entry
+
+        # --- Copy inputs with dtype validation ---
+        for name, buf in feed_dict.items():
+            if self.tensors[name].dtype != buf.dtype:
+                raise ValueError(
+                    f"TensorRTEngine.infer: dtype mismatch for tensor '{name}': "
+                    f"engine expects {self.tensors[name].dtype}, got {buf.dtype}. "
+                    f"(engine: {self.engine_path})"
+                )
+            self.tensors[name].copy_(buf)
+
+        for name, tensor in self.tensors.items():
+            self.context.set_tensor_address(name, tensor.data_ptr())
+
+        # --- Cross-stream synchronization ---
+        # The input copy_() calls above ran on the CURRENT (default) stream.
+        # execute_async_v3 runs on _dedicated_stream.  Record a barrier event on
+        # the current stream so the dedicated stream cannot start reading inputs
+        # until the copies have landed.  (If no dedicated stream was created yet —
+        # e.g. engine not activated — fall back to the supplied stream directly.)
+        if self._pre_exec_event is not None and self._dedicated_stream is not None:
+            self._pre_exec_event.record()  # on current stream
+            self._dedicated_stream.wait_event(self._pre_exec_event)
+            exec_stream = self._cuda_stream
+        else:
+            exec_stream = stream
+
+        success = self.context.execute_async_v3(exec_stream)
+        if not success:
+            raise ValueError("TensorRTEngine: inference failed.")
+
+        # Output tensors were written by execute on _dedicated_stream.
+        # _postprocess (the next call after infer()) runs on the current stream and
+        # reads those tensors.  Make the current stream GPU-wait for execute
+        # completion, then record_stream so PyTorch's caching allocator knows the
+        # buffers are live on the current stream (prevents premature reuse).
+        if self._post_exec_event is not None and self._dedicated_stream is not None:
+            self._post_exec_event.record(self._dedicated_stream)
+            torch.cuda.current_stream().wait_event(self._post_exec_event)
+            for tensor in self.tensors.values():
+                tensor.record_stream(torch.cuda.current_stream())
+
+        return self.tensors
+
+
+# ---------------------------------------------------------------------------
+# Output-key helper — guards against TRT renaming the output tensor
+# ---------------------------------------------------------------------------
+
+
+def _first_output(engine_outputs: dict) -> torch.Tensor:
+    """
+    Return the ``'output'`` tensor from TRT engine outputs, or the first
+    non-``'input'`` key if ``'output'`` is absent.
+
+    TRT may rename output tensors depending on the ONNX model and opset.
+    Using this helper instead of a hard-coded ``engine_outputs["output"]``
+    guards against a bare ``KeyError`` when the tensor name doesn't match.
+
+    Args:
+        engine_outputs: Dict returned by :meth:`TensorRTEngine.infer`.
+
+    Returns:
+        The output tensor.
+
+    Raises:
+        KeyError: if no output tensor is found (e.g. all keys are inputs).
+    """
+    if "output" in engine_outputs:
+        return engine_outputs["output"]
+    candidates = [v for k, v in engine_outputs.items() if not k.startswith("input")]
+    if candidates:
+        return candidates[0]
+    raise KeyError(f"TRT engine returned no recognizable output tensor. Available keys: {list(engine_outputs.keys())}")
+
+
+# ---------------------------------------------------------------------------
+# Self-building TRT preprocessor base
+# ---------------------------------------------------------------------------
+
+
+class SelfBuildingTRTPreprocessor(BasePreprocessor):
+    """
+    Base class for TRT preprocessors that build their own engine on first use.
+
+    Subclass interface
+    ------------------
+    Class attributes (override in subclass):
+        engine_filename           : str  = "engine.engine"
+        onnx_filename             : str  = "engine.onnx"
+        default_detect_resolution : int  = 512
+
+    Abstract methods (implement in subclass):
+        _export_onnx(onnx_path: Path) -> None
+            Export the underlying torch model to ONNX at onnx_path.
+
+        _postprocess(engine_outputs: dict) -> torch.Tensor
+            Convert raw TRT output tensors to a CHW GPU tensor in [0, 1].
+
+    Engine-path precedence
+    ----------------------
+    1. params["engine_path"]  — TD always supplies this via StreamDiffusionExt config-gen
+    2. <repo_root>/engines/preprocessors/<engine_filename>  — offline fallback
+
+    Build-registry hook
+    -------------------
+    td_manager._ensure_preprocessor_engines calls:
+        cls.build_engine_for_path(engine_path, device)
+    which instantiates the preprocessor and runs _ensure_engine().
+    """
+
+    gpu_native = True
+    # One-time FP8→FP16 fallback log: keyed by class name so each subclass logs once.
+    _fp8_warned_classes: set = set()
+
+    # Subclasses set these:
+    engine_filename: str = "engine.engine"
+    onnx_filename: str = "engine.onnx"
+    default_detect_resolution: int = 512
+
+    def __init__(self, **kwargs):
+        if not TENSORRT_AVAILABLE:
+            raise ImportError(
+                "TensorRT and polygraphy are required for TRT preprocessors. "
+                "Install with: pip install tensorrt polygraphy"
+            )
+        super().__init__(**kwargs)
+        self._engine: Optional[TensorRTEngine] = None
+        self._engine_lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # PIL fallback path — goes through tensor for GPU residency
+    # ------------------------------------------------------------------
+
+    def _process_core(self, image: Image.Image) -> Image.Image:
+        tensor = self.pil_to_tensor(image)
+        result = self._process_tensor_core(tensor)
+        return self.tensor_to_pil(result)
+
+    # ------------------------------------------------------------------
+    # Engine path resolution
+    # ------------------------------------------------------------------
+
+    def _get_engine_path(self) -> Path:
+        from_params = self.params.get("engine_path")
+        if from_params:
+            return Path(from_params)
+        # Default fallback: <repo_root>/engines/preprocessors/<engine_filename>
+        repo_root = Path(__file__).resolve().parent.parent.parent.parent.parent
+        return repo_root / "engines" / "preprocessors" / self.engine_filename
+
+    def _get_onnx_path(self, engine_path: Path) -> Path:
+        return engine_path.parent / self.onnx_filename
+
+    # ------------------------------------------------------------------
+    # Engine lifecycle
+    # ------------------------------------------------------------------
+
+    @property
+    def engine(self) -> TensorRTEngine:
+        """Lazy-load the TRT engine (double-checked locking)."""
+        if self._engine is None:
+            with self._engine_lock:
+                if self._engine is None:
+                    cls_name = self.__class__.__name__
+                    engine_path = self._get_engine_path()
+                    try:
+                        self._ensure_engine()
+                    except Exception as exc:
+                        raise RuntimeError(f"{cls_name}: engine build/export failed for {engine_path}: {exc}") from exc
+                    if not engine_path.exists():
+                        raise FileNotFoundError(f"{cls_name}: engine not found after build: {engine_path}")
+                    try:
+                        trt_engine = TensorRTEngine(str(engine_path))
+                        trt_engine.load()
+                        trt_engine.activate()
+                        trt_engine.allocate_buffers(
+                            device=self.device,
+                            input_shape=(
+                                1,
+                                3,
+                                self.default_detect_resolution,
+                                self.default_detect_resolution,
+                            ),
+                        )
+                        self._engine = trt_engine
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"{cls_name}: engine load/activate/allocate failed for {engine_path}: {exc}"
+                        ) from exc
+        return self._engine
+
+    def _ensure_engine(self) -> None:
+        """Build the TRT engine from scratch if it doesn't exist yet."""
+        engine_path = self._get_engine_path()
+        if engine_path.exists():
+            return
+
+        engine_path.parent.mkdir(parents=True, exist_ok=True)
+        onnx_path = self._get_onnx_path(engine_path)
+
+        try:
+            logger.info(f"{self.__class__.__name__}: exporting ONNX → {onnx_path}")
+            self._export_onnx(onnx_path)
+            logger.info(f"{self.__class__.__name__}: building TRT engine → {engine_path}")
+            self._build_tensorrt_engine(onnx_path, engine_path)
+            logger.info(f"{self.__class__.__name__}: engine built ({engine_path.stat().st_size / 1024 / 1024:.1f} MB)")
+        finally:
+            # Always clean up the ONNX intermediary
+            if onnx_path.exists():
+                onnx_path.unlink()
+
+    def _build_tensorrt_engine(self, onnx_path: Path, engine_path: Path) -> None:
+        """Build TRT engine from ONNX using trt.Builder with FP16 + dynamic shapes.
+
+        FP16 is always used; FP8 builds produce a one-time info log and fall back to FP16
+        (no calibration infrastructure for preprocessor engines).  The active UI profile's
+        ``builder_optimization_level`` is applied via the shared GPU-profile helper so
+        build quality matches the main UNet/VAE build for the selected profile.
+        """
+        if not onnx_path.exists():
+            raise FileNotFoundError(f"ONNX model not found: {onnx_path}")
+
+        builder = trt.Builder(trt.Logger(trt.Logger.WARNING))
+        network = builder.create_network()
+        parser = trt.OnnxParser(network, trt.Logger(trt.Logger.WARNING))
+
+        with open(onnx_path, "rb") as f:
+            if not parser.parse(f.read()):
+                errors = [str(parser.get_error(i)) for i in range(parser.num_errors)]
+                raise RuntimeError(f"{self.__class__.__name__}: ONNX parse failed: {errors}")
+
+        config = builder.create_builder_config()
+        config.set_flag(trt.BuilderFlag.FP16)
+
+        # FP8 guard: one-time log, always build FP16 (no Q/DQ calibration infra for preprocessors).
+        if self.params.get("build_fp8", False):
+            cls_name = self.__class__.__name__
+            if cls_name not in SelfBuildingTRTPreprocessor._fp8_warned_classes:
+                logger.info(
+                    "%s: FP8 Q/DQ is not applied to preprocessor engines "
+                    "(no calibration infrastructure for tiny conv detectors). "
+                    "Building FP16 instead.",
+                    cls_name,
+                )
+                SelfBuildingTRTPreprocessor._fp8_warned_classes.add(cls_name)
+
+        # Apply builder_optimization_level via the shared GPU-profile helper.
+        # This honours the active UI profile (Flexible/Quality/Performance/Fast Build)
+        # at build time.  The preprocessor engine is always dynamic + FP16 regardless.
+        opt_level = self.params.get("builder_optimization_level")
+        try:
+            from streamdiffusion.acceleration.tensorrt.utilities import (
+                _apply_gpu_profile_to_config,
+                detect_gpu_profile,
+            )
+
+            gpu_profile = detect_gpu_profile()
+            # dynamic_shapes=True: tiling / l2tc helpers suppressed automatically
+            _apply_gpu_profile_to_config(config, gpu_profile, dynamic_shapes=True)
+            # Per-UI-profile override takes precedence over hardware-detected default
+            if opt_level is not None:
+                config.builder_optimization_level = int(opt_level)
+                logger.info(
+                    "%s: builder_optimization_level set to %d (from UI profile)",
+                    self.__class__.__name__,
+                    int(opt_level),
+                )
+        except Exception as exc:
+            logger.debug(
+                "%s: GPU profile helper not available (%s); using TRT defaults.",
+                self.__class__.__name__,
+                exc,
+            )
+            if opt_level is not None:
+                try:
+                    config.builder_optimization_level = int(opt_level)
+                except AttributeError:
+                    logger.debug(
+                        "%s: config.builder_optimization_level not supported by this TRT version.",
+                        self.__class__.__name__,
+                    )
+
+        profile = builder.create_optimization_profile()
+        res = self.default_detect_resolution
+        profile.set_shape(
+            "input",
+            (1, 3, res // 2, res // 2),  # min
+            (1, 3, res, res),  # opt
+            (1, 3, res * 2, res * 2),  # max
+        )
+        config.add_optimization_profile(profile)
+
+        serialized = builder.build_serialized_network(network, config)
+        if serialized is None:
+            raise RuntimeError(f"{self.__class__.__name__}: TRT engine build returned None")
+
+        with open(engine_path, "wb") as f:
+            f.write(serialized)
+
+    # ------------------------------------------------------------------
+    # Subclass hooks (must override)
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def _export_onnx(self, onnx_path: Path) -> None:
+        """Export the underlying torch model to ONNX at onnx_path."""
+
+    @abstractmethod
+    def _postprocess(self, engine_outputs: dict) -> torch.Tensor:
+        """Convert raw TRT outputs to a CHW GPU tensor in [0, 1]."""
+
+    # ------------------------------------------------------------------
+    # Core tensor processing
+    # ------------------------------------------------------------------
+
+    def _process_tensor_core(self, image_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Resize → TRT infer → postprocess.  All on GPU, no PIL round-trip.
+        """
+        if image_tensor.dim() == 3:
+            image_tensor = image_tensor.unsqueeze(0)
+        if not image_tensor.is_cuda:
+            image_tensor = image_tensor.to(self.device)
+
+        detect_resolution = self.params.get("detect_resolution", self.default_detect_resolution)
+        image_resized = F.interpolate(
+            image_tensor.float(),
+            size=(detect_resolution, detect_resolution),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        # Match the dtype the engine expects on its input tensor
+        engine_input = self.engine.tensors.get("input")
+        if engine_input is not None and image_resized.dtype != engine_input.dtype:
+            image_resized = image_resized.to(dtype=engine_input.dtype)
+
+        # Execute on the engine's dedicated non-default CUDA stream.
+        # Passing no stream lets infer() use self.engine._cuda_stream (the dedicated
+        # stream handle).  Cross-stream sync (copy_ → execute → _postprocess) is
+        # handled inside TensorRTEngine.infer() via CUDA events.
+        outputs = self.engine.infer({"input": image_resized})
+        result = self._postprocess(outputs)
+
+        # Ensure result is CHW (strip batch dim if present)
+        if result.dim() == 4:
+            result = result.squeeze(0)
+        return result
+
+    # ------------------------------------------------------------------
+    # Class-level build hook called by td_manager._ensure_preprocessor_engines
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def build_engine_for_path(cls, engine_path: str, device: str = "cuda") -> bool:
+        """
+        Build (export + compile) the TRT engine and write it to engine_path.
+
+        Called by td_manager._ensure_preprocessor_engines for preprocessors
+        that use the 'self_build' strategy in the build_registry.
+
+        Returns True on success, False on failure.
+        """
+        try:
+            instance = cls(engine_path=engine_path, device=device)
+            instance._ensure_engine()
+            return Path(engine_path).exists()
+        except Exception as exc:
+            logger.exception(
+                "%s.build_engine_for_path failed for %s: %s",
+                cls.__name__,
+                engine_path,
+                exc,
+            )
+            return False
+
+    def __del__(self):
+        if hasattr(self, "_engine") and self._engine is not None:
+            del self._engine

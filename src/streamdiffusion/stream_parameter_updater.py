@@ -263,6 +263,7 @@ class StreamParameterUpdater(OrchestratorUser):
         latent_postprocessing_config: Optional[List[Dict[str, Any]]] = None,
         cache_maxframes: Optional[int] = None,
         cache_interval: Optional[int] = None,
+        cn_cache_interval: Optional[int] = None,
     ) -> None:
         """Update streaming parameters efficiently in a single call."""
 
@@ -401,6 +402,13 @@ class StreamParameterUpdater(OrchestratorUser):
                         )
                     else:
                         logger.info(f"update_stream_params: Cache maxframes set to {cache_maxframes}")
+
+            # ControlNet residual cache interval — delegate to CN module if present.
+            if cn_cache_interval is not None:
+                cn_mod = self._get_controlnet_pipeline()
+                if cn_mod is not None:
+                    cn_mod.set_cn_cache_interval(int(cn_cache_interval))
+                    logger.info(f"update_stream_params: cn_cache_interval -> {int(cn_cache_interval)}")
 
     @torch.inference_mode()
     def _update_blended_prompts(
