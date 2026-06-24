@@ -167,6 +167,19 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
     # 1 (default) = disabled, run CN every frame.
     # N > 1 = run CN once every N frames; reuse residuals between (control latency = N-1 frames).
     param_map["cn_cache_interval"] = config.get("cn_cache_interval", 1)
+
+    # Feature Injection (StreamV2V §3.4.2) — requires use_cached_attn=True
+    if "use_feature_injection" not in config:
+        logger.info(
+            "use_feature_injection not in config; defaulting to True "
+            "(fi_strength=0.75, fi_threshold=0.98). Add 'use_feature_injection: false' "
+            "to your config or add Fienable/Fistrength/Fithreshold pars to the .toe to control explicitly."
+        )
+    param_map["use_feature_injection"] = config.get("use_feature_injection", True)
+    # fi_strength: blend weight α (thesis §3.4.2 Eq 3.2 α=0.75; default matches thesis).
+    # fi_threshold: cosine-similarity gate below which injection is skipped (default 0.98).
+    param_map["fi_strength"] = config.get("fi_strength", 0.75)
+    param_map["fi_threshold"] = config.get("fi_threshold", 0.98)
     # max_cache_maxframes: allocation cap for the KVO/FI cache ring buffers (VRAM).
     # cache_maxframes is the live logical write window; this is the hard upper bound.
     param_map["max_cache_maxframes"] = config.get("max_cache_maxframes", 4)
@@ -225,6 +238,7 @@ def _prepare_controlnet_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
             "preprocessor": cn_config.get("preprocessor", "passthrough"),
             "conditioning_scale": cn_config.get("conditioning_scale", 1.0),
             "enabled": cn_config.get("enabled", True),
+            "fp8": cn_config.get("fp8", False),
             "preprocessor_params": cn_config.get("preprocessor_params"),
             "conditioning_channels": cn_config.get("conditioning_channels"),
             "pipeline_type": pipeline_type,
@@ -530,21 +544,3 @@ def _validate_config(config: Dict[str, Any]) -> None:
 
                 if not isinstance(weight, (int, float)) or weight < 0:
                     raise ValueError(f"_validate_config: Seed weight {i} must be a non-negative number")
-
-        interpolation_method = seed_blend_config.get("interpolation_method", "linear")
-        if interpolation_method not in ["linear", "slerp"]:
-            raise ValueError("_validate_config: seed blending interpolation_method must be 'linear' or 'slerp'")
-
-    # Validate pipeline hook configurations if present (Phase 4: Configuration Integration)
-    _validate_pipeline_hook_configs(config)
-
-    # Validate separate normalize settings if present
-    if "normalize_prompt_weights" in config:
-        normalize_prompt_weights = config["normalize_prompt_weights"]
-        if not isinstance(normalize_prompt_weights, bool):
-            raise ValueError("_validate_config: 'normalize_prompt_weights' must be a boolean value")
-
-    if "normalize_seed_weights" in config:
-        normalize_seed_weights = config["normalize_seed_weights"]
-        if not isinstance(normalize_seed_weights, bool):
-            raise ValueError("_validate_config: 'normalize_seed_weights' must be a boolean value")
