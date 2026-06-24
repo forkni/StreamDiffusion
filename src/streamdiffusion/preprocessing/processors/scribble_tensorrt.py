@@ -15,6 +15,7 @@ import logging
 import torch
 import torch.nn.functional as F
 
+from .category_params import EDGE_SMOOTHNESS_PARAM, apply_edge_smoothness
 from .hed_tensorrt import HEDTensorrtPreprocessor
 from .trt_base import _first_output
 
@@ -94,9 +95,14 @@ class ScribbleTensorrtPreprocessor(HEDTensorrtPreprocessor):
             "parameters": {
                 "scribble_threshold": {
                     "type": "float",
-                    "default": 0.5,
-                    "description": "Binarization threshold for scribble edges (0–1)",
+                    "default": 0.01,  # was 0.5 — post-NMS ridge values live near zero (~0.005–0.05)
+                    "range": [0.0, 0.05],  # was [0.0, 1.0] — spreads useful control across full travel
+                    "description": (
+                        "Binarization threshold for scribble edge NMS. Operates on the post-NMS ridge map "
+                        "whose values are small (~0.005–0.05); lower keeps more edges."
+                    ),
                 },
+                **EDGE_SMOOTHNESS_PARAM,
             },
             "use_cases": [
                 "Scribble ControlNet conditioning",
@@ -123,6 +129,13 @@ class ScribbleTensorrtPreprocessor(HEDTensorrtPreprocessor):
         if v_max > v_min:
             out = (out - v_min) / (v_max - v_min)
         out = out.clamp(0.0, 1.0)
+
+        # Optional smoothness pre-blur (category-standard edge param) applied before
+        # NMS so that increasing smoothness suppresses fine texture while preserving
+        # the structural ridges that NMS retains.
+        smoothness = float(self.params.get("smoothness", 0.0))
+        if smoothness > 0.0:
+            out = apply_edge_smoothness(out, smoothness)  # (H, W) in, (H, W) out
 
         threshold = float(self.params.get("scribble_threshold", 0.5))
         scribble = _scribble_nms_gpu(out, threshold=threshold)  # (H, W)

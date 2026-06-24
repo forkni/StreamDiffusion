@@ -23,11 +23,18 @@ class PassthroughPreprocessor(BasePreprocessor):
     def get_preprocessor_metadata(cls):
         return {
             "display_name": "Passthrough",
-            "description": "Passes the input image through with minimal processing. Used for tile ControlNet or when you want to use the input image directly.",
-            "parameters": {
-
-            },
-            "use_cases": ["Tile ControlNet", "Image-to-image with structure preservation", "Upscaling with control"]
+            "description": (
+                "Sends the input image directly to the ControlNet with no preprocessing.  "
+                "Use when the input is already a pre-rendered conditioning map — e.g. a "
+                "depth pass, hand-drawn scribble, or OpenPose skeleton rendered externally."
+            ),
+            "parameters": {},
+            "use_cases": [
+                "Pre-rendered depth / normal maps",
+                "Hand-drawn scribble inputs",
+                "Externally generated pose skeletons",
+                "Image-to-image with structure preservation",
+            ],
         }
     
     def __init__(self, 

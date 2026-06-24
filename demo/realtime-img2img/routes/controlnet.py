@@ -260,13 +260,20 @@ async def get_available_controlnets_endpoint(
         # Try to determine model type from pipeline config or uploaded config
         if app_instance.pipeline and hasattr(app_instance.pipeline, "config") and app_instance.pipeline.config:
             model_id = app_instance.pipeline.config.get("model_id", "")
-            if "sdxl" in model_id.lower() or "xl" in model_id.lower():
+            ml = model_id.lower()
+            if "sdxl" in ml or "xl" in ml:
                 model_type = "sdxl"
+            elif "sd-turbo" in ml or "sd21" in ml or "sd2.1" in ml or "2-1" in ml or "stable-diffusion-2" in ml:
+                model_type = "sd21"
         elif app_instance.app_state.uploaded_config:
             # If no pipeline yet, try to get model type from uploaded config
             model_id = app_instance.app_state.uploaded_config.get("model_id_or_path", "")
-            if "sdxl" in model_id.lower() or "xl" in model_id.lower():
+            ml = model_id.lower()
+            if "sdxl" in ml or "xl" in ml:
                 model_type = "sdxl"
+            elif "sd-turbo" in ml or "sd21" in ml or "sd2.1" in ml or "2-1" in ml or "stable-diffusion-2" in ml:
+                model_type = "sd21"
+
 
         # Handle case where available_controlnets dependency returns None
         if available_controlnets is None:

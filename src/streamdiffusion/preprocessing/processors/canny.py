@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from PIL import Image
 
 from .base import BasePreprocessor
+from .category_params import EDGE_SMOOTHNESS_PARAM, apply_edge_smoothness
 
 
 class CannyPreprocessor(BasePreprocessor):
@@ -35,6 +36,7 @@ class CannyPreprocessor(BasePreprocessor):
                     "range": [1, 255],
                     "description": "Upper threshold for edge detection. Higher values are more selective.",
                 },
+                **EDGE_SMOOTHNESS_PARAM,
             },
             "use_cases": ["Line art", "Architecture", "Technical drawings", "Clean edge detection"],
         }
@@ -57,8 +59,19 @@ class CannyPreprocessor(BasePreprocessor):
         else:
             gray = image_np
 
+        # Optional smoothness pre-blur (category-standard edge param).
+        # Applied before cv2.Canny so that coarser smoothing suppresses high-frequency
+        # texture, yielding sparser / softer edges without changing threshold semantics.
+        smoothness = float(self.params.get("smoothness", 0.0))
+        if smoothness > 0.0:
+            sigma = smoothness * 2.0
+            radius = max(1, int(sigma * 3.0 + 0.5))
+            k_size = 2 * radius + 1
+            gray = cv2.GaussianBlur(gray, (k_size, k_size), sigma)
+
         low_threshold = self.params.get("low_threshold", 100)
         high_threshold = self.params.get("high_threshold", 200)
+
 
         edges = cv2.Canny(gray, low_threshold, high_threshold)
         edges_rgb = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
