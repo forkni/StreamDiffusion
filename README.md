@@ -145,7 +145,7 @@ Install StreamDiffusion with the extras you need (omit any extras you do not pla
 
 ```bash
 # Latest (recommended)
-pip install "git+https://github.com/daydreamlive/StreamDiffusion.git@main#egg=streamdiffusion[tensorrt,controlnet,ipadapter]"
+pip install "git+https://github.com/daydreamlive/StreamDiffusion.git@main#egg=streamdiffusion[tensorrt,controlnet,ipadapter,cuda_ipc]"
 ```
 
 You can install only the extras you need, e.g. `pip install "git+https://github.com/daydreamlive/StreamDiffusion.git@main#egg=streamdiffusion[tensorrt]"` or `...#egg=streamdiffusion[controlnet]`.
@@ -162,7 +162,7 @@ This script installs the TensorRT runtime and plugins we validate with our demos
 
 ```bash
 # Editable install with optional extras
-pip install -e ".[tensorrt,controlnet,ipadapter]"
+pip install -e ".[tensorrt,controlnet,ipadapter,cuda_ipc]"
 python -m streamdiffusion.tools.install-tensorrt
 ```
 
