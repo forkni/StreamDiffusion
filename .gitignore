@@ -270,3 +270,4 @@ audit_reports/
 
 # Quality harness run outputs (generated; goldens/ is committed, outputs/ is not)
 tests/quality/outputs/
+logs/
