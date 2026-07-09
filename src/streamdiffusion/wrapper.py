@@ -1139,10 +1139,6 @@ class StreamDiffusionWrapper:
         This is a display-only path — no health tracking, no return value.
         No-op if cuda_ipc_cn_processed_shm_name was not configured.
         """
-        logger.info(  # [DEBUG-cnprev] — remove after preview confirmed
-            "[DEBUG-cnprev] export_controlnet_preview_ipc called, shm_name=%r",
-            self._cuda_ipc_cn_processed_shm_name,
-        )
         if not self._cuda_ipc_cn_processed_shm_name:
             return
         try:

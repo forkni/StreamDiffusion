@@ -202,13 +202,6 @@ class ControlNetModule(OrchestratorUser):
                 control_image, preprocessors, gate_scales, self._stream.width, self._stream.height, index
             )
             processed = results[index] if results and len(results) > index else None
-            logger.info(  # [DEBUG-cnprev] — remove after preview confirmed
-                "[DEBUG-cnprev] update_control_image_efficient idx=%d scale=%.3f gate=%.3f processed=%s",
-                index,
-                scales[index] if index < len(scales) else -1,
-                gate_scales[index] if index < len(gate_scales) else -1,
-                processed is not None,
-            )
             with self._collections_lock:
                 if processed is not None and index < len(self.controlnet_images):
                     self.controlnet_images[index] = processed
