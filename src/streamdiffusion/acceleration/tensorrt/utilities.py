@@ -443,6 +443,28 @@ def CUASSERT(cuda_ret):
     return None
 
 
+def _atomic_write_bytes(path: str, data) -> None:
+    """Write `data` to `path` atomically via a temp file + os.replace.
+
+    A crash/interrupt mid-write leaves at most a stale ``.tmp`` file; ``path`` is only
+    ever the fully-written result (os.replace is atomic on a single filesystem). This
+    guards TRT engine/timing-cache writes against truncation, since the builder's cache
+    check (builder.py) is a bare os.path.exists with no integrity check. Mirrors the
+    calibration-data idiom in fp8_quantize.py.
+    """
+    tmp_path = path + ".tmp"
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(data)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 class TRTProfiler(trt.IProfiler):
     """
     Per-layer TRT timing profiler.
@@ -660,6 +682,11 @@ class Engine:
             else:
                 logger.warning(f"No refit weights for layer: {layer_name}")
 
+        # Refit reads/writes the engine's weight buffers directly; synchronize first so it
+        # cannot race in-flight inference that is still reading those buffers. Defensive
+        # only — refit is unreachable unless the engine was built with enable_refit=True
+        # (default False), but the guard is cheap and correct either way.
+        torch.cuda.current_stream().synchronize()
         if not refitter.refit_cuda_engine():
             logger.error("Failed to refit!")
             raise RuntimeError("TensorRT engine refit failed")
@@ -776,8 +803,7 @@ class Engine:
                 f"notice(s) (createInferBuilder singleton warning) — no impact on engine."
             )
 
-        with open(self.engine_path, "wb") as f:
-            f.write(serialized)
+        _atomic_write_bytes(self.engine_path, serialized)
 
         # Save timing cache for next build
         if timing_cache:
@@ -785,8 +811,7 @@ class Engine:
                 updated_cache = config.get_timing_cache()
                 if updated_cache is not None:
                     os.makedirs(os.path.dirname(timing_cache), exist_ok=True)
-                    with open(timing_cache, "wb") as f:
-                        f.write(updated_cache.serialize())
+                    _atomic_write_bytes(timing_cache, updated_cache.serialize())
                     logger.info(f"[TRT Build] Saved timing cache: {timing_cache}")
             except Exception as e:
                 logger.warning(f"[TRT Build] Could not save timing cache: {e}")
@@ -904,8 +929,7 @@ class Engine:
                 f"notice(s) (createInferBuilder singleton warning) — no impact on engine."
             )
 
-        with open(self.engine_path, "wb") as f:
-            f.write(serialized)
+        _atomic_write_bytes(self.engine_path, serialized)
 
         # Save timing cache for next build
         if timing_cache:
@@ -913,8 +937,7 @@ class Engine:
                 updated_cache = config.get_timing_cache()
                 if updated_cache is not None:
                     os.makedirs(os.path.dirname(timing_cache), exist_ok=True)
-                    with open(timing_cache, "wb") as f:
-                        f.write(updated_cache.serialize())
+                    _atomic_write_bytes(timing_cache, updated_cache.serialize())
                     logger.info(f"[FP8] Saved timing cache: {timing_cache}")
             except Exception as e:
                 logger.warning(f"[FP8] Could not save timing cache: {e}")
@@ -1091,7 +1114,7 @@ class Engine:
                     logger.debug(
                         "TensorRT Engine: filtering unsupported inputs %s (allowed=%s)",
                         missing,
-                        sorted(list(self._allowed_inputs)),
+                        sorted(self._allowed_inputs),
                     )
             feed_dict = filtered_feed_dict
 
@@ -1122,10 +1145,20 @@ class Engine:
         with _gpu_profiler.region("trt_infer"):
             if use_cuda_graph:
                 if self.cuda_graph_instance is not None:
-                    CUASSERT(cudart.cudaGraphLaunch(self.cuda_graph_instance, stream.ptr))
-                    # No cudaStreamSynchronize — graph replay is async; stream ordering ensures
-                    # downstream GPU ops (copy_, attention) wait for graph completion.
-                    # CPU sync happens only via end.synchronize() in pipeline.__call__.
+                    (launch_status,) = cudart.cudaGraphLaunch(self.cuda_graph_instance, stream.ptr)
+                    if launch_status != cudart.cudaError_t.cudaSuccess:
+                        # Graph replay failed (e.g. stale instance after a context/device
+                        # hiccup). Destroy the graph and fall back to plain execution for
+                        # this frame; the next call re-captures via the branch below.
+                        logger.warning(f"CUDA graph launch failed ({launch_status}); resetting graph and falling back")
+                        self.reset_cuda_graph()
+                        noerror = self.context.execute_async_v3(stream.ptr)
+                        if not noerror:
+                            raise ValueError("ERROR: inference failed.")
+                    # No cudaStreamSynchronize on the success path — graph replay is async;
+                    # stream ordering ensures downstream GPU ops (copy_, attention) wait for
+                    # graph completion. CPU sync happens only via end.synchronize() in
+                    # pipeline.__call__.
                 else:
                     # Warmup passes before graph capture: TRT lazily JIT-compiles tactic
                     # variants on the first few forward calls. Three passes ensure all
@@ -1184,7 +1217,7 @@ def decode_images(images: torch.Tensor):
 
 def preprocess_image(image: Image.Image):
     w, h = image.size
-    w, h = map(lambda x: x - x % 32, (w, h))  # resize to integer multiple of 32
+    w, h = (x - x % 32 for x in (w, h))  # resize to integer multiple of 32
     image = image.resize((w, h))
     init_image = np.array(image).astype(np.float32) / 255.0
     init_image = init_image[None].transpose(0, 3, 1, 2)
