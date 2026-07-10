@@ -1138,9 +1138,15 @@ class Engine:
                 for name, buf in feed_dict.items():
                     self.tensors[name].copy_(buf)
 
-        for name, tensor in self.tensors.items():
-            if not self.context.set_tensor_address(name, tensor.data_ptr()):
-                raise RuntimeError(f"TensorRT: set_tensor_address failed for '{name}'")
+        # In graphed steady state the tensor addresses are baked into the captured graph
+        # (self.tensors[name] are persistent buffers reused via copy_() — see
+        # _can_reuse_buffers/allocate_buffers, which resets cuda_graph_instance to None
+        # whenever a buffer is actually reallocated). Re-binding every frame is then pure
+        # host overhead; only rebind on first capture or after a reset (instance is None).
+        if not (use_cuda_graph and self.cuda_graph_instance is not None):
+            for name, tensor in self.tensors.items():
+                if not self.context.set_tensor_address(name, tensor.data_ptr()):
+                    raise RuntimeError(f"TensorRT: set_tensor_address failed for '{name}'")
 
         with _gpu_profiler.region("trt_infer"):
             if use_cuda_graph:
