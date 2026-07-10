@@ -17,6 +17,19 @@ from .tools.gpu_profiler import profiler
 
 logger = logging.getLogger(__name__)
 
+
+def _is_oom_error(exc: BaseException) -> bool:
+    """Detect CUDA out-of-memory errors, including ones surfaced as generic
+    RuntimeErrors by third-party code (e.g. TensorRT) rather than the typed
+    torch.cuda.OutOfMemoryError."""
+    if isinstance(exc, torch.cuda.OutOfMemoryError):
+        return True
+    error_msg = str(exc).lower()
+    return (
+        "out of memory" in error_msg or "outofmemory" in error_msg or "oom" in error_msg or "cuda error" in error_msg
+    )
+
+
 # Text-encoder CPU offload frees ~1.6 GB VRAM but each prompt update pays a
 # CPU<->GPU round-trip plus torch.cuda.empty_cache() — a measurable stall
 # mid-stream on high-VRAM GPUs. Default off (encoders stay resident on GPU);
@@ -1509,8 +1522,13 @@ class StreamDiffusionWrapper:
                         pipe = StableDiffusionXLPipeline.from_single_file(model_id_or_path).to(dtype=self.dtype)
                         logger.info("_load_model: Successfully loaded using SDXL pipeline on retry")
                     except Exception as retry_error:
-                        logger.warning(f"_load_model: SDXL pipeline retry failed: {retry_error}")
-                        # Continue with the originally loaded pipeline
+                        # Discard the mismatched-type pipe so a subsequent loading-method
+                        # failure can't leave a wrong-type pipe looking like a success.
+                        pipe = None
+                        raise RuntimeError(
+                            f"_load_model: SDXL model detected but pipeline retry with "
+                            f"StableDiffusionXLPipeline also failed: {retry_error}"
+                        ) from retry_error
 
                 break
             except Exception as e:
@@ -1851,8 +1869,8 @@ class StreamDiffusionWrapper:
                             unet_arch = extract_unet_architecture(stream.unet)
                             unet_arch = validate_architecture(unet_arch, model_type)
                             use_controlnet_trt = True
-                    except Exception:
-                        pass
+                    except Exception as fallback_error:
+                        logger.error(f"Basic fallback detection also failed: {fallback_error}", exc_info=True)
 
                 if not use_controlnet_trt and not self.use_controlnet:
                     logger.info("ControlNet not enabled, building engines without ControlNet support")
@@ -2336,15 +2354,7 @@ class StreamDiffusionWrapper:
                                 )
 
                 except Exception as e:
-                    error_msg = str(e).lower()
-                    is_oom_error = (
-                        "out of memory" in error_msg
-                        or "outofmemory" in error_msg
-                        or "oom" in error_msg
-                        or "cuda error" in error_msg
-                    )
-
-                    if is_oom_error:
+                    if _is_oom_error(e):
                         logger.error(f"TensorRT UNet engine OOM: {e}")
                         logger.info("Falling back to PyTorch UNet (no TensorRT acceleration)")
                         logger.info("This will be slower but should work with less memory")
@@ -2396,15 +2406,7 @@ class StreamDiffusionWrapper:
                         logger.info("TensorRT VAE engines loaded successfully")
 
                     except Exception as e:
-                        error_msg = str(e).lower()
-                        is_oom_error = (
-                            "out of memory" in error_msg
-                            or "outofmemory" in error_msg
-                            or "oom" in error_msg
-                            or "cuda error" in error_msg
-                        )
-
-                        if is_oom_error:
+                        if _is_oom_error(e):
                             logger.error(f"TensorRT VAE engine OOM: {e}")
                             logger.info("Falling back to PyTorch VAE (no TensorRT acceleration)")
                             logger.info("This will be slower but should work with less memory")

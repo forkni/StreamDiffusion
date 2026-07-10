@@ -365,6 +365,7 @@ class StreamDiffusion:
                 return
             except Exception as e:
                 last_err = e
+                logger.debug(f"load_lora_weights: candidate {weight_name!r} failed: {e}", exc_info=True)
                 continue
 
         if last_err is not None:
