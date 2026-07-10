@@ -356,8 +356,9 @@ class RealESRGANProcessor(BasePreprocessor):
             self._load_existing_engine()
         
         except Exception as e:
-            pass
-    
+            logger.error(f"RealESRGAN TensorRT engine build failed: {e}")
+            raise RuntimeError(f"RealESRGAN TensorRT engine build failed: {e}") from e
+
     def _process_with_tensorrt(self, tensor: torch.Tensor) -> torch.Tensor:
         """Process tensor using TensorRT engine (following depth_tensorrt pattern)"""
         batch_size, channels, height, width = tensor.shape

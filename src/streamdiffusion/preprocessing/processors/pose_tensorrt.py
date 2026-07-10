@@ -124,7 +124,7 @@ def show_predictions_from_batch_format(
         image_index, pred_boxes, pred_scores, pred_joints = next(
             iter(iterate_over_batch_predictions(predictions, 1)))
     except Exception as e:
-        raise RuntimeError(f"show_predictions_from_batch_format: Error in iterate_over_batch_predictions: {e}")
+        raise RuntimeError(f"show_predictions_from_batch_format: Error in iterate_over_batch_predictions: {e}") from e
 
     # Handle case where no poses are detected
     if pred_joints.shape[0] == 0:
@@ -137,7 +137,7 @@ def show_predictions_from_batch_format(
         # Add middle joint as keypoint 17 to all poses
         new_pred_joints = np.concatenate([pred_joints, middle_joints[:, np.newaxis]], axis=1)
     except Exception as e:
-        raise RuntimeError(f"show_predictions_from_batch_format: Error processing poses: {e}")
+        raise RuntimeError(f"show_predictions_from_batch_format: Error processing poses: {e}") from e
 
     # Create black background for pose visualization
     black_image = np.zeros((640, 640, 3))
@@ -153,7 +153,7 @@ def show_predictions_from_batch_format(
             keypoint_threshold=keypoint_threshold,
         )
     except Exception as e:
-        raise RuntimeError(f"show_predictions_from_batch_format: Error in pose drawing: {e}")
+        raise RuntimeError(f"show_predictions_from_batch_format: Error in pose drawing: {e}") from e
 
     return image
 

@@ -1,9 +1,12 @@
+import logging
 from typing import Any, Dict, List
 
 import torch
 
 from ..hooks import LatentCtx, LatentHook
 from ..preprocessing.orchestrator_user import OrchestratorUser
+
+logger = logging.getLogger(__name__)
 
 
 class LatentProcessingModule(OrchestratorUser):
@@ -55,8 +58,8 @@ class LatentProcessingModule(OrchestratorUser):
                 try:
                     if hasattr(processor, name):
                         setattr(processor, name, value)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to set processor param {name!r}: {e}", exc_info=True)
 
         # Set order for sequential execution
         order = proc_config.get("order", len(self.processors))

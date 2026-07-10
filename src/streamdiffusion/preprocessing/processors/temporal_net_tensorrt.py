@@ -136,7 +136,7 @@ class TensorRTEngine:
                 try:
                     if self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
                         self.context.set_input_shape(name, buf.shape)
-                except:
+                except Exception:
                     # Tensor name might not be in engine, skip
                     pass
 

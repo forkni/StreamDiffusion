@@ -1,9 +1,12 @@
+import logging
 from typing import Any, Dict, List
 
 import torch
 
 from ..hooks import ImageCtx, ImageHook
 from ..preprocessing.orchestrator_user import OrchestratorUser
+
+logger = logging.getLogger(__name__)
 
 
 class ImageProcessingModule(OrchestratorUser):
@@ -57,8 +60,8 @@ class ImageProcessingModule(OrchestratorUser):
                 try:
                     if hasattr(processor, name):
                         setattr(processor, name, value)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to set processor param {name!r}: {e}", exc_info=True)
 
         # Set order for sequential execution
         order = proc_config.get("order", len(self.processors))
@@ -77,8 +80,8 @@ class ImageProcessingModule(OrchestratorUser):
                     setattr(processor, "image_width", int(self._stream.width))
                 if hasattr(processor, "image_height"):
                     setattr(processor, "image_height", int(self._stream.height))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to align processor target size with stream resolution: {e}", exc_info=True)
 
         self.processors.append(processor)
 

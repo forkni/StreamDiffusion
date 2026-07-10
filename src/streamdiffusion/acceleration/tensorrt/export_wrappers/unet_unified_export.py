@@ -77,11 +77,12 @@ class UnifiedExportWrapper(torch.nn.Module):
         use_ipadapter: bool = False,
         control_input_names: Optional[List[str]] = None,
         num_tokens: int = 4,
-        kvo_cache_structure: List[int] = [],
+        kvo_cache_structure: Optional[List[int]] = None,
         fi_layer_count: int = 0,
         **kwargs,
     ):
         super().__init__()
+        kvo_cache_structure = kvo_cache_structure or []
         self.use_controlnet = use_controlnet
         self.use_ipadapter = use_ipadapter
         self.controlnet_wrapper = None

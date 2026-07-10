@@ -1,5 +1,6 @@
 import os
 import warnings
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -66,7 +67,7 @@ def compile_vae_encoder(
     onnx_opt_path: str,
     engine_path: str,
     opt_batch_size: int = 1,
-    engine_build_options: dict = {},
+    engine_build_options: Optional[dict] = None,
 ):
     vae = vae.to(torch.device("cuda"))
     builder = EngineBuilder(model_data, vae, device=torch.device("cuda"))
@@ -75,7 +76,7 @@ def compile_vae_encoder(
         onnx_opt_path,
         engine_path,
         opt_batch_size=opt_batch_size,
-        **engine_build_options,
+        **(engine_build_options or {}),
     )
 
 
@@ -86,7 +87,7 @@ def compile_vae_decoder(
     onnx_opt_path: str,
     engine_path: str,
     opt_batch_size: int = 1,
-    engine_build_options: dict = {},
+    engine_build_options: Optional[dict] = None,
 ):
     vae = vae.to(torch.device("cuda"))
     builder = EngineBuilder(model_data, vae, device=torch.device("cuda"))
@@ -95,7 +96,7 @@ def compile_vae_decoder(
         onnx_opt_path,
         engine_path,
         opt_batch_size=opt_batch_size,
-        **engine_build_options,
+        **(engine_build_options or {}),
     )
 
 
@@ -106,7 +107,7 @@ def compile_safety_checker(
     onnx_opt_path: str,
     engine_path: str,
     opt_batch_size: int = 1,
-    engine_build_options: dict = {},
+    engine_build_options: Optional[dict] = None,
 ):
     safety_checker = safety_checker.to(torch.device("cuda"))
     builder = EngineBuilder(model_data, safety_checker, device=torch.device("cuda"))
@@ -115,7 +116,7 @@ def compile_safety_checker(
         onnx_opt_path,
         engine_path,
         opt_batch_size=opt_batch_size,
-        **engine_build_options,
+        **(engine_build_options or {}),
     )
 
 
@@ -126,11 +127,11 @@ def compile_unet(
     onnx_opt_path: str,
     engine_path: str,
     opt_batch_size: int = 1,
-    engine_build_options: dict = {},
+    engine_build_options: Optional[dict] = None,
 ):
     # Extract FP8-specific options before passing the rest to EngineBuilder.build().
     # These are not valid kwargs for build_engine() and must be handled here.
-    build_options = dict(engine_build_options)
+    build_options = dict(engine_build_options or {})
     fp8 = build_options.pop("fp8", False)
     pipe_ref = build_options.pop("pipe_ref", None)
     calibration_prompts = build_options.pop("calibration_prompts", None)
@@ -177,9 +178,9 @@ def compile_controlnet(
     onnx_opt_path: str,
     engine_path: str,
     opt_batch_size: int = 1,
-    engine_build_options: dict = {},
+    engine_build_options: Optional[dict] = None,
 ):
-    build_options = dict(engine_build_options)
+    build_options = dict(engine_build_options or {})
     fp8 = build_options.pop("fp8", False)
     fp8_allow_fp16_fallback = build_options.pop("fp8_allow_fp16_fallback", True)
     calibration_steps = build_options.pop("calibration_steps", 32)

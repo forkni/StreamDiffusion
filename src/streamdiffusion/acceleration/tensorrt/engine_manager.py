@@ -152,7 +152,7 @@ class EngineManager:
 
             # IP-Adapter differentiation: add type and (optionally) tokens
             # Keep scale out of identity for runtime control, but include a type flag to separate caches
-            if is_faceid is True:
+            if is_faceid:
                 prefix += "--fid"
             if ipadapter_tokens is not None:
                 prefix += f"--tokens{ipadapter_tokens}"

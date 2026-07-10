@@ -901,8 +901,8 @@ class StreamDiffusion:
                         # Merge extra kwargs from hooks (e.g., ipadapter_scale)
                         try:
                             extra_from_hooks.update(delta.extra_unet_kwargs)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"unet_step: failed to merge extra_unet_kwargs from hook: {e}", exc_info=True)
                 if extra_from_hooks:
                     unet_kwargs["extra_unet_kwargs"] = extra_from_hooks
             except Exception as e:
@@ -1042,8 +1042,9 @@ class StreamDiffusion:
     def update_kvo_cache(
         self,
         kvo_cache_out: List[torch.Tensor],
-        fio_cache_out: List[torch.Tensor] = [],
+        fio_cache_out: Optional[List[torch.Tensor]] = None,
     ) -> None:
+        fio_cache_out = fio_cache_out or []
         has_kvo = bool(self.kvo_cache)
         has_fio = bool(fio_cache_out) and bool(self.fio_cache)
 

@@ -143,8 +143,8 @@ class ControlNetModule(OrchestratorUser):
                     try:
                         if hasattr(preproc, name):
                             setattr(preproc, name, value)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Failed to set preprocessor param {name!r}: {e}", exc_info=True)
 
             # Align preprocessor target size with stream resolution once (avoid double-resize later)
             try:
@@ -155,8 +155,8 @@ class ControlNetModule(OrchestratorUser):
                     setattr(preproc, "image_width", int(self._stream.width))
                 if hasattr(preproc, "image_height"):
                     setattr(preproc, "image_height", int(self._stream.height))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to align preprocessor target size with stream resolution: {e}", exc_info=True)
 
         image_tensor: Optional[torch.Tensor] = None
         if control_image is not None and self._preprocessing_orchestrator is not None:
@@ -489,8 +489,8 @@ class ControlNetModule(OrchestratorUser):
                             if mid:
                                 self._engines_by_id[mid] = eng
                     self._engines_cache_valid = True
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to build controlnet engines-by-id cache: {e}", exc_info=True)
 
             # Cache SDXL detection to avoid repeated hasattr calls
             if self._is_sdxl is None:
@@ -718,8 +718,8 @@ class ControlNetModule(OrchestratorUser):
             # Track model_id for updater diffing
             try:
                 setattr(controlnet, "model_id", model_id)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to set model_id attribute on controlnet: {e}", exc_info=True)
             return controlnet
         except Exception as e:
             import traceback
