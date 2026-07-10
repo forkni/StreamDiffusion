@@ -401,9 +401,11 @@ class StreamDiffusion:
         num_inference_steps: int = 50,
         guidance_scale: float = 1.2,
         delta: float = 1.0,
-        generator: Optional[torch.Generator] = torch.Generator(),
+        generator: Optional[torch.Generator] = None,
         seed: int = 2,
     ) -> None:
+        if generator is None:
+            generator = torch.Generator()
         self.generator = generator
         self.generator.manual_seed(seed)
         self.current_seed = seed
@@ -1292,6 +1294,10 @@ class StreamDiffusion:
                 inference_time = start.elapsed_time(end) / 1000
                 self.inference_time_ema = 0.9 * self.inference_time_ema + 0.1 * inference_time
 
+        # NOTE: x_output aliases self._image_decode_buf, a persistent buffer reused every
+        # frame to avoid a per-frame .clone() on this hot path (see buffer init above).
+        # Intentional: callers needing an independent copy must clone it themselves.
+        # StreamDiffusionWrapper.postprocess_image() clones at the public API boundary.
         return x_output
 
     # =========================================================================
@@ -1384,6 +1390,10 @@ class StreamDiffusion:
         # IMAGE POSTPROCESSING HOOKS: After VAE decoding, before final output
         x_output = self._apply_image_postprocessing_hooks(x_output)
 
+        # NOTE: x_output aliases self._image_decode_buf, a persistent buffer reused every
+        # call to avoid a per-frame .clone() (see buffer init above). Intentional: callers
+        # needing an independent copy must clone it themselves.
+        # StreamDiffusionWrapper.postprocess_image() clones at the public API boundary.
         return x_output
 
     @torch.inference_mode()

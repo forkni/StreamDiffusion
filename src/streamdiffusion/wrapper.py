@@ -511,6 +511,9 @@ class StreamDiffusionWrapper:
                     num_inference_steps=num_inference_steps,
                     guidance_scale=guidance_scale,
                     delta=delta,
+                    # Preserve the active seed across prompt changes -- stream.prepare()'s
+                    # own default (seed=2) would otherwise silently reset the RNG here.
+                    seed=getattr(self.stream, "current_seed", 2),
                 )
             finally:
                 self._offload_text_encoders()
@@ -537,6 +540,9 @@ class StreamDiffusionWrapper:
                     num_inference_steps=num_inference_steps,
                     guidance_scale=guidance_scale,
                     delta=delta,
+                    # Preserve the active seed across prompt changes -- stream.prepare()'s
+                    # own default (seed=2) would otherwise silently reset the RNG here.
+                    seed=getattr(self.stream, "current_seed", 2),
                 )
             finally:
                 self._offload_text_encoders()
@@ -1023,7 +1029,10 @@ class StreamDiffusionWrapper:
 
         # Fast paths for non-PIL outputs (avoid unnecessary conversions)
         if output_type == "latent":
-            return image_tensor
+            # Clone: image_tensor may alias an internal decode buffer reused across
+            # frames (see StreamDiffusion.__call__/txt2img). Callers of this public
+            # API must get an independent tensor, not a view that mutates next frame.
+            return image_tensor.clone()
         elif output_type == "pt":
             # Denormalize on GPU, return tensor
             return self._denormalize_on_gpu(image_tensor)
@@ -1045,6 +1054,9 @@ class StreamDiffusionWrapper:
             with profiler.region("d2h_sync"):
                 self._d2h_event.record()
                 self._d2h_event.synchronize()
+            # NOTE: this numpy array is a view of `_output_pin_buf`, a pinned host
+            # buffer reused every frame (deliberate DMA optimization). Callers that
+            # retain the returned array across frames must copy it themselves.
             out = self._output_pin_buf.numpy()
             return out if self.frame_buffer_size > 1 else out[0]
 
@@ -2905,15 +2917,10 @@ class StreamDiffusionWrapper:
                     unet_engine = self.stream.unet
                     logger.info("   Cleaning up TensorRT UNet engine...")
 
-                    # Check if it's a TensorRT engine and cleanup properly
-                    if hasattr(unet_engine, "engine") and hasattr(unet_engine.engine, "__del__"):
-                        try:
-                            # Call the engine's destructor explicitly
-                            unet_engine.engine.__del__()
-                        except Exception:
-                            pass
-
-                    # Clear all engine-related attributes
+                    # Clear all engine-related attributes. Engine.__del__ is self-guarding
+                    # (safe to invoke twice), so dropping these references is sufficient --
+                    # GC + the empty_cache()/ipc_collect() below reclaim the memory. No need
+                    # to call __del__ explicitly first.
                     if hasattr(unet_engine, "context"):
                         try:
                             del unet_engine.context
@@ -2938,9 +2945,11 @@ class StreamDiffusionWrapper:
                     for engine_name in ["vae_encoder", "vae_decoder"]:
                         if hasattr(vae_engine, engine_name):
                             engine = getattr(vae_engine, engine_name)
-                            if hasattr(engine, "engine") and hasattr(engine.engine, "__del__"):
+                            # Drop the inner Engine reference so its self-guarding __del__
+                            # runs via GC (no need to invoke the dunder explicitly).
+                            if hasattr(engine, "engine"):
                                 try:
-                                    engine.engine.__del__()
+                                    del engine.engine
                                 except Exception:
                                     pass
                             try:
@@ -3062,7 +3071,7 @@ class StreamDiffusionWrapper:
         self.cleanup_gpu_memory()
 
         # Remove engines directory
-        engines_dir = "engines"
+        engines_dir = str(getattr(self, "_engine_dir", "engines"))
         if os.path.exists(engines_dir):
             try:
                 shutil.rmtree(engines_dir)
