@@ -65,7 +65,7 @@ class HEDPreprocessor(BasePreprocessor):
             print(f"HEDPreprocessor: Successfully loaded model on {self.device}")
             
         except Exception as e:
-            raise RuntimeError(f"Failed to load HED model: {e}")
+            raise RuntimeError(f"Failed to load HED model: {e}") from e
     
     def _process_core(self, image: Image.Image) -> Image.Image:
         """Apply HED edge detection to the input image"""

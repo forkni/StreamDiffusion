@@ -360,8 +360,8 @@ class IPAdapterModule(OrchestratorUser):
         # Set initial scale on the IPAdapter instance
         try:
             ipadapter.set_scale(float(self.config.scale))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to set initial IPAdapter scale: {e}", exc_info=True)
 
         # Expose IPAdapter instance as single source of truth
         try:
@@ -370,8 +370,8 @@ class IPAdapterModule(OrchestratorUser):
             setattr(ipadapter, "weight_type", self.config.weight_type)  # For build_layer_weights
             setattr(ipadapter, "scale", float(self.config.scale))  # Track current scale
             setattr(ipadapter, "enabled", bool(self.config.enabled))  # Track enabled state
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to attach custom attributes to ipadapter instance: {e}", exc_info=True)
 
         # Register embedding hook for concatenation of image tokens
         stream.embedding_hooks.append(self.build_embedding_hook(stream))

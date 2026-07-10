@@ -68,8 +68,8 @@ class UNet2DConditionModelEngine:
         latent_model_input: torch.Tensor,
         timestep: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
-        kvo_cache: List[torch.Tensor] = [],
-        fio_cache: List[torch.Tensor] = [],
+        kvo_cache: Optional[List[torch.Tensor]] = None,
+        fio_cache: Optional[List[torch.Tensor]] = None,
         fi_strength: Optional[torch.Tensor] = None,
         fi_threshold: Optional[torch.Tensor] = None,
         down_block_additional_residuals: Optional[List[torch.Tensor]] = None,
@@ -79,6 +79,9 @@ class UNet2DConditionModelEngine:
     ) -> Any:
         if timestep.dtype != torch.float32:
             timestep = timestep.float()
+
+        kvo_cache = kvo_cache or []
+        fio_cache = fio_cache or []
 
         # Lazy-init KVO key name lists when cache length becomes known (model-dependent).
         # After first call the length is stable, so this branch runs exactly once.

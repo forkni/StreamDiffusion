@@ -67,6 +67,8 @@ def postprocess_image(
     if output_type == "pil":
         return numpy_to_pil(image)
 
+    raise ValueError(f"unsupported output_type {output_type!r}")
+
 
 def process_image(
     image_pil: PIL.Image.Image, range: Tuple[int, int] = (-1, 1)

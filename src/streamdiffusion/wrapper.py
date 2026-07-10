@@ -1945,13 +1945,12 @@ class StreamDiffusionWrapper:
                         for engine in missing_engines:
                             logger.info(f"  - {engine}")
                     else:
-                        error_msg = "Required TensorRT engines are missing and build_engines_if_missing=False:\n"
-                        for engine in missing_engines:
-                            error_msg += f"  - {engine}\n"
-                        error_msg += (
+                        error_lines = ["Required TensorRT engines are missing and build_engines_if_missing=False:"]
+                        error_lines.extend(f"  - {engine}" for engine in missing_engines)
+                        error_lines.append(
                             "\nTo build engines, set build_engines_if_missing=True or run the build script manually."
                         )
-                        raise RuntimeError(error_msg)
+                        raise RuntimeError("\n".join(error_lines))
 
                 # Determine correct embedding dimension based on model type
                 if is_sdxl:
@@ -2032,7 +2031,7 @@ class StreamDiffusionWrapper:
                             logger.error("Try reducing batch size, using smaller models, or increasing GPU memory")
                             raise RuntimeError(
                                 "Insufficient VRAM for IPAdapter installation. Consider using a GPU with more memory or reducing model complexity."
-                            )
+                            ) from oom_error
 
                         except RuntimeError as rt_error:
                             if "size mismatch" in str(rt_error):
@@ -2358,8 +2357,8 @@ class StreamDiffusionWrapper:
                         if hasattr(stream, "unet"):
                             try:
                                 del stream.unet
-                            except Exception:
-                                pass
+                            except Exception as del_error:
+                                logger.debug(f"Failed to delete stream.unet during OOM fallback: {del_error}", exc_info=True)
 
                         self.cleanup_gpu_memory()
 
@@ -2376,7 +2375,7 @@ class StreamDiffusionWrapper:
                             logger.error(f"PyTorch UNet fallback also failed: {fallback_error}")
                             raise RuntimeError(
                                 f"Both TensorRT and PyTorch UNet loading failed. TensorRT error: {e}, Fallback error: {fallback_error}"
-                            )
+                            ) from fallback_error
                     else:
                         # Non-OOM error, re-raise
                         logger.error(f"TensorRT UNet engine loading failed (non-OOM): {e}")
@@ -2416,8 +2415,8 @@ class StreamDiffusionWrapper:
                             if hasattr(stream, "vae"):
                                 try:
                                     del stream.vae
-                                except Exception:
-                                    pass
+                                except Exception as del_error:
+                                    logger.debug(f"Failed to delete stream.vae during OOM fallback: {del_error}", exc_info=True)
 
                             self.cleanup_gpu_memory()
 
@@ -2434,7 +2433,7 @@ class StreamDiffusionWrapper:
                                 logger.error(f"PyTorch VAE fallback also failed: {fallback_error}")
                                 raise RuntimeError(
                                     f"Both TensorRT and PyTorch VAE loading failed. TensorRT error: {e}, Fallback error: {fallback_error}"
-                                )
+                                ) from fallback_error
                         else:
                             # Non-OOM error, re-raise
                             logger.error(f"TensorRT VAE engine loading failed (non-OOM): {e}")
@@ -2788,8 +2787,8 @@ class StreamDiffusionWrapper:
         try:
             if hasattr(stream, "timesteps") and stream.timesteps is not None:
                 num_inference_steps = int(len(stream.timesteps))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to derive num_inference_steps from stream.timesteps: {e}", exc_info=True)
 
         # Resolution and model/pipeline info
         state: Dict[str, Any] = {

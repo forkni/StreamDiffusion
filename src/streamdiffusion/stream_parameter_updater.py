@@ -202,9 +202,10 @@ class StreamParameterUpdater(OrchestratorUser):
                 )
 
         except Exception:
-            import traceback
-
-            traceback.print_exc()
+            logger.error(
+                f"_preprocess_style_image_parallel: failed for style image '{style_image_key}'", exc_info=True
+            )
+            raise
 
     def get_cached_embeddings(self, style_image_key: str) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
         """Get cached embeddings for a style image key"""
@@ -1355,10 +1356,7 @@ class StreamParameterUpdater(OrchestratorUser):
             model_id = current_models.get(i, f"controlnet_{i}")
             if model_id not in desired_models:
                 logger.info(f"_update_controlnet_config: Removing ControlNet {model_id}")
-                try:
-                    controlnet_pipeline.remove_controlnet(i)
-                except Exception:
-                    raise
+                controlnet_pipeline.remove_controlnet(i)
 
         # Add new controlnets and update existing ones
         for desired_cfg in desired_config:
@@ -1369,22 +1367,17 @@ class StreamParameterUpdater(OrchestratorUser):
                 # Add new controlnet
                 logger.info(f"_update_controlnet_config: Adding ControlNet {model_id}")
                 try:
-                    # Prefer module path: construct ControlNetConfig
-                    try:
-                        from .modules.controlnet_module import ControlNetConfig  # type: ignore
+                    from .modules.controlnet_module import ControlNetConfig  # type: ignore
 
-                        cn_cfg = ControlNetConfig(
-                            model_id=desired_cfg.get("model_id"),
-                            preprocessor=desired_cfg.get("preprocessor"),
-                            conditioning_scale=desired_cfg.get("conditioning_scale", 1.0),
-                            enabled=desired_cfg.get("enabled", True),
-                            conditioning_channels=desired_cfg.get("conditioning_channels"),
-                            preprocessor_params=desired_cfg.get("preprocessor_params"),
-                        )
-                        controlnet_pipeline.add_controlnet(cn_cfg, desired_cfg.get("control_image"))
-                    except Exception:
-                        # No fallback
-                        raise
+                    cn_cfg = ControlNetConfig(
+                        model_id=desired_cfg.get("model_id"),
+                        preprocessor=desired_cfg.get("preprocessor"),
+                        conditioning_scale=desired_cfg.get("conditioning_scale", 1.0),
+                        enabled=desired_cfg.get("enabled", True),
+                        conditioning_channels=desired_cfg.get("conditioning_channels"),
+                        preprocessor_params=desired_cfg.get("preprocessor_params"),
+                    )
+                    controlnet_pipeline.add_controlnet(cn_cfg, desired_cfg.get("control_image"))
                 except Exception as e:
                     logger.error(f"_update_controlnet_config: add_controlnet failed for {model_id}: {e}")
             else:
