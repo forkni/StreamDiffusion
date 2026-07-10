@@ -66,7 +66,7 @@ def compile_vae_encoder(
     onnx_path: str,
     onnx_opt_path: str,
     engine_path: str,
-    opt_batch_size: int = 1,
+    opt_batch_size: Optional[int] = None,
     engine_build_options: Optional[dict] = None,
 ):
     vae = vae.to(torch.device("cuda"))
@@ -86,7 +86,7 @@ def compile_vae_decoder(
     onnx_path: str,
     onnx_opt_path: str,
     engine_path: str,
-    opt_batch_size: int = 1,
+    opt_batch_size: Optional[int] = None,
     engine_build_options: Optional[dict] = None,
 ):
     vae = vae.to(torch.device("cuda"))
@@ -106,7 +106,7 @@ def compile_safety_checker(
     onnx_path: str,
     onnx_opt_path: str,
     engine_path: str,
-    opt_batch_size: int = 1,
+    opt_batch_size: Optional[int] = None,
     engine_build_options: Optional[dict] = None,
 ):
     safety_checker = safety_checker.to(torch.device("cuda"))
@@ -126,7 +126,7 @@ def compile_unet(
     onnx_path: str,
     onnx_opt_path: str,
     engine_path: str,
-    opt_batch_size: int = 1,
+    opt_batch_size: Optional[int] = None,
     engine_build_options: Optional[dict] = None,
 ):
     # Extract FP8-specific options before passing the rest to EngineBuilder.build().
@@ -177,7 +177,7 @@ def compile_controlnet(
     onnx_path: str,
     onnx_opt_path: str,
     engine_path: str,
-    opt_batch_size: int = 1,
+    opt_batch_size: Optional[int] = None,
     engine_build_options: Optional[dict] = None,
 ):
     build_options = dict(engine_build_options or {})

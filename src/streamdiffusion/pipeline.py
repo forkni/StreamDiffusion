@@ -631,11 +631,7 @@ class StreamDiffusion:
         _use_seq_loop = not (self.use_denoising_batch and isinstance(self.scheduler, LCMScheduler))
         if _use_seq_loop and self.sub_timesteps_tensor.dim() >= 1:
             self._sub_timesteps_expanded = (
-                self.sub_timesteps_tensor
-                .view(-1)
-                .unsqueeze(1)
-                .expand(-1, self.frame_bff_size)
-                .contiguous()
+                self.sub_timesteps_tensor.view(-1).unsqueeze(1).expand(-1, self.frame_bff_size).contiguous()
             )  # shape [loop_steps, frame_bff_size]
         else:
             self._sub_timesteps_expanded = None
@@ -726,14 +722,12 @@ class StreamDiffusion:
                 dtype=self.dtype,
                 device=self.device,
             )
-            self._cfg_t_buf = torch.empty(
-                cfg_batch, dtype=self.sub_timesteps_tensor.dtype, device=self.device
-            )
+            self._cfg_t_buf = torch.empty(cfg_batch, dtype=self.sub_timesteps_tensor.dtype, device=self.device)
         else:
             self._cfg_latent_buf = None
             self._cfg_t_buf = None
 
-    def _get_scheduler_scalings(self, timestep):
+    def _get_scheduler_scalings(self, timestep: Union[int, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Get LCM/TCD-specific scaling factors for boundary conditions."""
         if isinstance(self.scheduler, LCMScheduler):
             c_skip, c_out = self.scheduler.get_scalings_for_boundary_condition_discrete(timestep)
@@ -1146,8 +1140,10 @@ class StreamDiffusion:
                     # Resolve scalar timestep tensor on device.
                     # Avoid per-step t.view(1).repeat() allocations by using the
                     # precomputed _sub_timesteps_expanded table from prepare().
-                    t = timestep if isinstance(timestep, torch.Tensor) else torch.tensor(
-                        timestep, device=self.device, dtype=torch.long
+                    t = (
+                        timestep
+                        if isinstance(timestep, torch.Tensor)
+                        else torch.tensor(timestep, device=self.device, dtype=torch.long)
                     )
                     if self._sub_timesteps_expanded is not None:
                         t_expanded = self._sub_timesteps_expanded[idx]  # [frame_bff_size], no alloc
@@ -1188,7 +1184,7 @@ class StreamDiffusion:
             return x_0_pred_out
 
     @torch.inference_mode()
-    def __call__(self, x: Union[torch.Tensor, PIL.Image.Image, np.ndarray] = None) -> torch.Tensor:
+    def __call__(self, x: Optional[Union[torch.Tensor, PIL.Image.Image, np.ndarray]] = None) -> torch.Tensor:
         start = self._timing_start
         end = self._timing_end
         if self.similar_image_filter:
@@ -1241,9 +1237,7 @@ class StreamDiffusion:
                 torch.cuda.empty_cache()
                 raise
             if "expanded size" in _msg and "must match" in _msg:
-                logger.error(
-                    "StreamDiffusion.__call__: tensor size mismatch — attempting scheduler rebuild: %s", _e
-                )
+                logger.error("StreamDiffusion.__call__: tensor size mismatch — attempting scheduler rebuild: %s", _e)
                 try:
                     self._param_updater._update_timestep_calculations()
                     self._refresh_derived_tensors()

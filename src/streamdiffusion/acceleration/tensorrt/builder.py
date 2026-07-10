@@ -93,7 +93,7 @@ class EngineBuilder:
         engine_path: str,
         opt_image_height: int = 512,
         opt_image_width: int = 512,
-        opt_batch_size: int = 1,
+        opt_batch_size: Optional[int] = None,
         min_image_resolution: int = 256,
         max_image_resolution: int = 1024,
         build_enable_refit: bool = False,
@@ -118,6 +118,8 @@ class EngineBuilder:
         is_controlnet: bool = False,
         artifact_prefix: str = "unet",
     ):
+        if opt_batch_size is None:
+            raise ValueError("build() requires an explicit opt_batch_size")
         build_total_start = time.perf_counter()
         engine_name = Path(engine_path).parent.name
         engine_filename = Path(engine_path).name
@@ -146,14 +148,14 @@ class EngineBuilder:
         else:
             print(f"Exporting model: {onnx_path}")
             t0 = time.perf_counter()
-            _export_kwargs = dict(
-                onnx_path=onnx_path,
-                model_data=self.model,
-                opt_image_height=opt_image_height,
-                opt_image_width=opt_image_width,
-                opt_batch_size=opt_batch_size,
-                onnx_opset=onnx_opset,
-            )
+            _export_kwargs = {
+                "onnx_path": onnx_path,
+                "model_data": self.model,
+                "opt_image_height": opt_image_height,
+                "opt_image_width": opt_image_width,
+                "opt_batch_size": opt_batch_size,
+                "onnx_opset": onnx_opset,
+            }
             export_onnx(self.network, **_export_kwargs)
             elapsed = time.perf_counter() - t0
             stats["stages"]["onnx_export"] = {"status": "built", "elapsed_s": round(elapsed, 2)}
@@ -304,7 +306,7 @@ class EngineBuilder:
             stats["stages"]["trt_build"] = {"status": "built", "elapsed_s": round(elapsed, 2)}
             _build_logger.info(f"[BUILD] TRT engine build ({engine_filename}): {elapsed:.1f}s")
 
-        # --- FP8 Q/DQ layer count (sanity gate: < 100 means quantization is inactive) ---
+        # --- FP8 Q/DQ layer count (sanity gate: < 500 means quantization is inactive) ---
         if fp8 and os.path.exists(engine_path):
             try:
                 import json as _json

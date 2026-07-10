@@ -737,8 +737,7 @@ class StreamDiffusionWrapper:
             _normalized = [(str(p), float(w)) for p, w in prompt_list]
             _current = self.stream._param_updater.get_current_prompts()
             _neg_unchanged = (
-                negative_prompt is None
-                or negative_prompt == self.stream._param_updater._current_negative_prompt
+                negative_prompt is None or negative_prompt == self.stream._param_updater._current_negative_prompt
             )
             if _normalized == _current and _neg_unchanged:
                 logger.debug(
@@ -2100,10 +2099,7 @@ class StreamDiffusionWrapper:
                         num_ip_layers = getattr(temp_wrapped_unet.ipadapter_wrapper, "num_ip_layers", None)
                         if not isinstance(num_ip_layers, int) or num_ip_layers <= 0:
                             raise RuntimeError("Failed to determine num_ip_layers for IP-Adapter")
-                        try:
-                            logger.info(f"compile_and_load_engine: discovered num_ip_layers={num_ip_layers}")
-                        except Exception:
-                            pass
+                        logger.info(f"compile_and_load_engine: discovered num_ip_layers={num_ip_layers}")
 
                 unet_model = UNet(
                     stream.unet,
@@ -2358,7 +2354,9 @@ class StreamDiffusionWrapper:
                             try:
                                 del stream.unet
                             except Exception as del_error:
-                                logger.debug(f"Failed to delete stream.unet during OOM fallback: {del_error}", exc_info=True)
+                                logger.debug(
+                                    f"Failed to delete stream.unet during OOM fallback: {del_error}", exc_info=True
+                                )
 
                         self.cleanup_gpu_memory()
 
@@ -2416,7 +2414,9 @@ class StreamDiffusionWrapper:
                                 try:
                                     del stream.vae
                                 except Exception as del_error:
-                                    logger.debug(f"Failed to delete stream.vae during OOM fallback: {del_error}", exc_info=True)
+                                    logger.debug(
+                                        f"Failed to delete stream.vae during OOM fallback: {del_error}", exc_info=True
+                                    )
 
                             self.cleanup_gpu_memory()
 
