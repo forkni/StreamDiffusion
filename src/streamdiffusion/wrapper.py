@@ -349,6 +349,9 @@ class StreamDiffusionWrapper:
         self._output_pin_buf: Optional[torch.Tensor] = None  # pinned CPU buffer for async D2H output
         self._output_gpu_buf: Optional[torch.Tensor] = None  # persistent GPU fp32 staging (avoids per-frame alloc)
         self._d2h_event: Optional[torch.cuda.Event] = None  # event for fine-grained D2H sync
+        self._ipc_pack_buf: Optional[torch.Tensor] = None  # persistent GPU BGRA buffer for _ipc_pack_rgba (5f)
+        # persistent GPU BGRA buffer for _ipc_pack_unit_rgba (5f)
+        self._ipc_pack_unit_buf: Optional[torch.Tensor] = None
         self.use_cuda_ipc_output = use_cuda_ipc_output
         self._cuda_ipc_shm_name = cuda_ipc_shm_name
         self._cuda_ipc_num_slots = cuda_ipc_num_slots
@@ -1074,15 +1077,35 @@ class StreamDiffusionWrapper:
             return postprocess_image(image_tensor.cpu(), output_type=output_type)[0]
 
     def _ipc_pack_rgba(self, image_tensor: torch.Tensor) -> torch.Tensor:
-        """Convert pipeline output to HWC uint8 BGRA on GPU for cuda-link wire contract."""
+        """Convert pipeline output to HWC uint8 BGRA on GPU for cuda-link wire contract.
+
+        Writes into a persistent HWC×4 GPU buffer (realloc'd only on shape/device change)
+        instead of allocating a fresh alpha channel + concatenated tensor every frame (5f).
+        SAFE ONLY because the IPC exporter is forced to blocking export (see
+        _lazy_init_ipc_exporter / ADR-0001): the frame must be fully copied out via cuda-link
+        before this buffer is overwritten next call. Async export (CUDALINK_EXPORT_SYNC=0)
+        would race against this reused buffer and needs double-buffering first — not
+        implemented.
+        """
         with profiler.region("glue.ipc_pack_rgba"):
             denorm = self._denormalize_on_gpu(image_tensor)  # NCHW [0,1]
             if denorm.dim() == 4:
                 denorm = denorm[0]  # CHW [0,1]
             rgb_u8 = (denorm * 255).clamp(0, 255).to(torch.uint8)  # CHW uint8
             rgb_hwc = rgb_u8.permute(1, 2, 0).contiguous()  # HWC RGB
-            alpha = torch.full_like(rgb_hwc[..., :1], 255)
-            return torch.cat([rgb_hwc[..., 2:3], rgb_hwc[..., 1:2], rgb_hwc[..., 0:1], alpha], dim=-1).contiguous()
+            h, w = rgb_hwc.shape[0], rgb_hwc.shape[1]
+            if (
+                self._ipc_pack_buf is None
+                or self._ipc_pack_buf.shape[0] != h
+                or self._ipc_pack_buf.shape[1] != w
+                or self._ipc_pack_buf.device != rgb_hwc.device
+            ):
+                self._ipc_pack_buf = torch.empty((h, w, 4), dtype=torch.uint8, device=rgb_hwc.device)
+                self._ipc_pack_buf[..., 3] = 255  # constant alpha, set once at (re)allocation
+            self._ipc_pack_buf[..., 0] = rgb_hwc[..., 2]  # B
+            self._ipc_pack_buf[..., 1] = rgb_hwc[..., 1]  # G
+            self._ipc_pack_buf[..., 2] = rgb_hwc[..., 0]  # R
+            return self._ipc_pack_buf
 
     def _lazy_init_ipc_exporter(self, height: int, width: int):
         """Initialize Exporter on first frame (lazy to defer CUDA IPC SHM creation)."""
@@ -1092,10 +1115,11 @@ class StreamDiffusionWrapper:
 
         from cuda_link import Exporter, ExportPolicy, FrameSpec
 
-        # SD source buffers (_ipc_pack_rgba output) are transient torch tensors recycled by
-        # PyTorch's caching allocator the moment the caller returns.  Async export would read
-        # recycled memory → torn frames (ADR-0001 source-buffer lifetime race).  Force
-        # blocking unless the user explicitly opted into async with CUDALINK_EXPORT_SYNC=0.
+        # SD source buffers (_ipc_pack_rgba output) are a persistent GPU buffer reused every
+        # frame (5f), not a fresh allocation. Async export would read a buffer that's already
+        # been overwritten by the next frame → torn frames (ADR-0001 source-buffer lifetime
+        # race). Force blocking unless the user explicitly opted into async with
+        # CUDALINK_EXPORT_SYNC=0.
         policy = ExportPolicy.from_env()
         if os.environ.get("CUDALINK_EXPORT_SYNC") is None:
             policy = _dc_replace(policy, export_sync=True)
@@ -1118,6 +1142,10 @@ class StreamDiffusionWrapper:
 
         Like _ipc_pack_rgba but skips _denormalize_on_gpu — the ControlNet preprocessor
         output is already in [0, 1] (not the diffusion [-1, 1] range).
+
+        Writes into a persistent HWC×4 GPU buffer (5f), same rationale/caveat as
+        _ipc_pack_rgba: SAFE ONLY while the CN-preview exporter stays forced-blocking
+        (see _lazy_init_cn_ipc_exporter / ADR-0001).
         """
         with profiler.region("glue.ipc_pack_unit_rgba"):
             t = image_tensor
@@ -1125,8 +1153,19 @@ class StreamDiffusionWrapper:
                 t = t[0]  # NCHW → CHW [0,1]
             rgb_u8 = (t * 255).clamp(0, 255).to(torch.uint8)  # CHW uint8
             rgb_hwc = rgb_u8.permute(1, 2, 0).contiguous()  # HWC RGB
-            alpha = torch.full_like(rgb_hwc[..., :1], 255)
-            return torch.cat([rgb_hwc[..., 2:3], rgb_hwc[..., 1:2], rgb_hwc[..., 0:1], alpha], dim=-1).contiguous()
+            h, w = rgb_hwc.shape[0], rgb_hwc.shape[1]
+            if (
+                self._ipc_pack_unit_buf is None
+                or self._ipc_pack_unit_buf.shape[0] != h
+                or self._ipc_pack_unit_buf.shape[1] != w
+                or self._ipc_pack_unit_buf.device != rgb_hwc.device
+            ):
+                self._ipc_pack_unit_buf = torch.empty((h, w, 4), dtype=torch.uint8, device=rgb_hwc.device)
+                self._ipc_pack_unit_buf[..., 3] = 255  # constant alpha, set once at (re)allocation
+            self._ipc_pack_unit_buf[..., 0] = rgb_hwc[..., 2]  # B
+            self._ipc_pack_unit_buf[..., 1] = rgb_hwc[..., 1]  # G
+            self._ipc_pack_unit_buf[..., 2] = rgb_hwc[..., 0]  # R
+            return self._ipc_pack_unit_buf
 
     def _lazy_init_cn_ipc_exporter(self, height: int, width: int):
         """Initialize the CN-preview Exporter on first frame (lazy, mirrors _lazy_init_ipc_exporter)."""
@@ -1137,7 +1176,7 @@ class StreamDiffusionWrapper:
         from cuda_link import Exporter, ExportPolicy, FrameSpec
 
         # Same source-buffer lifetime race as _lazy_init_ipc_exporter: _ipc_pack_unit_rgba
-        # returns a transient tensor that the caching allocator recycles on return.
+        # returns a persistent GPU buffer (5f) reused every frame, overwritten on the next call.
         # Force blocking unless CUDALINK_EXPORT_SYNC=0 explicitly opts into async.
         policy = ExportPolicy.from_env()
         if os.environ.get("CUDALINK_EXPORT_SYNC") is None:
@@ -1276,20 +1315,29 @@ class StreamDiffusionWrapper:
         List[Image.Image]
             List of PIL RGB images, one for each item in the batch.
         """
-        # Denormalize on GPU first
+        # 5d: convert to uint8 NHWC on GPU (identical layout to the "np" output path @1045),
+        # then route through the shared pinned-buffer + Event machinery instead of a blocking,
+        # unpinned .cpu() into pageable memory. Only one output_type's fast path executes per
+        # postprocess_image() call, so sharing _output_pin_buf/_d2h_event with the "np" path
+        # is safe (shape/dtype-guarded realloc below covers either caller).
         denormalized = self._denormalize_on_gpu(image_tensor)
-
-        # Convert to uint8 on GPU to reduce transfer size
-        # Scale to [0, 255] and convert to uint8
-        # Scale to [0, 255] and convert to uint8
-        uint8_tensor = (denormalized * 255).clamp(0, 255).to(torch.uint8)
-
-        # Single efficient CPU transfer
-        cpu_tensor = uint8_tensor.cpu()
-
-        # Convert to HWC format for PIL
-        # From BCHW to BHWC
-        cpu_tensor = cpu_tensor.permute(0, 2, 3, 1)
+        uint8_nhwc = (denormalized * 255).clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1).contiguous()
+        if (
+            self._output_pin_buf is None
+            or self._output_pin_buf.shape != uint8_nhwc.shape
+            or self._output_pin_buf.dtype != torch.uint8
+        ):
+            self._output_pin_buf = torch.empty(uint8_nhwc.shape, dtype=torch.uint8, pin_memory=True)
+            self._d2h_event = torch.cuda.Event()
+        self._output_pin_buf.copy_(uint8_nhwc, non_blocking=True)
+        with profiler.region("d2h_sync"):
+            self._d2h_event.record()
+            self._d2h_event.synchronize()
+        # NOTE: like the "np" output path, each PIL Image below wraps a view of
+        # `_output_pin_buf` (Image.fromarray shares the numpy buffer, it does not copy).
+        # Callers that retain a returned PIL Image across frames must .copy() it themselves;
+        # this pinned buffer is overwritten in place on the next call.
+        cpu_tensor = self._output_pin_buf
 
         # Convert to PIL images efficiently
         pil_images = []
@@ -2987,6 +3035,8 @@ class StreamDiffusionWrapper:
         self._output_pin_buf = None
         self._output_gpu_buf = None
         self._d2h_event = None
+        self._ipc_pack_buf = None
+        self._ipc_pack_unit_buf = None
 
         # Force multiple garbage collection cycles for thorough cleanup
         for i in range(3):

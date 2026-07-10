@@ -596,6 +596,15 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
             # Convert from CHW to HWC
             tensor = tensor.permute(1, 2, 0)
 
+        # 5e: CPU-first — do the D2H transfer before the range-check reductions below, not
+        # after. tensor.min()/.max() are scalar reductions that force a host sync while the
+        # tensor is still on GPU; running them on the already-transferred CPU tensor collapses
+        # 2 GPU syncs into the 1 unavoidable D2H transfer. Same pattern as the in-repo template
+        # preprocessing/processors/base.py:tensor_to_pil.
+        tensor = tensor.detach()
+        if tensor.is_cuda:
+            tensor = tensor.cpu()
+
         # CRITICAL FIX: Handle VAE output range [-1, 1] -> [0, 1] -> [0, 255]
         # VAE decode_image() outputs in [-1, 1] range, need to convert to [0, 1] first
         if tensor.min() < 0:
@@ -606,8 +615,8 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         if tensor.max() <= 1.0:
             tensor = tensor * 255.0
 
-        # Convert to numpy and then PIL
-        numpy_image = tensor.detach().cpu().numpy().astype(np.uint8)
+        # Already on CPU (transferred above) — just cast + build the PIL image.
+        numpy_image = tensor.numpy().astype(np.uint8)
         return Image.fromarray(numpy_image)
 
     def _pil_to_tensor_safe(self, pil_image: Image.Image, device: str, dtype: torch.dtype) -> torch.Tensor:
@@ -788,7 +797,6 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
                     # fail identically.  Skip it and surface the error immediately.
                     if getattr(preprocessor, "gpu_native", False):
                         return None
-
 
             # PIL processing fallback
             if control_variants["image"] is not None:
