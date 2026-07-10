@@ -66,8 +66,10 @@ class _BuildLogFilter(trt.ILogger):
 
     # Myelin tactic-skip: ALL tokens must appear in the same message.
     _BENIGN = ("setupProxyGraph", "g.nodes.size() == 0")
-    # Logger-mismatch singleton warning: any of these tokens suffices.
-    _BENIGN_WARN = ("logger passed into createInferBuilder differs",)
+    # Logger-mismatch singleton warning (createInferBuilder / createInferRuntime /
+    # createInferRefitter all share this suffix). Matching the suffix covers every
+    # variant instead of just the builder spelling.
+    _BENIGN_WARN = ("differs from one already registered",)
 
     def __init__(self, inner):
         trt.ILogger.__init__(self)
@@ -547,12 +549,12 @@ class Engine:
         if hasattr(self, "cuda_graph_instance") and self.cuda_graph_instance is not None:
             try:
                 CUASSERT(cudart.cudaGraphExecDestroy(self.cuda_graph_instance))
-            except:
+            except Exception:
                 pass
         if hasattr(self, "graph") and self.graph is not None:
             try:
                 CUASSERT(cudart.cudaGraphDestroy(self.graph))
-            except:
+            except Exception:
                 pass
 
         del self.engine
