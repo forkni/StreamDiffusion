@@ -59,6 +59,13 @@ def _make_fake_engine(
     eng = TensorRTEngine.__new__(TensorRTEngine)
     eng.engine_path = "/fake/test.engine"
     eng._cuda_stream = None
+    # Mirror the remaining TensorRTEngine.__init__ defaults that infer() relies
+    # on (pre-activate() state: no dedicated stream/events yet, empty LRU cache).
+    # Keep this in sync with __init__ -- infer() will AttributeError otherwise.
+    eng._dedicated_stream = None
+    eng._pre_exec_event = None
+    eng._post_exec_event = None
+    eng._buf_cache = OrderedDict()
 
     eng.engine = MagicMock()
     eng.context = MagicMock()
