@@ -506,7 +506,13 @@ class NSFWDetectorEngine:
         self.engine.load()
         self.engine.activate()
 
-    def __call__(self, image_tensor: torch.Tensor, threshold: float):
+    def __call__(self, image_tensor: torch.Tensor, prob_pin: torch.Tensor) -> None:
+        """Launch classification and stash the NSFW probability in a pinned host buffer.
+
+        Does not read the result back (no .item()/host sync here) — callers read
+        `prob_pin` on a *later* call, mirroring SimilarImageFilter's 1-frame-delayed
+        pinned readback so this never forces a cudaStreamSynchronize on the hot path.
+        """
         pixel_values = self.image_transforms(image_tensor)
         self.engine.allocate_buffers(
             shape_dict={
@@ -522,8 +528,8 @@ class NSFWDetectorEngine:
         )["logits"]
 
         probs = F.softmax(logits, dim=-1)
-        nsfw_prob = 1 - probs[0, 0].item()
-        return nsfw_prob >= threshold
+        nsfw_prob = 1 - probs[0, 0]
+        prob_pin.copy_(nsfw_prob.view(1), non_blocking=True)
 
     def to(self, *args, **kwargs):
         pass

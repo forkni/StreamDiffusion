@@ -376,6 +376,10 @@ class StreamDiffusionWrapper:
         # Caches the last clean (non-flagged) pipeline tensor for the "previous" fallback strategy.
         # Operates in diffusion range [-1, 1]; set by _apply_safety_checker().
         self._prev_clean_tensor: Optional[torch.Tensor] = None
+        # Pinned CPU scalar for the 1-frame-delayed async NSFW readback (lazy; see
+        # _apply_safety_checker). Distinct from _output_pin_buf, which is uint8
+        # image-shaped and reallocated by the output-postprocessing paths.
+        self._nsfw_prob_pin: Optional[torch.Tensor] = None
         self.fp8 = fp8
         self.static_shapes = static_shapes
         self.fp8_allow_fp16_fallback = fp8_allow_fp16_fallback
@@ -1360,6 +1364,19 @@ class StreamDiffusionWrapper:
         CUDA-IPC export path: postprocess_image() exports the frame inside its own body and
         returns None, making any post-hoc substitution unreachable and unsafe.
 
+        1-frame-delayed async readback (mirrors SimilarImageFilter, image_filter.py): the
+        classifier result for THIS frame is read on the NEXT call, so the substitution below
+        acts on the PREVIOUS frame's verdict while this frame's classification + pinned
+        `non_blocking` copy is merely launched. This avoids forcing a cudaStreamSynchronize
+        on the hot path. No explicit sync guards the pinned read — the same trade-off
+        SimilarImageFilter already makes: stream ordering means the async copy is enqueued
+        before all of this frame's remaining GPU work, and by the time Python reaches this
+        call again next frame (after a full diffusion step + decode, and — for "np"/"pil"
+        output — a hard _d2h_event.synchronize() in postprocess_image) the tiny 4-byte D2H
+        copy has long since landed in practice. Worst case on other output types is a stale
+        read of an even-older value, i.e. one extra frame of detection delay, not corrupted
+        data. Accepted trade-off for an opt-in, off-by-default, TensorRT-only feature.
+
         Parameters
         ----------
         image_tensor : torch.Tensor
@@ -1377,7 +1394,24 @@ class StreamDiffusionWrapper:
         # Denormalize to [0, 1] NCHW for the classifier; stays on GPU.
         denormalized = self._denormalize_on_gpu(image_tensor)
 
-        if self.safety_checker(denormalized, self.safety_checker_threshold):
+        if self._nsfw_prob_pin is None:
+            # First frame: no prior async result exists yet. Launch this frame's
+            # classification so the next frame has a real verdict, but pass this one
+            # through unflagged (documented 1-frame pass-through edge case).
+            self._nsfw_prob_pin = torch.zeros(1, dtype=torch.float32, device="cpu").pin_memory()
+            self.safety_checker(denormalized, self._nsfw_prob_pin)
+            if self.safety_checker_fallback_type == "previous":
+                self._prev_clean_tensor = image_tensor.clone()
+            return image_tensor
+
+        # Step 1: read the PREVIOUS frame's async result (pinned CPU read, no GPU sync).
+        flagged = self._nsfw_prob_pin.item() >= self.safety_checker_threshold
+
+        # Step 2: launch THIS frame's classification + async pinned copy (no sync).
+        self.safety_checker(denormalized, self._nsfw_prob_pin)
+
+        # Step 3: branch on the PREVIOUS frame's verdict (1-frame-delayed, no stall).
+        if flagged:
             logger.info("NSFW content detected, applying safety fallback frame")
             if self.safety_checker_fallback_type == "previous" and self._prev_clean_tensor is not None:
                 return self._prev_clean_tensor
@@ -3037,6 +3071,7 @@ class StreamDiffusionWrapper:
         self._d2h_event = None
         self._ipc_pack_buf = None
         self._ipc_pack_unit_buf = None
+        self._nsfw_prob_pin = None
 
         # Force multiple garbage collection cycles for thorough cleanup
         for i in range(3):
