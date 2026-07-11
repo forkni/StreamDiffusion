@@ -13,7 +13,6 @@ from streamdiffusion.preprocessing.orchestrator_user import OrchestratorUser
 from streamdiffusion.preprocessing.preprocessing_orchestrator import (
     PreprocessingOrchestrator,
 )
-from streamdiffusion.preprocessing.orchestrator_user import OrchestratorUser
 from streamdiffusion.tools.gpu_profiler import profiler
 
 
@@ -89,6 +88,15 @@ class ControlNetModule(OrchestratorUser):
         self._cn_cache_images_version: int = -1
         self._cn_cache_scale_hash: Optional[tuple] = None
 
+        # Persistent multi-ControlNet residual merge buffers (Phase-2 prep). The naive
+        # `merged_down[j] = merged_down[j] + ds[j]` allocates a fresh tensor every frame,
+        # which would thrash a CUDA graph if these residuals are later bound zero-copy into
+        # the UNet's input_control_* inputs. Lazily (re)allocated only when residual
+        # shape/dtype/device changes, so pointers stay stable across frames.
+        self._cn_merged_down: Optional[List[torch.Tensor]] = None
+        self._cn_merged_mid: Optional[torch.Tensor] = None
+        self._cn_merged_shape_key: Optional[tuple] = None
+
     # ---------- Public API (used by wrapper in a later step) ----------
     def install(self, stream) -> None:
         self._stream = stream
@@ -116,6 +124,9 @@ class ControlNetModule(OrchestratorUser):
         self._cn_cached_residuals = None
         self._cn_cache_images_version = -1
         self._cn_cache_scale_hash = None
+        self._cn_merged_down = None
+        self._cn_merged_mid = None
+        self._cn_merged_shape_key = None
 
     def add_controlnet(
         self, cfg: ControlNetConfig, control_image: Optional[Union[str, Any, torch.Tensor]] = None
@@ -501,13 +512,6 @@ class ControlNetModule(OrchestratorUser):
 
             encoder_hidden_states = self._stream.prompt_embeds[:, : self._expected_text_len, :]
 
-            base_kwargs: Dict[str, Any] = {
-                "sample": x_t,
-                "timestep": t_list,
-                "encoder_hidden_states": encoder_hidden_states,
-                "return_dict": False,
-            }
-
             down_samples_list: List[List[torch.Tensor]] = []
             mid_samples_list: List[torch.Tensor] = []
 
@@ -623,16 +627,34 @@ class ControlNetModule(OrchestratorUser):
                     mid_block_additional_residual=mid_samples_list[0],
                 )
             else:
-                # Merge multiple ControlNet residuals
-                merged_down = down_samples_list[0]
-                merged_mid = mid_samples_list[0]
+                # Merge multiple ControlNet residuals into persistent buffers, in place.
+                # Do NOT alias down_samples_list[0]/mid_samples_list[0] — those are
+                # engine-A's own persistent output buffers. Reallocate only when the
+                # residual shape/dtype/device changes (resolution/batch/model swap),
+                # so the merged tensors stay pointer-stable across frames.
+                shape_key = (
+                    tuple(t.shape for t in down_samples_list[0]),
+                    mid_samples_list[0].shape,
+                    down_samples_list[0][0].dtype,
+                    down_samples_list[0][0].device,
+                )
+                if self._cn_merged_down is None or self._cn_merged_shape_key != shape_key:
+                    self._cn_merged_down = [torch.empty_like(t) for t in down_samples_list[0]]
+                    self._cn_merged_mid = torch.empty_like(mid_samples_list[0])
+                    self._cn_merged_shape_key = shape_key
+
+                for j in range(len(self._cn_merged_down)):
+                    self._cn_merged_down[j].copy_(down_samples_list[0][j])
+                self._cn_merged_mid.copy_(mid_samples_list[0])
+
                 for ds, ms in zip(down_samples_list[1:], mid_samples_list[1:]):
-                    for j in range(len(merged_down)):
-                        merged_down[j] = merged_down[j] + ds[j]
-                    merged_mid = merged_mid + ms
+                    for j in range(len(self._cn_merged_down)):
+                        self._cn_merged_down[j].add_(ds[j])
+                    self._cn_merged_mid.add_(ms)
+
                 _result = UnetKwargsDelta(
-                    down_block_additional_residuals=merged_down,
-                    mid_block_additional_residual=merged_mid,
+                    down_block_additional_residuals=self._cn_merged_down,
+                    mid_block_additional_residual=self._cn_merged_mid,
                 )
 
             # Residual cache write: store result for reuse on upcoming intermediate frames.
