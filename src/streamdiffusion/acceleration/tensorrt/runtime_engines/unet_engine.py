@@ -54,6 +54,13 @@ class UNet2DConditionModelEngine:
         self._fio_out_names: List[str] = []
         self._fio_cache_len: int = -1  # -1 = not yet initialized
 
+        # Sub-phase 5.6: kvo/fio cache inputs are persistent, address-stable,
+        # TRT-contiguous tensors (see models/utils.py create_kvo_cache/create_fi_cache),
+        # so Engine.infer() can bind TensorRT directly to them instead of copying into
+        # its own staging buffer every frame. Rebuilt only when the kvo/fio lazy-init
+        # branches below fire (cache length change), never per-frame.
+        self._zero_copy_names: FrozenSet[str] = frozenset()
+
         self._shape_dict: Dict[str, Any] = {}
         self._input_dict: Dict[str, Any] = {}
 
@@ -90,6 +97,7 @@ class UNet2DConditionModelEngine:
             self._kvo_in_names = [f"kvo_cache_in_{i}" for i in range(n_kvo)]
             self._kvo_out_names = [f"kvo_cache_out_{i}" for i in range(n_kvo)]
             self._kvo_cache_len = n_kvo
+            self._zero_copy_names = frozenset(self._kvo_in_names + self._fio_in_names)
 
         # Lazy-init FIO key name lists — same pattern as KVO.
         n_fio = len(fio_cache)
@@ -97,6 +105,7 @@ class UNet2DConditionModelEngine:
             self._fio_in_names = [f"fio_cache_in_{i}" for i in range(n_fio)]
             self._fio_out_names = [f"fio_cache_out_{i}" for i in range(n_fio)]
             self._fio_cache_len = n_fio
+            self._zero_copy_names = frozenset(self._kvo_in_names + self._fio_in_names)
 
         # Update pre-allocated dicts in-place — no new dict objects created per call.
         shape_dict = self._shape_dict
@@ -198,6 +207,7 @@ class UNet2DConditionModelEngine:
                 input_dict,
                 self.stream,
                 use_cuda_graph=self.use_cuda_graph,
+                zero_copy_names=self._zero_copy_names,
             )
         except Exception as e:
             logger.exception(f"UNet2DConditionModelEngine.__call__: Engine.infer failed: {e}")
