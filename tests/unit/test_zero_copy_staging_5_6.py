@@ -55,13 +55,18 @@ class TestStagingActionNotZeroCopy:
         assert result == "copy"
 
     def test_empty_zero_copy_names_always_copies(self):
-        """Default frozenset() → today's behavior exactly, for every name."""
+        """Default frozenset() → today's behavior exactly, for every name.
+
+        prev_ptr=None is the realistic value here: a name that is never in
+        zero_copy_names is never bound, so Engine._bound_ptrs never has an
+        entry for it and _bound_ptrs.get(name) is always None.
+        """
         result = _staging_action(
             "kvo_cache_in_0",
             frozenset(),
             True,
             True,
-            PTR_A,
+            None,
             PTR_A,
             True,
         )
@@ -200,25 +205,93 @@ class TestStagingActionAlignmentGuard:
         assert result == "copy"
 
     def test_misaligned_pointer_falls_back_to_copy_with_live_graph(self):
-        """Even a pointer-unchanged steady-state frame must copy, not bind, if
-        the (mis-aligned) address itself is invalid for setTensorAddress."""
+        """A name previously bound zero-copy (prev_ptr set from an earlier,
+        valid aligned bind) whose current address is invalid for
+        setTensorAddress must copy — but a live graph is still replaying the
+        stale bound address, so this must ALSO force a reset.
+
+        This is the regression lock: f8ff50f's bind->copy fallback left the
+        live UNet CUDA graph replaying a frozen buffer forever once a
+        zero-copy input fell back to copy mid-stream (see unet_engine.py's
+        header comment for the full incident writeup). Before the
+        copy_and_reset outcome existed, this exact transition asserted plain
+        "copy" here — i.e. the test documented the bug as correct behavior.
+        """
         result = _staging_action(
             "kvo_cache_in_0",
             frozenset({"kvo_cache_in_0"}),
             True,
             True,
-            PTR_MISALIGNED,
-            PTR_MISALIGNED,
+            PTR_A,  # previously bound at a valid, aligned address
+            PTR_MISALIGNED,  # now invalid -> must fall back to copy
+            True,
+        )
+        assert result == "copy_and_reset"
+
+
+class TestStagingActionCopyAndReset:
+    """copy_and_reset is the general-purpose safety net for ANY zero-copy name
+    (currently kvo/fio only — see unet_engine.py) that falls back to copy while
+    a graph built from its previously-bound address is still live. Exercises
+    the non-contiguous fallback path specifically (the misaligned-pointer path
+    is covered by TestStagingActionAlignmentGuard above)."""
+
+    def test_non_contiguous_previously_bound_with_live_graph_copies_and_resets(self):
+        """A previously-bound name (e.g. a cache tensor that got sliced/viewed
+        this frame) that is no longer contiguous, with a live graph, must copy
+        AND force a reset — the graph is still reading the old bound address."""
+        result = _staging_action(
+            "kvo_cache_in_0",
+            frozenset({"kvo_cache_in_0"}),
+            False,  # is_contiguous
+            True,
+            PTR_A,  # previously bound
+            PTR_A,
+            True,
+        )
+        assert result == "copy_and_reset"
+
+    def test_non_contiguous_previously_bound_no_live_graph_just_copies(self):
+        """Same fallback, but no graph exists yet — nothing to invalidate, so a
+        plain copy is correct; forcing a reset here would be a needless no-op
+        reset on every non-graphed frame."""
+        result = _staging_action(
+            "kvo_cache_in_0",
+            frozenset({"kvo_cache_in_0"}),
+            False,
+            True,
+            PTR_A,
+            PTR_A,
+            False,
+        )
+        assert result == "copy"
+
+    def test_never_bound_name_falls_back_with_live_graph_just_copies(self):
+        """prev_ptr=None means this name has never been bound zero-copy, so no
+        graph could possibly be reading a stale address for it — plain copy,
+        no spurious reset."""
+        result = _staging_action(
+            "kvo_cache_in_0",
+            frozenset({"kvo_cache_in_0"}),
+            False,
+            True,
+            None,
+            PTR_A,
             True,
         )
         assert result == "copy"
 
 
 class TestStagingActionControlNetResiduals:
-    """Phase-2 D2: input_control_* UNet inputs opt into the same zero-copy path
-    as kvo/fio. Steady state binds without a reset; the ControlNet idle<->active
-    toggle (or a resolution/batch change) flips the residual's address while a
-    graph is live, forcing exactly one bind_and_reset on the toggle frame."""
+    """Phase-2 D2 attempted to opt input_control_* UNet inputs into this same
+    zero-copy path; that was reverted (see unet_engine.py header comment) after
+    it reproduced a "ControlNet produces no visual change" regression on the
+    rig, driven by a lost engine-stream copy ordering guarantee — not by the
+    bind->copy fallback covered above. input_control_* names are PERMANENTLY
+    excluded from the real UNet engine's _zero_copy_names. The tests below
+    exercise _staging_action as a pure function using ControlNet-shaped names
+    only as convenient example zero-copy names; they do not describe current
+    runtime behavior for actual ControlNet residuals."""
 
     def test_steady_state_control_residual_binds_without_reset(self):
         """Same persistent merge/output buffer across frames — plain bind."""

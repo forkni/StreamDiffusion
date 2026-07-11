@@ -564,6 +564,10 @@ def _staging_action(
 
     Returns one of:
       "copy"           - copy into self.tensors[name] (today's behavior; always safe)
+      "copy_and_reset" - copy into self.tensors[name], but reset the CUDA graph first
+                         because this name was previously bound zero-copy into a live
+                         graph, which still reads the old bound address rather than
+                         self.tensors[name]
       "bind"           - skip the copy; bind TensorRT directly to the caller's tensor
       "bind_and_reset" - skip the copy and bind directly, but reset the CUDA graph
                          first because the caller's address changed while a graph
@@ -575,6 +579,13 @@ def _staging_action(
     invariant against config drift rather than a path exercised in production.
     """
     if name not in zero_copy_names or not is_contiguous or not dtype_match or cur_ptr % 256 != 0:
+        # Falling back to copy. If this name was bound zero-copy into a LIVE graph,
+        # that graph still reads the stale bound address, not self.tensors[name] —
+        # force one reset so it re-captures reading the staging buffer. prev_ptr is
+        # only non-None for names actually bound before, so plain copy-path inputs
+        # (never in zero_copy_names) never trip this.
+        if graph_exists and prev_ptr is not None:
+            return "copy_and_reset"
         return "copy"
     if graph_exists and cur_ptr != prev_ptr:
         return "bind_and_reset"
@@ -1195,8 +1206,14 @@ class Engine:
                         cur_ptr,
                         graph_exists,
                     )
-                    if action == "copy":
+                    if action in ("copy", "copy_and_reset"):
                         self.tensors[name].copy_(buf)
+                        if action == "copy_and_reset":
+                            needs_reset = True
+                            # Next frame this name has no prior bind, so
+                            # _staging_action sees prev_ptr=None and returns
+                            # plain "copy" — converges after one reset.
+                            self._bound_ptrs.pop(name, None)
                     else:
                         bind_ptrs[name] = cur_ptr
                         if action == "bind_and_reset":
