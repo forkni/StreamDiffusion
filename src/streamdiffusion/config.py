@@ -1,8 +1,5 @@
-import logging
-import os
-import sys
-import yaml
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
 
@@ -10,6 +7,7 @@ import yaml
 
 
 logger = logging.getLogger(__name__)
+
 
 def load_config(config_path: Union[str, Path]) -> Dict[str, Any]:
     """Load StreamDiffusion configuration from YAML or JSON file"""
@@ -96,7 +94,7 @@ def create_wrapper_from_config(config: Dict[str, Any], **overrides) -> Any:
         seed_blend_config = final_config["seed_blending"]
         wrapper.update_stream_params(
             seed_list=seed_blend_config.get("seed_list", []),
-            interpolation_method=seed_blend_config.get("interpolation_method", "linear"),
+            seed_interpolation_method=seed_blend_config.get("interpolation_method", "linear"),
         )
 
     return wrapper

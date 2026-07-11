@@ -29,6 +29,7 @@ class StreamParameterUpdater(OrchestratorUser):
     def __init__(
         self,
         stream_diffusion,
+        *,
         wrapper=None,
         normalize_prompt_weights: bool = True,
         normalize_seed_weights: bool = True,
