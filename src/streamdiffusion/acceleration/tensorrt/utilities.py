@@ -562,8 +562,13 @@ def _staging_action(
       "bind_and_reset" - skip the copy and bind directly, but reset the CUDA graph
                          first because the caller's address changed while a graph
                          built from the old address was still live
+
+    A pointer that is not 256-byte aligned falls back to "copy": TensorRT's
+    setTensorAddress contract requires ≥256-byte alignment, and real torch CUDA
+    allocations are always ≥512-byte aligned, so this guard is a defensive
+    invariant against config drift rather than a path exercised in production.
     """
-    if name not in zero_copy_names or not is_contiguous or not dtype_match:
+    if name not in zero_copy_names or not is_contiguous or not dtype_match or cur_ptr % 256 != 0:
         return "copy"
     if graph_exists and cur_ptr != prev_ptr:
         return "bind_and_reset"

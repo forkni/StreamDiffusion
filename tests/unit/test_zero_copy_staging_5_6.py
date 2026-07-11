@@ -34,8 +34,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-PTR_A = 0xDEAD_BEEF
-PTR_B = 0xFEED_FACE
+PTR_A = 0x1000_0000  # 256-byte aligned (audit M2 guard)
+PTR_B = 0x2000_0000  # 256-byte aligned (audit M2 guard)
+PTR_MISALIGNED = PTR_A + 1  # not 256-byte aligned
 
 
 class TestStagingActionNotZeroCopy:
@@ -179,3 +180,35 @@ class TestStagingActionBind:
             False,
         )
         assert result == "bind"
+
+
+class TestStagingActionAlignmentGuard:
+    """Audit M2: setTensorAddress requires >=256-byte alignment. A mis-aligned
+    cur_ptr must fall back to "copy" even when every other eligibility check
+    would otherwise allow a bind — never silently bind an unaligned address."""
+
+    def test_misaligned_pointer_falls_back_to_copy_no_graph(self):
+        result = _staging_action(
+            "kvo_cache_in_0",
+            frozenset({"kvo_cache_in_0"}),
+            True,
+            True,
+            None,
+            PTR_MISALIGNED,
+            False,
+        )
+        assert result == "copy"
+
+    def test_misaligned_pointer_falls_back_to_copy_with_live_graph(self):
+        """Even a pointer-unchanged steady-state frame must copy, not bind, if
+        the (mis-aligned) address itself is invalid for setTensorAddress."""
+        result = _staging_action(
+            "kvo_cache_in_0",
+            frozenset({"kvo_cache_in_0"}),
+            True,
+            True,
+            PTR_MISALIGNED,
+            PTR_MISALIGNED,
+            True,
+        )
+        assert result == "copy"
