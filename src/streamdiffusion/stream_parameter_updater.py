@@ -5,9 +5,10 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 import torch
 import torch.nn.functional as F
 
+from .preprocessing.orchestrator_user import OrchestratorUser
+
 
 logger = logging.getLogger(__name__)
-from .preprocessing.orchestrator_user import OrchestratorUser
 
 
 class CacheStats:
@@ -129,11 +130,9 @@ class StreamParameterUpdater(OrchestratorUser):
 
     def unregister_embedding_preprocessor(self, style_image_key: str) -> None:
         """Unregister an embedding preprocessor by style image key."""
-        original_count = len(self._embedding_preprocessors)
         self._embedding_preprocessors = [
             (preprocessor, key) for preprocessor, key in self._embedding_preprocessors if key != style_image_key
         ]
-        removed_count = original_count - len(self._embedding_preprocessors)
 
         # Clear cached embeddings for this key
         if style_image_key in self._embedding_cache:
@@ -213,8 +212,15 @@ class StreamParameterUpdater(OrchestratorUser):
         return cached_result
 
     def _normalize_weights(self, weights: List[float], normalize: bool) -> torch.Tensor:
-        """Generic weight normalization helper"""
-        weights_tensor = torch.tensor(weights, device=self.stream.device, dtype=self.stream.dtype)
+        """Generic weight normalization helper.
+
+        Built on CPU float32 rather than self.stream.device/dtype: every caller either
+        reads scalars back out (.item()/.tolist()) or multiplies into a CUDA tensor
+        (a 0-dim CPU operand is treated as a wrapped scalar there), so building on
+        device was a pure creation-sync + readback with no benefit — and float32 is
+        more precise than the model's fp16 for the normalization divide.
+        """
+        weights_tensor = torch.tensor(weights, dtype=torch.float32)
         if normalize:
             weights_tensor = weights_tensor / weights_tensor.sum()
         return weights_tensor
@@ -992,11 +998,7 @@ class StreamParameterUpdater(OrchestratorUser):
         # mis-interprets the clean buffer, causing ghost bleed from previous frames.
         # Threshold 0.75 matches the empirically observed perceptual onset (~t_index 30 in
         # a 50-step LCM schedule where beta_sqrt crosses 0.78).
-        if (
-            self.stream.use_denoising_batch
-            and not self.stream.do_add_noise
-            and len(self.stream.t_list) > 1
-        ):
+        if self.stream.use_denoising_batch and not self.stream.do_add_noise and len(self.stream.t_list) > 1:
             inter_step_betas = beta_prod_t_sqrt[1:, 0, 0, 0]  # per-step, before repeat_interleave
             max_beta = inter_step_betas.max().item()
             _BLEED_THRESHOLD = 0.75
@@ -1201,7 +1203,7 @@ class StreamParameterUpdater(OrchestratorUser):
             return
 
         # Remove from current list
-        removed_prompt = self._current_prompt_list.pop(index)
+        self._current_prompt_list.pop(index)
 
         # Remove from cache and reindex
         if index in self._prompt_cache:
@@ -1302,7 +1304,7 @@ class StreamParameterUpdater(OrchestratorUser):
             return
 
         # Remove from current list
-        removed_seed = self._current_seed_list.pop(index)
+        self._current_seed_list.pop(index)
 
         # Remove from cache and reindex
         if index in self._seed_cache:

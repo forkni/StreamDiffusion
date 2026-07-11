@@ -42,6 +42,12 @@ class ControlNetModelEngine:
         except Exception:
             self._cs_rank1 = False  # sd15 engines / engines lacking this input
 
+        # Persistent conditioning_scale scalar, allocated lazily on first __call__
+        # (device isn't known until then). fill_() is an async kernel launch, so
+        # reusing this buffer every call avoids the per-frame creation sync that
+        # torch.tensor(...) incurs.
+        self._cs: Optional[torch.Tensor] = None
+
         # Pre-compute model-specific values to eliminate runtime branching
         if self.model_type in ["sdxl", "sdxl_turbo"]:
             self.max_blocks = 9
@@ -119,16 +125,16 @@ class ControlNetModelEngine:
         if timestep.dtype != torch.float32:
             timestep = timestep.float()
 
+        if self._cs is None:
+            self._cs = torch.zeros((1,) if self._cs_rank1 else (), dtype=torch.float32, device=sample.device)
+        self._cs.fill_(conditioning_scale)
+
         input_dict = {
             "sample": sample,
             "timestep": timestep,
             "encoder_hidden_states": encoder_hidden_states,
             "controlnet_cond": controlnet_cond,
-            "conditioning_scale": (
-                torch.tensor([conditioning_scale], dtype=torch.float32, device=sample.device)
-                if self._cs_rank1
-                else torch.tensor(conditioning_scale, dtype=torch.float32, device=sample.device)
-            ),
+            "conditioning_scale": self._cs,
         }
 
         if text_embeds is not None:
