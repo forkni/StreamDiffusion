@@ -212,3 +212,49 @@ class TestStagingActionAlignmentGuard:
             True,
         )
         assert result == "copy"
+
+
+class TestStagingActionControlNetResiduals:
+    """Phase-2 D2: input_control_* UNet inputs opt into the same zero-copy path
+    as kvo/fio. Steady state binds without a reset; the ControlNet idle<->active
+    toggle (or a resolution/batch change) flips the residual's address while a
+    graph is live, forcing exactly one bind_and_reset on the toggle frame."""
+
+    def test_steady_state_control_residual_binds_without_reset(self):
+        """Same persistent merge/output buffer across frames — plain bind."""
+        result = _staging_action(
+            "input_control_00",
+            frozenset({"input_control_00"}),
+            True,
+            True,
+            PTR_A,
+            PTR_A,
+            True,
+        )
+        assert result == "bind"
+
+    def test_idle_active_toggle_binds_and_resets(self):
+        """Idle dummy-zero buffer -> active ControlNet residual buffer address
+        flip while a graph is live must force a re-capture."""
+        result = _staging_action(
+            "input_control_00",
+            frozenset({"input_control_00"}),
+            True,
+            True,
+            PTR_A,
+            PTR_B,
+            True,
+        )
+        assert result == "bind_and_reset"
+
+    def test_middle_control_residual_binds_without_reset(self):
+        result = _staging_action(
+            "input_control_middle",
+            frozenset({"input_control_middle"}),
+            True,
+            True,
+            PTR_A,
+            PTR_A,
+            True,
+        )
+        assert result == "bind"
