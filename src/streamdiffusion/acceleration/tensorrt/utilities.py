@@ -385,8 +385,11 @@ def _apply_gpu_profile_to_config(
     # + EDGE_MASK_CONVOLUTIONS — the sources that produce valid SM_120 kernels.
     # TRT 10.16 exposes TacticSource as an int enum (not IntFlag), so the bitmask
     # is built via (1 << int(source)). No-op on Ada/Ampere.
+    # CUBLAS/CUBLAS_LT are removed from TacticSource in TRT 11 (cuBLAS tactics
+    # dropped entirely) — gate on hasattr so that's a deliberate, logged branch
+    # rather than a silently-swallowed AttributeError.
     if gpu_profile.compute_capability >= (12, 0):
-        try:
+        if hasattr(trt.TacticSource, "CUBLAS"):
             sources = (
                 (1 << int(trt.TacticSource.CUBLAS))
                 | (1 << int(trt.TacticSource.CUBLAS_LT))
@@ -397,8 +400,11 @@ def _apply_gpu_profile_to_config(
             logger.info(
                 "[TRT Config] tactic sources = CUBLAS|CUBLAS_LT|JIT_CONV|EDGE_MASK (CUDNN excluded for SM_120+)"
             )
-        except (AttributeError, TypeError) as e:
-            logger.debug(f"[TRT Config] set_tactic_sources not available: {e}")
+        else:
+            logger.info(
+                "[TRT Config] TRT >=11: CUBLAS/CUBLAS_LT removed from TacticSource — "
+                "default tactic sources already exclude cuDNN/cuBLAS, nothing to scope"
+            )
 
     # max_num_tactics: cap profiling candidates per layer to reduce build time.
     # Available since TRT 10.x; -1 (default) lets TRT decide heuristically. 64 is a
@@ -1001,12 +1007,8 @@ class Engine:
         except Exception:
             return None
 
-    def activate(self, reuse_device_memory=None):
-        if reuse_device_memory:
-            self.context = self.engine.create_execution_context_without_device_memory()
-            self.context.device_memory = reuse_device_memory
-        else:
-            self.context = self.engine.create_execution_context()
+    def activate(self):
+        self.context = self.engine.create_execution_context()
 
         # Attach per-layer profiler when STREAMDIFFUSION_PROFILE_TRT is set.
         # Requires engines built with profiling_verbosity=DETAILED for meaningful names.
