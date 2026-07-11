@@ -154,9 +154,7 @@ def _cleanup_intermediates(engine_dir: str, fp8_ok: bool):
                     time.sleep(0.05)
             if _last_err is not None:
                 _still_failed.append(os.path.basename(fpath))
-                _build_logger.warning(
-                    f"[BUILD] Could not delete temp file {os.path.basename(fpath)}: {_last_err}"
-                )
+                _build_logger.warning(f"[BUILD] Could not delete temp file {os.path.basename(fpath)}: {_last_err}")
         if _still_failed:
             _build_logger.warning(
                 f"[BUILD] {len(_still_failed)} intermediate files could not be cleaned. "
@@ -343,7 +341,9 @@ class EngineBuilder:
                                 num_ip_layers=fp8_num_ip_layers,
                             )
 
-                    if not _run_fp8_stage("fp8_calib_capture", _calib_fn, stats, fp8_allow_fp16_fallback, engine_filename):
+                    if not _run_fp8_stage(
+                        "fp8_calib_capture", _calib_fn, stats, fp8_allow_fp16_fallback, engine_filename
+                    ):
                         fp8 = False
             elif fp8 and pipe_ref is None:
                 _build_logger.warning(
@@ -377,7 +377,9 @@ class EngineBuilder:
                             num_ip_layers=fp8_num_ip_layers,
                         )
 
-                    if not _run_fp8_stage("fp8_onnx_quantize", _quant_fn, stats, fp8_allow_fp16_fallback, engine_filename):
+                    if not _run_fp8_stage(
+                        "fp8_onnx_quantize", _quant_fn, stats, fp8_allow_fp16_fallback, engine_filename
+                    ):
                         fp8 = False
 
             # Select the ONNX to feed into TRT: FP8-quantized when available, else plain opt.
@@ -445,7 +447,8 @@ class EngineBuilder:
                     if _mha_count == 0 and _total > 0:
                         _build_logger.warning(
                             "[BUILD] No fused MHA layers detected — attention may be running decomposed "
-                            "(slower). Sample layer names (first 5): " + str([_l.get("Name", "") for _l in _layers[:5]])
+                            "(slower). Sample layer names (first 5): "
+                            + str([_l.get("Name", "") for _l in _layers[:5]])
                         )
                     else:
                         _build_logger.info(f"[BUILD] Sample fused-MHA layer names: {_mha_names[:3]}")
