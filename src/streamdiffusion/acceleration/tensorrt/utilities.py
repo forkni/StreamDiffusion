@@ -1529,7 +1529,6 @@ def export_onnx(
             onnx_path,
             export_params=True,
             opset_version=onnx_opset,
-            do_constant_folding=True,
             input_names=model_data.get_input_names(),
             output_names=model_data.get_output_names(),
             dynamic_axes=model_data.get_dynamic_axes(),
@@ -1581,15 +1580,17 @@ def optimize_onnx(
 ):
     import os
 
-    # Check if external data files exist (indicating external data format was used)
     onnx_dir = os.path.dirname(onnx_path)
-    external_data_files = [f for f in os.listdir(onnx_dir) if f.endswith(".pb")]
-    uses_external_data = len(external_data_files) > 0
+    # Inspect TensorProto.data_location on the raw (unloaded) model rather than
+    # scanning the directory for ".pb" filenames — load_external_data_for_model
+    # resets data_location back to DEFAULT once external data is loaded, so this
+    # check must happen before loading.
+    onnx_model = onnx.load(onnx_path, load_external_data=False)
+    uses_external_data = any(onnx.external_data_helper.uses_external_data(t) for t in onnx_model.graph.initializer)
 
     if uses_external_data:
-        logger.info(f"Optimizing ONNX with external data (found: {external_data_files})")
-        # Load model with external data
-        onnx_model = onnx.load(onnx_path, load_external_data=True)
+        logger.info("Optimizing ONNX with external data")
+        onnx.external_data_helper.load_external_data_for_model(onnx_model, onnx_dir)
         onnx_opt_graph = model_data.optimize(onnx_model)
 
         # Create output directory
@@ -1614,8 +1615,7 @@ def optimize_onnx(
         logger.info("ONNX optimization complete with external data")
 
     else:
-        # Standard optimization for smaller models
-        onnx_model = onnx.load(onnx_path)
+        # No external data to load — the model loaded above is already complete.
         onnx_opt_graph = model_data.optimize(onnx_model)
 
         onnx.save(onnx_opt_graph, onnx_opt_path)
