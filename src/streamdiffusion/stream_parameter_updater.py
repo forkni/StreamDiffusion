@@ -5,6 +5,12 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 import torch
 import torch.nn.functional as F
 
+from .param_schema import (
+    PromptInterpolationMethod,
+    SeedInterpolationMethod,
+    floor_num_inference_steps,
+    rescale_t_index_list,
+)
 from .preprocessing.orchestrator_user import OrchestratorUser
 
 
@@ -282,10 +288,10 @@ class StreamParameterUpdater(OrchestratorUser):
         seed: Optional[int] = None,
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
-        prompt_interpolation_method: Literal["linear", "slerp", "cosine_weighted"] = "slerp",
+        prompt_interpolation_method: PromptInterpolationMethod = "slerp",
         normalize_prompt_weights: Optional[bool] = None,
         seed_list: Optional[List[Tuple[int, float]]] = None,
-        seed_interpolation_method: Literal["linear", "slerp"] = "linear",
+        seed_interpolation_method: SeedInterpolationMethod = "linear",
         normalize_seed_weights: Optional[bool] = None,
         controlnet_config: Optional[List[Dict[str, Any]]] = None,
         ipadapter_config: Optional[Dict[str, Any]] = None,
@@ -331,21 +337,23 @@ class StreamParameterUpdater(OrchestratorUser):
                 if t_index_list is None:
                     # Check against current t_list
                     max_t_index = max(self.stream.t_list) if self.stream.t_list else 0
-                    if num_inference_steps <= max_t_index:
+                    floored = floor_num_inference_steps(num_inference_steps, max_t_index)
+                    if floored != num_inference_steps:
                         logger.warning(
                             f"update_stream_params: num_inference_steps ({num_inference_steps}) is too small for "
-                            f"current t_list (max index: {max_t_index}). Adjusting to {max_t_index + 1}."
+                            f"current t_list (max index: {max_t_index}). Adjusting to {floored}."
                         )
-                        num_inference_steps = max_t_index + 1
+                        num_inference_steps = floored
                 else:
                     # Check against provided t_index_list
                     max_t_index = max(t_index_list) if t_index_list else 0
-                    if num_inference_steps <= max_t_index:
+                    floored = floor_num_inference_steps(num_inference_steps, max_t_index)
+                    if floored != num_inference_steps:
                         logger.warning(
                             f"update_stream_params: num_inference_steps ({num_inference_steps}) is too small for "
-                            f"provided t_index_list (max index: {max_t_index}). Adjusting to {max_t_index + 1}."
+                            f"provided t_index_list (max index: {max_t_index}). Adjusting to {floored}."
                         )
-                        num_inference_steps = max_t_index + 1
+                        num_inference_steps = floored
 
                 old_num_steps = len(self.stream.timesteps)
                 self.stream.scheduler.set_timesteps(num_inference_steps, self.stream.device)
@@ -354,9 +362,8 @@ class StreamParameterUpdater(OrchestratorUser):
                 # If t_index_list wasn't explicitly provided, rescale existing t_list proportionally
                 if t_index_list is None and old_num_steps > 0:
                     # Rescale each index proportionally to the new number of steps
-                    # e.g., if t_list = [0, 16, 32, 45] with 50 steps -> [0, 3, 6, 8] with 9 steps
-                    scale_factor = (num_inference_steps - 1) / (old_num_steps - 1) if old_num_steps > 1 else 1.0
-                    t_index_list = [min(round(t * scale_factor), num_inference_steps - 1) for t in self.stream.t_list]
+                    # e.g., if t_list = [0, 16, 32, 45] with 50 steps -> [0, 3, 5, 7] with 9 steps
+                    t_index_list = rescale_t_index_list(self.stream.t_list, old_num_steps, num_inference_steps)
 
             # Now update timestep-dependent parameters with the correct t_index_list
             if t_index_list is not None:
