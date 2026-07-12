@@ -254,7 +254,7 @@ class RealESRGANProcessor(BasePreprocessor):
         """Load PyTorch model from file"""
         if not SPANDREL_AVAILABLE:
             # Fallback loading without spandrel
-            state_dict = torch.load(self.model_path, map_location=self.device)  # noqa: F841  # TODO: pre-existing, untouched by this refactor
+            state_dict = torch.load(self.model_path, map_location=self.device, weights_only=True)  # noqa: F841  # TODO: pre-existing, untouched by this refactor
             # This is a simplified approach - real implementation would need model architecture
             return
 
