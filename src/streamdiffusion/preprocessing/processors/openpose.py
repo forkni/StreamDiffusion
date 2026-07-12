@@ -2,9 +2,8 @@ from PIL import Image, ImageDraw
 
 from .base import BasePreprocessor
 
-
 try:
-    import cv2
+    import cv2  # noqa: F401  # TODO: pre-existing, untouched by this refactor
 
     OPENCV_AVAILABLE = True
 except ImportError:

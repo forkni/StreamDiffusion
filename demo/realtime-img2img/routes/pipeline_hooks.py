@@ -10,7 +10,6 @@ from fastapi.responses import JSONResponse
 from .common.api_utils import create_success_response, handle_api_error
 from .common.dependencies import get_app_instance
 
-
 router = APIRouter(prefix="/api", tags=["pipeline-hooks"])
 
 
@@ -438,7 +437,7 @@ async def update_hook_processor_params(hook_type: str, request: Request, app_ins
         )
 
     except Exception as e:
-        logging.exception(f"update_hook_processor_params: Exception occurred: {str(e)}")
+        logging.exception(f"update_hook_processor_params: Exception occurred: {e!s}")
         logging.error(f"update_hook_processor_params: Exception type: {type(e).__name__}")
         raise handle_api_error(e, "update_hook_processor_params")
 

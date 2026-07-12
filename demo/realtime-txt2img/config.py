@@ -4,7 +4,6 @@ from typing import List, Literal
 
 import torch
 
-
 SAFETY_CHECKER = os.environ.get("SAFETY_CHECKER", "False") == "True"
 
 

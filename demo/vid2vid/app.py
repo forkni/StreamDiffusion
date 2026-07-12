@@ -7,11 +7,9 @@ import torch
 from torchvision.io import read_video, write_video
 from tqdm import tqdm
 
-
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from streamdiffusion import StreamDiffusionWrapper
-
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 

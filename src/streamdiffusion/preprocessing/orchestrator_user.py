@@ -29,7 +29,7 @@ class OrchestratorUser:
             orchestrator = PreprocessingOrchestrator(
                 device=stream.device, dtype=stream.dtype, max_workers=4, pipeline_ref=stream
             )
-            setattr(stream, "preprocessing_orchestrator", orchestrator)
+            stream.preprocessing_orchestrator = orchestrator
         self._preprocessing_orchestrator = orchestrator
 
     def attach_postprocessing_orchestrator(self, stream) -> None:
@@ -40,7 +40,7 @@ class OrchestratorUser:
             orchestrator = PostprocessingOrchestrator(
                 device=stream.device, dtype=stream.dtype, max_workers=4, pipeline_ref=stream
             )
-            setattr(stream, "postprocessing_orchestrator", orchestrator)
+            stream.postprocessing_orchestrator = orchestrator
         self._postprocessing_orchestrator = orchestrator
 
     def attach_pipeline_preprocessing_orchestrator(self, stream) -> None:
@@ -51,5 +51,5 @@ class OrchestratorUser:
             orchestrator = PipelinePreprocessingOrchestrator(
                 device=stream.device, dtype=stream.dtype, max_workers=4, pipeline_ref=stream
             )
-            setattr(stream, "pipeline_preprocessing_orchestrator", orchestrator)
+            stream.pipeline_preprocessing_orchestrator = orchestrator
         self._pipeline_preprocessing_orchestrator = orchestrator

@@ -15,7 +15,6 @@ from .pipeline import StreamDiffusion
 from .tools.gpu_profiler import configure as _configure_profiler
 from .tools.gpu_profiler import profiler
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -58,10 +57,7 @@ class StreamDiffusionWrapper:
     wrapper.prepare([("cat", 0.7), ("dog", 0.3)])
 
     # Prompt + seed blending
-    wrapper.prepare(
-        prompt=[("style1", 0.6), ("style2", 0.4)],
-        seed_list=[(123, 0.8), (456, 0.2)]
-    )
+    wrapper.prepare(prompt=[("style1", 0.6), ("style2", 0.4)], seed_list=[(123, 0.8), (456, 0.2)])
     ```
 
     ## Runtime Updates:
@@ -73,10 +69,7 @@ class StreamDiffusionWrapper:
     wrapper.update_prompt([("new1", 0.5), ("new2", 0.5)])
 
     # Update combined parameters
-    wrapper.update_stream_params(
-        prompt_list=[("bird", 0.6), ("fish", 0.4)],
-        seed_list=[(789, 0.3), (101, 0.7)]
-    )
+    wrapper.update_stream_params(prompt_list=[("bird", 0.6), ("fish", 0.4)], seed_list=[(789, 0.3), (101, 0.7)])
     ```
 
     ## Weight Management:
@@ -2653,7 +2646,7 @@ class StreamDiffusionWrapper:
                                     fp8=fp8 or bool(cfg.get("fp8", False)),
                                 )
                                 try:
-                                    setattr(engine, "model_id", cfg["model_id"])
+                                    engine.model_id = cfg["model_id"]
                                 except Exception:
                                     pass
                                 compiled_cn_engines.append(engine)
@@ -2662,7 +2655,7 @@ class StreamDiffusionWrapper:
                                     f"Failed to compile/load ControlNet engine for {cfg.get('model_id')}: {e}"
                                 )
                         if compiled_cn_engines:
-                            setattr(stream, "controlnet_engines", compiled_cn_engines)
+                            stream.controlnet_engines = compiled_cn_engines
                             try:
                                 logger.info(
                                     f"Compiled/loaded {len(compiled_cn_engines)} ControlNet TensorRT engine(s)"
@@ -2883,7 +2876,7 @@ class StreamDiffusionWrapper:
         num_inference_steps = None
         try:
             if hasattr(stream, "timesteps") and stream.timesteps is not None:
-                num_inference_steps = int(len(stream.timesteps))
+                num_inference_steps = len(stream.timesteps)
         except Exception as e:
             logger.debug(f"Failed to derive num_inference_steps from stream.timesteps: {e}", exc_info=True)
 

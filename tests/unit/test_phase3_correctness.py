@@ -34,7 +34,6 @@ import torch
 from streamdiffusion.pipeline import StreamDiffusion
 from streamdiffusion.wrapper import StreamDiffusionWrapper
 
-
 # ---------------------------------------------------------------------------
 # StreamDiffusion.prepare() -- mutable default removed
 # ---------------------------------------------------------------------------

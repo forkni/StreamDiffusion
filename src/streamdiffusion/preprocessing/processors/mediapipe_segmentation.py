@@ -7,7 +7,6 @@ from PIL import Image
 
 from .base import BasePreprocessor
 
-
 try:
     import mediapipe as mp
 

@@ -33,7 +33,6 @@ for current consumers.
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Tuple
 
-
 # Interpolation-method aliases shared by the wrapper and updater signatures.
 PromptInterpolationMethod = Literal["linear", "slerp", "cosine_weighted"]
 SeedInterpolationMethod = Literal["linear", "slerp"]

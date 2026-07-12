@@ -14,12 +14,10 @@ import torch
 
 from streamdiffusion.image_utils import pil2tensor
 
-
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from streamdiffusion import StreamDiffusionWrapper
 from utils.viewer import receive_images
-
 
 inputs = []
 top = 0

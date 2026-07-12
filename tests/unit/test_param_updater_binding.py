@@ -24,7 +24,6 @@ import torch
 
 from streamdiffusion.stream_parameter_updater import StreamParameterUpdater
 
-
 # ---------------------------------------------------------------------------
 # Fixtures — mirror the minimal-fake-stream pattern from
 # tests/unit/test_prompt_interpolation.py so __init__ runs without a real pipeline.
@@ -51,7 +50,7 @@ def _make_updater(**kwargs) -> StreamParameterUpdater:
     stream = _fake_stream()
     orig_attach = StreamParameterUpdater.attach_orchestrator
 
-    def _noop_attach(self, s):  # noqa: ANN001
+    def _noop_attach(self, s):
         self._preprocessing_orchestrator = None
 
     StreamParameterUpdater.attach_orchestrator = _noop_attach
@@ -95,7 +94,7 @@ def test_positional_flag_binding_is_rejected():
     """The keyword-only barrier makes the original bug a hard TypeError."""
     stream = _fake_stream()
     with pytest.raises(TypeError):
-        StreamParameterUpdater(stream, False, False)  # noqa: F841
+        StreamParameterUpdater(stream, False, False)
 
 
 # ---------------------------------------------------------------------------

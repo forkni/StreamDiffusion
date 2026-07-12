@@ -14,7 +14,6 @@ from util import bytes_to_pt
 
 from .common.dependencies import get_app_instance, get_pipeline_class
 
-
 router = APIRouter(prefix="/api", tags=["websocket"])
 
 

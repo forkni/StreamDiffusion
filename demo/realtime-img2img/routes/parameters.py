@@ -10,7 +10,6 @@ from fastapi.responses import JSONResponse
 from .common.api_utils import create_success_response, handle_api_error, handle_api_request
 from .common.dependencies import get_app_instance
 
-
 router = APIRouter(prefix="/api", tags=["parameters"])
 
 
@@ -103,7 +102,7 @@ async def update_params(request: Request, app_instance=Depends(get_app_instance)
 
     except Exception as e:
         logging.exception(f"update_params: Failed to update parameters: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update parameters: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update parameters: {e!s}")
 
 
 async def _update_single_parameter(

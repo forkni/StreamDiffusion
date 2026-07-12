@@ -32,7 +32,6 @@ from PIL import Image
 from streamdiffusion.preprocessing.preprocessing_orchestrator import PreprocessingOrchestrator
 from streamdiffusion.wrapper import StreamDiffusionWrapper
 
-
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(),
     reason="Sub-phase 5.2 output paths require CUDA (pin_memory / cuda.Event)",

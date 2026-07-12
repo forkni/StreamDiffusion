@@ -8,7 +8,6 @@ from typing import Dict, Literal, Optional
 
 from packaging.version import Version
 
-
 python = sys.executable
 index_url = os.environ.get("INDEX_URL", "")
 uv = shutil.which("uv")

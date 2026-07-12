@@ -7,7 +7,6 @@ import yaml
 
 from .param_schema import DEFAULTS
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -17,7 +16,7 @@ def load_config(config_path: Union[str, Path]) -> Dict[str, Any]:
 
     if not config_path.exists():
         raise FileNotFoundError(f"load_config: Configuration file not found: {config_path}")
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(config_path, encoding="utf-8") as f:
         if config_path.suffix.lower() in [".yaml", ".yml"]:
             config_data = yaml.safe_load(f)
         elif config_path.suffix.lower() == ".json":
@@ -144,7 +143,7 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         "build_engines_if_missing": config.get("build_engines_if_missing", True),
         "fp8_allow_fp16_fallback": config.get("fp8_allow_fp16_fallback", False),
     }
-    if "controlnets" in config and config["controlnets"]:
+    if config.get("controlnets"):
         param_map["use_controlnet"] = True
         param_map["controlnet_config"] = _prepare_controlnet_configs(config)
     else:
@@ -152,7 +151,7 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         param_map["controlnet_config"] = config.get("controlnet_config")
 
     # Set IPAdapter usage if IPAdapters are configured
-    if "ipadapters" in config and config["ipadapters"]:
+    if config.get("ipadapters"):
         param_map["use_ipadapter"] = True
         param_map["ipadapter_config"] = _prepare_ipadapter_configs(config)
     else:
@@ -296,28 +295,28 @@ def _prepare_pipeline_hook_configs(config: Dict[str, Any]) -> Dict[str, Any]:
     hook_configs = {}
 
     # Image preprocessing hooks
-    if "image_preprocessing" in config and config["image_preprocessing"]:
+    if config.get("image_preprocessing"):
         if config["image_preprocessing"].get("enabled", True):
             hook_configs["image_preprocessing_config"] = _prepare_single_hook_config(
                 config["image_preprocessing"], "image_preprocessing"
             )
 
     # Image postprocessing hooks
-    if "image_postprocessing" in config and config["image_postprocessing"]:
+    if config.get("image_postprocessing"):
         if config["image_postprocessing"].get("enabled", True):
             hook_configs["image_postprocessing_config"] = _prepare_single_hook_config(
                 config["image_postprocessing"], "image_postprocessing"
             )
 
     # Latent preprocessing hooks
-    if "latent_preprocessing" in config and config["latent_preprocessing"]:
+    if config.get("latent_preprocessing"):
         if config["latent_preprocessing"].get("enabled", True):
             hook_configs["latent_preprocessing_config"] = _prepare_single_hook_config(
                 config["latent_preprocessing"], "latent_preprocessing"
             )
 
     # Latent postprocessing hooks
-    if "latent_postprocessing" in config and config["latent_postprocessing"]:
+    if config.get("latent_postprocessing"):
         if config["latent_postprocessing"].get("enabled", True):
             hook_configs["latent_postprocessing_config"] = _prepare_single_hook_config(
                 config["latent_postprocessing"], "latent_postprocessing"

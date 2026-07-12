@@ -1,28 +1,64 @@
 [tool.ruff]
 line-length = 119
+target-version = "py310"  # contract floor: setup.py python_requires>=3.10
+# venv/ is already in ruff's default excludes.
+extend-exclude = ["logs", "profiler_logs", "profiles", "*.egg-info", "demo/*/frontend", "engines", "models"]
 
 [tool.ruff.lint]
-# Never enforce `E501` (line length violations).
-ignore = ["C901", "E501", "E741", "F402", "F403", "F405", "F823"]
-select = ["C", "E", "F", "I", "W"]
+select = ["E", "W", "F", "I", "C4", "B", "UP", "SIM", "RUF", "PERF", "NPY"]
+ignore = [
+    "E501",   # line length — formatter handles wrapping; long literals stay
+    "E741",   # ambiguous single-letter names — common in math/diffusion code
+    "F402",
+    "F823",
+    "UP006",  # keep typing.Dict/List annotations — no mass churn
+    "UP007",  # keep typing.Union
+    "UP035",  # keep typing imports
+    "UP045",  # keep typing.Optional
+    # --- Adopted incrementally: non-auto-fixable residuals, ignored pending follow-up ---
+    "SIM102", "SIM105", "SIM108", "SIM110", "SIM115", "SIM117", "SIM118", "SIM101", "SIM201",  # stylistic
+    "PERF203", "PERF401", "PERF102",                                                          # perf hints
+    "RUF001", "RUF002", "RUF003",                                                             # ambiguous-unicode in math docstrings
+    "RUF012", "RUF013", "RUF005", "RUF015", "RUF059",                                         # annotation/misc deferral
+    "B905", "B007",                                                                           # zip-strict / unused-loop-var (behaviour-sensitive)
+    "B004", "B006", "B008", "B018", "B026", "B904", "NPY002",                                 # TODO: real-bug candidates — re-enable in a follow-up pass
+    "RUF006", "RUF009",                                                                       # TODO: real-bug candidates — re-enable in a follow-up pass
+    "RUF022", "RUF046", "UP008",                                                              # stylistic
+]
 
-# Ignore import violations in all `__init__.py` files.
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["E402", "F401", "F811"]
+# The only two files using `from ... import *`:
+"src/streamdiffusion/acceleration/tensorrt/builder.py" = ["F403", "F405"]
+"src/streamdiffusion/acceleration/tensorrt/runtime_engines/unet_engine.py" = ["F403", "F405"]
+# sys.path-hack entry points import after path setup:
+"tests/**" = ["E402"]
+"scripts/**" = ["E402"]
+"utils/**" = ["E402"]
+"StreamDiffusionTD/*.py" = ["E402"]
+# Deliberate ordering: circular-import avoidance / patch-before-import.
+"demo/realtime-img2img/main.py" = ["E402"]
+"src/streamdiffusion/acceleration/tensorrt/export_wrappers/unet_unified_export.py" = ["E402"]
 
 [tool.ruff.lint.isort]
-lines-after-imports = 2
 known-first-party = ["streamdiffusion"]
 
 [tool.ruff.format]
-# Like Black, use double quotes for strings.
+# Black-compatible.
 quote-style = "double"
-
-# Like Black, indent with spaces, rather than tabs.
 indent-style = "space"
-
-# Like Black, respect magic trailing commas.
 skip-magic-trailing-comma = false
-
-# Like Black, automatically detect the appropriate line ending.
 line-ending = "auto"
+docstring-code-format = true
+
+[tool.pyrefly]
+project-includes = ["src", "StreamDiffusionTD", "tests", "custom_processors", "scripts", "tools", "utils"]
+project-excludes = ["tests/manual/**", "tests/quality/**", "demo/**", "examples/**"]
+search-path = ["src"]
+python-version = "3.10"
+python-interpreter-path = "venv/Scripts/python.exe"
+# Pre-existing errors are frozen in the baseline; only new errors fail the check.
+# Refresh after intentional fixes: pyrefly check --update-baseline
+baseline = "pyrefly-baseline.json"
+# Warn-severity GPU anti-pattern lints (.item() sync stalls, hard-coded .cuda(), print(tensor)).
+pytorch-efficiency-lints = true

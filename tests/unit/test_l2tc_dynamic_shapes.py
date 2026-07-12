@@ -26,7 +26,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 try:
     from streamdiffusion.acceleration.tensorrt import utilities as trt_utilities
 

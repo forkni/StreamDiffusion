@@ -1,12 +1,13 @@
-#NOTE: ported from https://github.com/yuvraj108c/ComfyUI-YoloNasPose-Tensorrt
+# NOTE: ported from https://github.com/yuvraj108c/ComfyUI-YoloNasPose-Tensorrt
 
 import os
+
+import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
-import cv2
 from PIL import Image
-from typing import Union, Optional, List, Tuple
+
 from .base import BasePreprocessor
 from .category_params import POSE_DRAW_PARAMS
 from .trt_base import TENSORRT_AVAILABLE, TensorRTEngine  # shared engine wrapper
@@ -89,20 +90,48 @@ def iterate_over_batch_predictions(predictions, batch_size):
         else:
             pred_scores = batch_scores[image_index, :num_detection_in_image]
             pred_boxes = batch_boxes[image_index, :num_detection_in_image]
-            pred_joints = batch_joints[image_index, :num_detection_in_image].reshape(
-                (num_detection_in_image, -1, 3))
+            pred_joints = batch_joints[image_index, :num_detection_in_image].reshape((num_detection_in_image, -1, 3))
 
         yield image_index, pred_boxes, pred_scores, pred_joints
 
+
 # precompute edge links define skeleton connections (COCO format)
-edge_links = [[0, 17], [13, 15], [14, 16], [12, 14], [12, 17], [5, 6],
-                [11, 13], [7, 9], [5, 7], [17, 11], [6, 8], [8, 10],
-                [1, 3], [0, 1], [0, 2], [2, 4]]
+edge_links = [
+    [0, 17],
+    [13, 15],
+    [14, 16],
+    [12, 14],
+    [12, 17],
+    [5, 6],
+    [11, 13],
+    [7, 9],
+    [5, 7],
+    [17, 11],
+    [6, 8],
+    [8, 10],
+    [1, 3],
+    [0, 1],
+    [0, 2],
+    [2, 4],
+]
 
 edge_colors = [
-    [255, 0, 0], [255, 85, 0], [170, 255, 0], [85, 255, 0], [85, 255, 0],
-    [85, 0, 255], [255, 170, 0], [0, 177, 58], [0, 179, 119], [179, 179, 0],
-    [0, 119, 179], [0, 179, 179], [119, 0, 179], [179, 0, 179], [178, 0, 118], [178, 0, 118]
+    [255, 0, 0],
+    [255, 85, 0],
+    [170, 255, 0],
+    [85, 255, 0],
+    [85, 255, 0],
+    [85, 0, 255],
+    [255, 170, 0],
+    [0, 177, 58],
+    [0, 179, 119],
+    [179, 179, 0],
+    [0, 119, 179],
+    [0, 179, 179],
+    [119, 0, 179],
+    [179, 0, 179],
+    [178, 0, 118],
+    [178, 0, 118],
 ]
 
 
@@ -121,8 +150,7 @@ def show_predictions_from_batch_format(
         keypoint_radius:     Keypoint dot radius in pixels.
     """
     try:
-        image_index, pred_boxes, pred_scores, pred_joints = next(
-            iter(iterate_over_batch_predictions(predictions, 1)))
+        image_index, pred_boxes, pred_scores, pred_joints = next(iter(iterate_over_batch_predictions(predictions, 1)))
     except Exception as e:
         raise RuntimeError(f"show_predictions_from_batch_format: Error in iterate_over_batch_predictions: {e}") from e
 
@@ -184,11 +212,7 @@ class YoloNasPoseTensorrtPreprocessor(BasePreprocessor):
             ],
         }
 
-    def __init__(self,
-                 engine_path: str = None,
-                 detect_resolution: int = 640,
-                 image_resolution: int = 512,
-                 **kwargs):
+    def __init__(self, engine_path: str = None, detect_resolution: int = 640, image_resolution: int = 512, **kwargs):
         """
         Initialize TensorRT pose preprocessor
 
@@ -205,10 +229,7 @@ class YoloNasPoseTensorrtPreprocessor(BasePreprocessor):
             )
 
         super().__init__(
-            engine_path=engine_path,
-            detect_resolution=detect_resolution,
-            image_resolution=image_resolution,
-            **kwargs
+            engine_path=engine_path, detect_resolution=detect_resolution, image_resolution=image_resolution, **kwargs
         )
 
         self._engine = None
@@ -219,7 +240,7 @@ class YoloNasPoseTensorrtPreprocessor(BasePreprocessor):
     def engine(self):
         """Lazy loading of the TensorRT engine"""
         if self._engine is None:
-            engine_path = self.params.get('engine_path')
+            engine_path = self.params.get("engine_path")
             if engine_path is None:
                 raise ValueError(
                     "engine_path is required for TensorRT pose preprocessing. "
@@ -240,16 +261,13 @@ class YoloNasPoseTensorrtPreprocessor(BasePreprocessor):
         """
         Apply TensorRT pose estimation to the input image
         """
-        detect_resolution = self.params.get('detect_resolution', 640)
+        detect_resolution = self.params.get("detect_resolution", 640)
 
         image_tensor = torch.from_numpy(np.array(image)).float() / 255.0
         image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0)
 
         image_resized = F.interpolate(
-            image_tensor,
-            size=(detect_resolution, detect_resolution),
-            mode='bilinear',
-            align_corners=False
+            image_tensor, size=(detect_resolution, detect_resolution), mode="bilinear", align_corners=False
         )
 
         image_resized_uint8 = (image_resized * 255.0).type(torch.uint8)
@@ -293,11 +311,10 @@ class YoloNasPoseTensorrtPreprocessor(BasePreprocessor):
         if not image_tensor.is_cuda:
             image_tensor = image_tensor.cuda()
 
-        detect_resolution = self.params.get('detect_resolution', 640)
+        detect_resolution = self.params.get("detect_resolution", 640)
 
         image_resized = torch.nn.functional.interpolate(
-            image_tensor, size=(detect_resolution, detect_resolution),
-            mode='bilinear', align_corners=False
+            image_tensor, size=(detect_resolution, detect_resolution), mode="bilinear", align_corners=False
         )
 
         image_resized_uint8 = (image_resized * 255.0).type(torch.uint8)

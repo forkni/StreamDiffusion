@@ -15,7 +15,6 @@ import torch
 
 from streamdiffusion.config import _extract_prepare_params, _extract_wrapper_params
 
-
 MINIMAL_CONFIG = {"model_id": "stabilityai/sd-turbo"}
 
 EXPECTED_WRAPPER_PARAMS = {

@@ -14,11 +14,9 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
 
-
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from streamdiffusion import StreamDiffusionWrapper
-
 
 logger = logging.getLogger("uvicorn")
 PROJECT_DIR = Path(__file__).parent.parent

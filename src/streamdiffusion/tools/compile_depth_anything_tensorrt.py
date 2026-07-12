@@ -16,12 +16,11 @@ from pathlib import Path
 import fire
 import torch
 
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 try:
-    import tensorrt as trt  # noqa: E402
+    import tensorrt as trt
 
     from streamdiffusion.acceleration.tensorrt.utilities import BUILD_TRT_LOGGER
 

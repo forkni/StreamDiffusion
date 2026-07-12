@@ -5,7 +5,6 @@ from .image_processing_module import ImagePostprocessingModule, ImagePreprocessi
 from .ipadapter_module import IPAdapterModule
 from .latent_processing_module import LatentPostprocessingModule, LatentPreprocessingModule, LatentProcessingModule
 
-
 __all__ = [
     # Existing modules
     "ControlNetModule",

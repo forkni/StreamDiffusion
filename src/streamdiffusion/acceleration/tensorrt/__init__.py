@@ -5,7 +5,6 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-
 os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
 from diffusers import AutoencoderKL, ControlNetModel, UNet2DConditionModel
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img import (

@@ -34,7 +34,6 @@ import torch
 from streamdiffusion import wrapper as wrapper_module
 from streamdiffusion.wrapper import StreamDiffusionWrapper, _is_oom_error
 
-
 # ---------------------------------------------------------------------------
 # _is_oom_error
 # ---------------------------------------------------------------------------

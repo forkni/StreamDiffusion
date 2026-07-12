@@ -7,7 +7,6 @@ from uuid import UUID
 from fastapi import WebSocket
 from starlette.websockets import WebSocketState
 
-
 Connections = Dict[UUID, Dict[str, Union[WebSocket, asyncio.Queue]]]
 
 

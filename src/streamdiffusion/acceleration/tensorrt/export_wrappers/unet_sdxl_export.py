@@ -14,7 +14,6 @@ from ....model_detection import (
     detect_model,
 )
 
-
 logger = logging.getLogger(__name__)
 
 # Handle different diffusers versions for CLIPTextModel import
@@ -107,10 +106,7 @@ class SDXLExportWrapper(torch.nn.Module):
                 }
 
             # If model supports added conditioning and we have the kwargs, use them
-            if self.supports_added_cond and "added_cond_kwargs" in kwargs:
-                result = self.unet(*args, **kwargs)
-                return result
-            elif len(args) >= 3:
+            if (self.supports_added_cond and "added_cond_kwargs" in kwargs) or len(args) >= 3:
                 result = self.unet(*args, **kwargs)
                 return result
             else:

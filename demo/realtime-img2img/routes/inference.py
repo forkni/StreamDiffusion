@@ -11,7 +11,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .common.dependencies import get_app_instance, get_default_settings, get_pipeline_class
 
-
 router = APIRouter(prefix="/api", tags=["inference"])
 
 
@@ -97,7 +96,7 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
                 app_instance._cleanup_pipeline(old_pipeline)
 
             app_instance.pipeline = app_instance._create_pipeline()
-            acceleration_changed = True
+            acceleration_changed = True  # noqa: F841  # TODO: pre-existing, untouched by this refactor
             logging.info("stream: Pipeline recreated with new acceleration")
 
         # IPAdapter style images are now handled dynamically in pipeline.predict()
@@ -188,7 +187,7 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
 
     except Exception as e:
         logging.exception(f"stream: Error in streaming endpoint: {e}")
-        raise HTTPException(status_code=500, detail=f"Streaming failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Streaming failed: {e!s}")
 
 
 @router.get("/state")
@@ -247,7 +246,7 @@ async def get_app_state(
 
     except Exception as e:
         logging.error(f"get_app_state: Error getting application state: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get application state: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get application state: {e!s}")
 
 
 @router.get("/settings")

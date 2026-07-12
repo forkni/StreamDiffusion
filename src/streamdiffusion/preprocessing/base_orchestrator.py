@@ -5,7 +5,6 @@ from typing import Any, Dict, Generic, Optional, TypeVar
 
 import torch
 
-
 logger = logging.getLogger(__name__)
 
 # Type variables for generic orchestrator

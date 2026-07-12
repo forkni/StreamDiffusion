@@ -27,7 +27,6 @@ from pathlib import Path
 
 import torch
 
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
@@ -193,7 +192,7 @@ def main() -> None:
     logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
     logger.info("TensorRT: ", end="")
     try:
-        import tensorrt as trt  # noqa: F401
+        import tensorrt as trt
 
         logger.info(f"{trt.__version__}")
     except ImportError:

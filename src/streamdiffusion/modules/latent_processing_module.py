@@ -52,7 +52,7 @@ class LatentProcessingModule(OrchestratorUser):
         # Apply parameters (same pattern as ControlNet)
         processor_params = proc_config.get("params", {})
         if processor_params:
-            if hasattr(processor, "params") and isinstance(getattr(processor, "params"), dict):
+            if hasattr(processor, "params") and isinstance(processor.params, dict):
                 processor.params.update(processor_params)
             for name, value in processor_params.items():
                 try:
@@ -63,10 +63,10 @@ class LatentProcessingModule(OrchestratorUser):
 
         # Set order for sequential execution
         order = proc_config.get("order", len(self.processors))
-        setattr(processor, "order", order)
+        processor.order = order
 
         # Set enabled state
-        setattr(processor, "enabled", enabled)
+        processor.enabled = enabled
 
         # Pipeline reference is now automatically handled by the factory function
 

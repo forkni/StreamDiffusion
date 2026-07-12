@@ -2,7 +2,6 @@ import logging
 import os
 import sys
 
-
 sys.path.append(
     os.path.join(
         os.path.dirname(__file__),
@@ -17,7 +16,6 @@ sys.path.append(
 import torch
 from PIL import Image
 from pydantic import BaseModel, Field
-
 
 # Default values for pipeline parameters
 default_negative_prompt = "black and white, blurry, low resolution, pixelated,  pixel art, low quality, low fidelity"

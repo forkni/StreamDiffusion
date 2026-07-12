@@ -281,7 +281,7 @@ def create_ipadapter_wrapper(
 
         # Check if UNet already has IPAdapter processors installed
         existing_processors = unet.attn_processors
-        has_ipadapter = any(
+        has_ipadapter = any(  # noqa: F841  # TODO: pre-existing, untouched by this refactor
             "IPAttn" in proc.__class__.__name__ or "IPAttnProcessor" in proc.__class__.__name__
             for proc in existing_processors.values()
         )
@@ -289,7 +289,7 @@ def create_ipadapter_wrapper(
         # Validate expected dimensions
         expected_dims = {"SD15": 768, "SDXL": 2048, "SD21": 1024}
 
-        expected_dim = expected_dims.get(model_type)
+        expected_dim = expected_dims.get(model_type)  # noqa: F841  # TODO: pre-existing, untouched by this refactor
 
         return IPAdapterUNetExportWrapper(unet, cross_attention_dim, num_tokens, install_processors)
 

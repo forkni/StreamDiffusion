@@ -27,7 +27,6 @@ from streamdiffusion.model_detection import detect_model
 from streamdiffusion.stream_parameter_updater import StreamParameterUpdater
 from streamdiffusion.tools.gpu_profiler import profiler
 
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 

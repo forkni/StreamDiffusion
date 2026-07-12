@@ -16,7 +16,6 @@ from .common.api_utils import (
 )
 from .common.dependencies import get_app_instance
 
-
 router = APIRouter(prefix="/api", tags=["ipadapter"])
 
 # Legacy upload endpoint removed - use /api/input-sources/upload-image/ipadapter instead

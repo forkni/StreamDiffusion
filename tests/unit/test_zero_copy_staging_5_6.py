@@ -20,7 +20,6 @@ module (guarded below, same pattern as test_l2tc_dynamic_shapes.py).
 
 import pytest
 
-
 try:
     from streamdiffusion.acceleration.tensorrt.utilities import _staging_action
 

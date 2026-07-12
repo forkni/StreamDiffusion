@@ -5,7 +5,6 @@ from typing import Any, Dict, Optional
 import torch
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
 
-
 # Gracefully import the SD3 model class; it might not exist in older diffusers versions.
 try:
     from diffusers.models.transformers.mm_dit import MMDiTTransformer2DModel
@@ -17,7 +16,6 @@ except ImportError:
     HAS_MMDIT = False
 
 import logging
-
 
 logger = logging.getLogger(__name__)
 

@@ -354,7 +354,7 @@ def main():
     print("=" * 50)
 
     try:
-        metrics = process_video_ipadapter_stream(
+        metrics = process_video_ipadapter_stream(  # noqa: F841  # TODO: pre-existing, untouched by this refactor
             args.config, args.input_video, args.static_image, args.output_dir, engine_only=args.engine_only
         )
         if args.engine_only:

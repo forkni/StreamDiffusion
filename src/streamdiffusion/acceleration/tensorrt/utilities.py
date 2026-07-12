@@ -33,7 +33,6 @@ import torch
 
 from streamdiffusion.tools.gpu_profiler import profiler as _gpu_profiler
 
-
 # cuda-python 13.x renamed 'cudart' to 'cuda.bindings.runtime'
 try:
     from cuda.bindings import runtime as cudart
@@ -46,7 +45,6 @@ from polygraphy.backend.trt import engine_from_bytes
 from polygraphy.backend.trt.util import get_trt_logger
 
 from .models.models import CLIP, VAE, BaseModel, UNet, VAEEncoder
-
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +122,6 @@ _ensure_build_logger_registered()
 
 
 from ...model_detection import detect_model  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # GPU Hardware Profile — hardware-aware TRT builder configuration
@@ -504,7 +501,7 @@ class TRTProfiler(trt.IProfiler):
         self._runs: deque = deque(maxlen=500)  # rolling window; prevents unbounded growth at 30 fps
         self._current: list = []  # accumulator for the in-progress inference
 
-    def report_layer_time(self, layer_name: str, ms: float) -> None:  # noqa: N802
+    def report_layer_time(self, layer_name: str, ms: float) -> None:
         self._current.append((layer_name, ms))
 
     def start_run(self) -> None:

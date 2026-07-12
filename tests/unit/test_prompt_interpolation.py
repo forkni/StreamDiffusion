@@ -15,7 +15,6 @@ import torch
 
 from streamdiffusion.stream_parameter_updater import StreamParameterUpdater
 
-
 # ---------------------------------------------------------------------------
 # Minimal fake stream that satisfies the fields accessed during __init__ and
 # _apply_prompt_blending without touching the real pipeline.
@@ -46,7 +45,7 @@ def _make_updater() -> StreamParameterUpdater:
     # a real PreprocessingOrchestrator.
     orig_attach = StreamParameterUpdater.attach_orchestrator
 
-    def _noop_attach(self, s):  # noqa: ANN001
+    def _noop_attach(self, s):
         self._preprocessing_orchestrator = None
 
     StreamParameterUpdater.attach_orchestrator = _noop_attach

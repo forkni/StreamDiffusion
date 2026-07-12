@@ -26,7 +26,6 @@ from streamdiffusion.param_schema import (
 from streamdiffusion.stream_parameter_updater import StreamParameterUpdater
 from streamdiffusion.wrapper import StreamDiffusionWrapper
 
-
 WRAPPER_ONLY_PARAMS = {"use_safety_checker", "safety_checker_threshold"}
 
 
@@ -45,7 +44,7 @@ class TestParamNames:
 
     def test_wrapper_only_params_excluded_from_updater(self):
         assert not (WRAPPER_ONLY_PARAMS & set(UPDATER_PARAM_NAMES))
-        assert WRAPPER_ONLY_PARAMS <= set(PARAM_NAMES)
+        assert set(PARAM_NAMES) >= WRAPPER_ONLY_PARAMS
 
     def test_no_duplicate_names(self):
         assert len(PARAM_NAMES) == len(set(PARAM_NAMES))

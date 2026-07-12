@@ -25,10 +25,8 @@ import numpy as np
 import torch
 from PIL import Image
 
-
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from streamdiffusion import StreamDiffusionWrapper
-
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 INPUT_IMAGE = os.path.join(CURRENT_DIR, "..", "..", "images", "inputs", "input.png")
@@ -124,7 +122,7 @@ def run_model(model_id: str) -> None:
 
             brightness = mean_brightness(img)
             print(
-                f"  {sampler_name:12s}  on_grid={str(grid_flag):5s}  sub_ts={[int(t) for t in sub_ts]}\n"
+                f"  {sampler_name:12s}  on_grid={grid_flag!s:5s}  sub_ts={[int(t) for t in sub_ts]}\n"
                 f"    brightness={brightness:.4f}  ({description})"
             )
 

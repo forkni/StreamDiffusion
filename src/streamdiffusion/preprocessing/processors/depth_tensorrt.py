@@ -1,12 +1,13 @@
-#NOTE: ported from https://github.com/yuvraj108c/ComfyUI-Depth-Anything-Tensorrt
+# NOTE: ported from https://github.com/yuvraj108c/ComfyUI-Depth-Anything-Tensorrt
 
 import os
+
+import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
-import cv2
 from PIL import Image
-from typing import Union, Optional
+
 from .base import BasePreprocessor
 from .category_params import DEPTH_GRADE_PARAMS, apply_depth_grade, apply_depth_grade_numpy
 from .trt_base import TENSORRT_AVAILABLE, TensorRTEngine  # shared engine wrapper
@@ -19,6 +20,7 @@ class DepthAnythingTensorrtPreprocessor(BasePreprocessor):
 
     Uses TensorRT-optimized Depth Anything model for fast depth estimation.
     """
+
     @classmethod
     def get_preprocessor_metadata(cls):
         return {
@@ -29,11 +31,8 @@ class DepthAnythingTensorrtPreprocessor(BasePreprocessor):
             },
             "use_cases": ["High-performance depth estimation", "Real-time applications", "3D-aware generation"],
         }
-    def __init__(self,
-                 engine_path: str = None,
-                 detect_resolution: int = 518,
-                 image_resolution: int = 512,
-                 **kwargs):
+
+    def __init__(self, engine_path: str = None, detect_resolution: int = 518, image_resolution: int = 512, **kwargs):
         """
         Initialize TensorRT depth preprocessor
 
@@ -50,10 +49,7 @@ class DepthAnythingTensorrtPreprocessor(BasePreprocessor):
             )
 
         super().__init__(
-            engine_path=engine_path,
-            detect_resolution=detect_resolution,
-            image_resolution=image_resolution,
-            **kwargs
+            engine_path=engine_path, detect_resolution=detect_resolution, image_resolution=image_resolution, **kwargs
         )
 
         self._engine = None
@@ -62,7 +58,7 @@ class DepthAnythingTensorrtPreprocessor(BasePreprocessor):
     def engine(self):
         """Lazy loading of the TensorRT engine"""
         if self._engine is None:
-            engine_path = self.params.get('engine_path')
+            engine_path = self.params.get("engine_path")
             if engine_path is None:
                 raise ValueError(
                     "engine_path is required for TensorRT depth preprocessing. "
@@ -85,16 +81,13 @@ class DepthAnythingTensorrtPreprocessor(BasePreprocessor):
         """
         Apply TensorRT depth estimation to the input image
         """
-        detect_resolution = self.params.get('detect_resolution', 518)
+        detect_resolution = self.params.get("detect_resolution", 518)
 
         image_tensor = torch.from_numpy(np.array(image)).float() / 255.0
         image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0)
 
         image_resized = F.interpolate(
-            image_tensor,
-            size=(detect_resolution, detect_resolution),
-            mode='bilinear',
-            align_corners=False
+            image_tensor, size=(detect_resolution, detect_resolution), mode="bilinear", align_corners=False
         )
 
         if torch.cuda.is_available():
@@ -102,7 +95,7 @@ class DepthAnythingTensorrtPreprocessor(BasePreprocessor):
 
         cuda_stream = torch.cuda.current_stream().cuda_stream
         result = self.engine.infer({"input": image_resized}, cuda_stream)
-        depth = result['output']
+        depth = result["output"]
 
         depth = np.reshape(depth.cpu().numpy(), (detect_resolution, detect_resolution))
 
@@ -135,16 +128,15 @@ class DepthAnythingTensorrtPreprocessor(BasePreprocessor):
         if not image_tensor.is_cuda:
             image_tensor = image_tensor.cuda()
 
-        detect_resolution = self.params.get('detect_resolution', 518)
+        detect_resolution = self.params.get("detect_resolution", 518)
 
         image_resized = torch.nn.functional.interpolate(
-            image_tensor, size=(detect_resolution, detect_resolution),
-            mode='bilinear', align_corners=False
+            image_tensor, size=(detect_resolution, detect_resolution), mode="bilinear", align_corners=False
         )
 
         cuda_stream = torch.cuda.current_stream().cuda_stream
         result = self.engine.infer({"input": image_resized}, cuda_stream)
-        depth_tensor = result['output']
+        depth_tensor = result["output"]
 
         depth_tensor = depth_tensor.squeeze() if depth_tensor.dim() > 2 else depth_tensor
 

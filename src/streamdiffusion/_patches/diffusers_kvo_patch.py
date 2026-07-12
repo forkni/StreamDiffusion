@@ -16,7 +16,6 @@ from __future__ import annotations
 import inspect
 import logging
 
-
 logger = logging.getLogger(__name__)
 
 _PATCHED = False

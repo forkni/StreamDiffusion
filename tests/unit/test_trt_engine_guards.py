@@ -14,7 +14,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Import guard — skip all tests if TRT is unavailable
 # ---------------------------------------------------------------------------

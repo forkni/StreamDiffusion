@@ -148,7 +148,7 @@ class GamepadInput(InputControl):
         finally:
             try:
                 pygame.quit()
-            except:
+            except:  # noqa: E722  # TODO: pre-existing, untouched by this refactor
                 pass
 
 

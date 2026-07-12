@@ -54,7 +54,7 @@ class ImageProcessingModule(OrchestratorUser):
         # Apply parameters (same pattern as ControlNet)
         processor_params = proc_config.get("params", {})
         if processor_params:
-            if hasattr(processor, "params") and isinstance(getattr(processor, "params"), dict):
+            if hasattr(processor, "params") and isinstance(processor.params, dict):
                 processor.params.update(processor_params)
             for name, value in processor_params.items():
                 try:
@@ -65,21 +65,21 @@ class ImageProcessingModule(OrchestratorUser):
 
         # Set order for sequential execution
         order = proc_config.get("order", len(self.processors))
-        setattr(processor, "order", order)
+        processor.order = order
 
         # Set enabled state
-        setattr(processor, "enabled", enabled)
+        processor.enabled = enabled
 
         # Align preprocessor target size with stream resolution (same as ControlNet)
         if hasattr(self, "_stream"):
             try:
-                if hasattr(processor, "params") and isinstance(getattr(processor, "params"), dict):
+                if hasattr(processor, "params") and isinstance(processor.params, dict):
                     processor.params["image_width"] = int(self._stream.width)
                     processor.params["image_height"] = int(self._stream.height)
                 if hasattr(processor, "image_width"):
-                    setattr(processor, "image_width", int(self._stream.width))
+                    processor.image_width = int(self._stream.width)
                 if hasattr(processor, "image_height"):
-                    setattr(processor, "image_height", int(self._stream.height))
+                    processor.image_height = int(self._stream.height)
             except Exception as e:
                 logger.debug(f"Failed to align processor target size with stream resolution: {e}", exc_info=True)
 

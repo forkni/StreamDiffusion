@@ -9,7 +9,6 @@ from PIL import Image
 
 from .base import PipelineAwareProcessor
 
-
 # Try to import TensorRT dependencies
 try:
     from collections import OrderedDict
@@ -24,7 +23,10 @@ except ImportError:
 
 # Try to import torchvision for RAFT model
 try:
-    from torchvision.models.optical_flow import Raft_Small_Weights, raft_small
+    from torchvision.models.optical_flow import (  # noqa: F401  # TODO: pre-existing, untouched by this refactor
+        Raft_Small_Weights,
+        raft_small,
+    )
     from torchvision.utils import flow_to_image
 
     TORCHVISION_AVAILABLE = True

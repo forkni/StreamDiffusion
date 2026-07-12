@@ -50,7 +50,6 @@ import subprocess
 import sys
 import time
 
-
 # ── CLI args ───────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="StreamDiffusion Nsight Systems profiling launcher")
 parser.add_argument(
@@ -214,7 +213,6 @@ from torch.profiler import ProfilerActivity, profile, schedule
 
 from streamdiffusion.tools.gpu_profiler import profiler
 
-
 os.environ.setdefault("GPU_PROFILER", "1")  # wrapper.__init__ reads this to activate
 
 WARMUP_RUNS = 3  # extra warmup before torch.profiler + nsys capture window
@@ -272,7 +270,6 @@ print(f"[profile] Pipeline ready in {time.perf_counter() - t0:.1f}s\n")
 # ── Dummy input image ──────────────────────────────────────────────────────────
 import PIL.Image
 
-
 dummy_img = PIL.Image.new("RGB", (_WIDTH, _HEIGHT), (128, 128, 128))
 
 # ── ControlNet activation (--cn-scale > 0) ────────────────────────────────────
@@ -297,7 +294,9 @@ if args.cn_scale > 0.0:
         print(f"[profile] ControlNet[0] enabled: scale={args.cn_scale}, image=dummy gray tensor {_WIDTH}x{_HEIGHT}")
         if args.cn_cache_interval > 1:
             cn_mod.set_cn_cache_interval(args.cn_cache_interval)
-            print(f"[profile] ControlNet residual cache: interval={args.cn_cache_interval} (CN forward every {args.cn_cache_interval} frames)")
+            print(
+                f"[profile] ControlNet residual cache: interval={args.cn_cache_interval} (CN forward every {args.cn_cache_interval} frames)"
+            )
     except Exception as _cn_err:
         print(f"[profile] WARNING: Could not activate ControlNet — {_cn_err}")
         print("  Make sure the config includes a ControlNet and its engine is built.")
