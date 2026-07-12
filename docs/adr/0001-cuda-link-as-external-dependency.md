@@ -12,7 +12,7 @@ relative-import patches re-applied on every re-vendor) and the dependency seam w
 dishonest — `wrapper.py` hard-imported `cuda_link` while `setup.py` never declared it.
 
 We now **depend solely on the pip-installed `cuda-link`** (declared in `setup.py` as
-`cuda-link @ git+https://github.com/forkni/cuda-link@v1.12.0`, exposed via the `cuda_ipc`
+`cuda-link @ git+https://github.com/forkni/cuda-link@v1.12.1`, exposed via the `cuda_ipc`
 optional extra). The TouchDesigner side consumes the same installed package through
 `CUDALinkBootstrap`'s **library mode** (`CUDALINK_LIB_PATH` injects the venv onto TD's
 `sys.path` and aliases the 14 bare module names used by TD DATs), so the TD DAT mirror
@@ -35,8 +35,8 @@ inside the repo is no longer needed either.
 - IPC is an **optional feature**: `pip install -e .[cuda_ipc]`. The `wrapper.py` imports
   are lazy/in-method so the core package installs and runs without cuda-link.
 - The `github.com/forkni/cuda-link` remote **must carry the referenced tag** or clean installs
-  fail. Current pin in `setup.py`: **`v1.12.0`** (tagged 2026-07-07; published release
-  `v1.12.0` on the cuda-link remote — https://github.com/forkni/cuda-link/releases/tag/v1.12.0).
+  fail. Current pin in `setup.py`: **`v1.12.1`** (tagged 2026-07-12; published release
+  `v1.12.1` on the cuda-link remote — https://github.com/forkni/cuda-link/releases/tag/v1.12.1).
 - **1.10.x history and the CUDA 719 incident (2026-06-10):** cuda-link 1.10.0 introduced
   async-by-default `export()` (no per-frame `cudaStreamSynchronize`) and opt-in
   `CUDALINK_D2H_PIPELINED` for overlapped D2H copy. However, **1.10.0 had a producer-side
@@ -92,9 +92,21 @@ inside the repo is no longer needed either.
     before publish); reachable via the Python `Exporter`'s async default under GPU load."** SD's
     exporter already forces blocking export (see the "force blocking IPC export" fix above), so
     this fix is defense-in-depth on the consumer side, not a gap SD was exposed to.
-- The `CUDALINK_LIB_PATH` env var must be set in the TD launch environment to point at the
-  venv site-packages path; without it, `CUDALinkBootstrap` falls back to classic Text-DAT
-  module discovery (still works, but requires the mirror DATs to be present in the COMP).
+- **1.12.1 migration (2026-07-12 pin bump; bugfix-only, no consumer API change):** fixes two
+  reference-count leaks that only surface on repeated failure/retry paths, not on the happy
+  path — **`nvml_observer.py`**: a failed `start()` after `acquire()` used to leave `nvmlInit()`
+  unpaired with `nvmlShutdown()`, compounding across retries; and **`TDReceiverEngine
+  .initialize_receiver()`**: a raise after the validation guards but before
+  `connection_committed` used to leak the locally-opened `shm_handle` on every failed attempt
+  and backoff retry. Neither leak is reachable via SD's normal (non-retrying,
+  non-NVML-observing) exporter/importer paths; upgrade is precautionary hardening.
+- The `CUDALINK_LIB_PATH` env var enables `CUDALinkBootstrap`'s library mode (`sys.path`
+  injection of the installed `cuda_link` package + the 14 bare-name DAT aliases); without it,
+  `CUDALinkBootstrap` falls back to classic Text-DAT module discovery (still works, but requires
+  the mirror DATs to be present in the COMP). As of the installer's `phase4c_cuda_link_env`
+  step, this is set automatically (`setx CUDALINK_LIB_PATH <venv>\Lib\site-packages`) at the end
+  of a fresh install — no manual step required. TouchDesigner must be (re)started after
+  installation for the persisted variable to take effect.
 - Do **not** re-suggest re-vendoring in future architecture reviews — this is a deliberate
   reversal of the previous approach, made after confirming that the mirror trees had zero
   runtime consumers in the Python import graph.
