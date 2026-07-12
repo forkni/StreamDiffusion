@@ -41,7 +41,7 @@ async def get_default_image():
         )
 
     except Exception as e:
-        raise handle_api_error(e, "get_default_image")
+        raise handle_api_error(e, "get_default_image") from e
 
 
 @router.post("/ipadapter/update-scale")
@@ -67,7 +67,7 @@ async def update_ipadapter_scale(request: Request, app_instance=Depends(get_app_
         return create_success_response(f"Updated IPAdapter scale to {scale}")
 
     except Exception as e:
-        raise handle_api_error(e, "update_ipadapter_scale")
+        raise handle_api_error(e, "update_ipadapter_scale") from e
 
 
 @router.post("/ipadapter/update-weight-type")
@@ -93,7 +93,7 @@ async def update_ipadapter_weight_type(request: Request, app_instance=Depends(ge
         return create_success_response(f"Updated IPAdapter weight type to {weight_type}")
 
     except Exception as e:
-        raise handle_api_error(e, "update_ipadapter_weight_type")
+        raise handle_api_error(e, "update_ipadapter_weight_type") from e
 
 
 @router.post("/ipadapter/update-enabled")
@@ -118,4 +118,4 @@ async def update_ipadapter_enabled(request: Request, app_instance=Depends(get_ap
         return create_success_response(f"IPAdapter {'enabled' if enabled else 'disabled'} successfully")
 
     except Exception as e:
-        raise handle_api_error(e, "update_ipadapter_enabled")
+        raise handle_api_error(e, "update_ipadapter_enabled") from e

@@ -23,7 +23,7 @@ def _check_torch_installed():
             "  pip install --index-url https://download.pytorch.org/whl/cu12x torch torchvision\n"
             "Replace the index URL and versions to match your CUDA runtime."
         )
-        raise RuntimeError(msg)
+        raise RuntimeError(msg) from None
 
     if not torch.version.cuda:
         raise RuntimeError(

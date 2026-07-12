@@ -147,7 +147,7 @@ class OpenPosePreprocessor(BasePreprocessor):
         include_hands = self.params.get("include_hands", False)
         include_face = self.params.get("include_face", False)
 
-        if CONTROLNET_AUX_AVAILABLE and hasattr(self.detector, "__call__"):
+        if CONTROLNET_AUX_AVAILABLE and callable(self.detector):
             try:
                 pose_image = self.detector(image_resized, hand_and_face=include_hands or include_face)
             except Exception as e:

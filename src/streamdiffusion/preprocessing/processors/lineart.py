@@ -15,7 +15,7 @@ except ImportError:
     CONTROLNET_AUX_AVAILABLE = False
     raise ImportError(
         "LineartPreprocessor: controlnet_aux is required for real-time optimization. Install with: pip install controlnet_aux"
-    )
+    ) from None
 
 
 # TODO provide gpu native lineart detection

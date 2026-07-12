@@ -11,7 +11,7 @@ def get_pipeline_class(pipeline_name: str) -> ModuleType:
     try:
         module = import_module(f"pipelines.{pipeline_name}")
     except ModuleNotFoundError:
-        raise ValueError(f"Pipeline {pipeline_name} module not found")
+        raise ValueError(f"Pipeline {pipeline_name} module not found") from None
 
     pipeline_class = getattr(module, "Pipeline", None)
 

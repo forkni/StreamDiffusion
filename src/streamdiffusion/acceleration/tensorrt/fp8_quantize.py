@@ -125,7 +125,7 @@ def capture_calibration_data(
             for i, batch in enumerate(batches):
                 logger.info(f"[FP8] Capture batch {i + 1}/{len(batches)}: {batch[0][:60]}")
                 try:
-                    pipe(
+                    _ = pipe(
                         prompt=batch if len(batch) > 1 else batch[0],
                         num_inference_steps=num_inference_steps,
                         output_type="latent",

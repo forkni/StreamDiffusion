@@ -428,7 +428,7 @@ class StreamDiffusionWrapper:
             return
 
         if seed < 0:  # Random seed
-            seed = np.random.randint(0, 1000000)
+            seed = int(np.random.default_rng().integers(0, 1000000))
 
         self.stream.prepare(
             "",

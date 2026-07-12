@@ -27,7 +27,7 @@ async def get_pipeline_hooks_info_config(app_instance=Depends(get_app_instance))
         }
         return JSONResponse(hooks_info)
     except Exception as e:
-        raise handle_api_error(e, "get_pipeline_hooks_info_config")
+        raise handle_api_error(e, "get_pipeline_hooks_info_config") from e
 
 
 # Individual hook type endpoints that frontend expects
@@ -123,7 +123,7 @@ async def get_hook_processors_info(hook_type: str, app_instance=Depends(get_app_
         )
 
     except Exception as e:
-        raise handle_api_error(e, "get_hook_processors_info")
+        raise handle_api_error(e, "get_hook_processors_info") from e
 
 
 @router.post("/pipeline-hooks/{hook_type}/add")
@@ -178,7 +178,7 @@ async def add_hook_processor(hook_type: str, request: Request, app_instance=Depe
         return create_success_response(f"Added {processor_type} processor to {hook_type}")
 
     except Exception as e:
-        raise handle_api_error(e, "add_hook_processor")
+        raise handle_api_error(e, "add_hook_processor") from e
 
 
 @router.delete("/pipeline-hooks/{hook_type}/remove/{processor_index}")
@@ -215,7 +215,7 @@ async def remove_hook_processor(hook_type: str, processor_index: int, app_instan
         return create_success_response(f"Removed processor {processor_index} from {hook_type}")
 
     except Exception as e:
-        raise handle_api_error(e, "remove_hook_processor")
+        raise handle_api_error(e, "remove_hook_processor") from e
 
 
 @router.post("/pipeline-hooks/{hook_type}/toggle")
@@ -263,7 +263,7 @@ async def toggle_hook_processor(hook_type: str, request: Request, app_instance=D
         )
 
     except Exception as e:
-        raise handle_api_error(e, "toggle_hook_processor")
+        raise handle_api_error(e, "toggle_hook_processor") from e
 
 
 @router.post("/pipeline-hooks/{hook_type}/switch")
@@ -346,7 +346,7 @@ async def switch_hook_processor(hook_type: str, request: Request, app_instance=D
         return create_success_response(f"Switched processor {processor_index} in {hook_type} to {new_processor_type}")
 
     except Exception as e:
-        raise handle_api_error(e, "switch_hook_processor")
+        raise handle_api_error(e, "switch_hook_processor") from e
 
 
 @router.post("/pipeline-hooks/{hook_type}/update-params")
@@ -439,7 +439,7 @@ async def update_hook_processor_params(hook_type: str, request: Request, app_ins
     except Exception as e:
         logging.exception(f"update_hook_processor_params: Exception occurred: {e!s}")
         logging.error(f"update_hook_processor_params: Exception type: {type(e).__name__}")
-        raise handle_api_error(e, "update_hook_processor_params")
+        raise handle_api_error(e, "update_hook_processor_params") from e
 
 
 @router.get("/pipeline-hooks/{hook_type}/current-params/{processor_index}")
@@ -500,4 +500,4 @@ async def get_current_hook_processor_params(
         )
 
     except Exception as e:
-        raise handle_api_error(e, "get_current_hook_processor_params")
+        raise handle_api_error(e, "get_current_hook_processor_params") from e

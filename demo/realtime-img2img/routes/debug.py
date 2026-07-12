@@ -36,7 +36,7 @@ async def enable_debug_mode(app_instance=Depends(get_app_instance)):
         )
     except Exception as e:
         logging.exception(f"enable_debug_mode: Failed to enable debug mode: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to enable debug mode: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Failed to enable debug mode: {e!s}") from e
 
 
 @router.post("/disable", response_model=DebugResponse)
@@ -56,7 +56,7 @@ async def disable_debug_mode(app_instance=Depends(get_app_instance)):
         )
     except Exception as e:
         logging.exception(f"disable_debug_mode: Failed to disable debug mode: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to disable debug mode: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Failed to disable debug mode: {e!s}") from e
 
 
 @router.post("/step", response_model=DebugResponse)
@@ -81,7 +81,7 @@ async def step_frame(app_instance=Depends(get_app_instance)):
         raise
     except Exception as e:
         logging.exception(f"step_frame: Failed to step frame: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to step frame: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Failed to step frame: {e!s}") from e
 
 
 @router.get("/status", response_model=DebugResponse)
@@ -96,4 +96,4 @@ async def get_debug_status(app_instance=Depends(get_app_instance)):
         )
     except Exception as e:
         logging.exception(f"get_debug_status: Failed to get debug status: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get debug status: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Failed to get debug status: {e!s}") from e

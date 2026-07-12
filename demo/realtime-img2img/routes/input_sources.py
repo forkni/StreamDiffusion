@@ -58,7 +58,7 @@ async def set_input_source(request: Request, app_instance=Depends(get_app_instan
         try:
             source_type = InputSourceType(source_type_str)
         except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid source type: {source_type_str}")
+            raise HTTPException(status_code=400, detail=f"Invalid source type: {source_type_str}") from None
 
         # Validate index for controlnet
         if component == "controlnet" and index is None:
@@ -138,7 +138,7 @@ async def upload_component_image(
         except Exception as e:
             # Clean up file if image processing fails
             file_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail=f"Invalid image file: {e!s}")
+            raise HTTPException(status_code=400, detail=f"Invalid image file: {e!s}") from e
 
         # Get input source manager and set source
         manager = _get_input_source_manager(app_instance)

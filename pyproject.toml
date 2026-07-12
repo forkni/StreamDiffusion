@@ -21,8 +21,6 @@ ignore = [
     "RUF001", "RUF002", "RUF003",                                                             # ambiguous-unicode in math docstrings
     "RUF012", "RUF013", "RUF005", "RUF015", "RUF059",                                         # annotation/misc deferral
     "B905", "B007",                                                                           # zip-strict / unused-loop-var (behaviour-sensitive)
-    "B004", "B006", "B018", "B026", "B904", "NPY002",                                         # TODO: real-bug candidates — re-enable in a follow-up pass
-    "RUF006",                                                                                 # TODO: real-bug candidates — re-enable in a follow-up pass
     "RUF022", "RUF046", "UP008",                                                              # stylistic
 ]
 

@@ -187,7 +187,7 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
 
     except Exception as e:
         logging.exception(f"stream: Error in streaming endpoint: {e}")
-        raise HTTPException(status_code=500, detail=f"Streaming failed: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Streaming failed: {e!s}") from e
 
 
 @router.get("/state")
@@ -246,7 +246,7 @@ async def get_app_state(
 
     except Exception as e:
         logging.error(f"get_app_state: Error getting application state: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get application state: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Failed to get application state: {e!s}") from e
 
 
 @router.get("/settings")

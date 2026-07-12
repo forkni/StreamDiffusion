@@ -75,7 +75,7 @@ class FaceIDEmbeddingPreprocessor(IPAdapterEmbeddingPreprocessor):
         except Exception as e:
             msg = f"FaceIDEmbeddingPreprocessor: Failed to extract face embeddings: {e}"
             report_error(msg)
-            raise RuntimeError(msg)
+            raise RuntimeError(msg) from e
 
     def update_faceid_v2_weight(self, weight: float) -> None:
         self.faceid_v2_weight = float(weight)

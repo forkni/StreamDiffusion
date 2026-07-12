@@ -326,7 +326,7 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
                 f"Failed to load TensorRT engine from {self.engine_path}: {e}\n"
                 f"Make sure the engine was built with a resolution range that includes {self.height}x{self.width}.\n"
                 f"For example: python -m streamdiffusion.tools.compile_raft_tensorrt --min_resolution 512x512 --max_resolution 1024x1024"
-            )
+            ) from e
 
     def _process_core(self, image: Image.Image) -> Image.Image:
         """

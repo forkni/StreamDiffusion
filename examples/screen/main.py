@@ -28,9 +28,11 @@ def screen(
     event: threading.Event,
     height: int = 512,
     width: int = 512,
-    monitor: Dict[str, int] = {"top": 300, "left": 200, "width": 512, "height": 512},
+    monitor: Optional[Dict[str, int]] = None,
 ):
     global inputs
+    if monitor is None:
+        monitor = {"top": 300, "left": 200, "width": 512, "height": 512}
     with mss.mss() as sct:
         while True:
             if event.is_set():

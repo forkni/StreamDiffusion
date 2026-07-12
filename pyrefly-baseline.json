@@ -6565,6 +6565,18 @@
       "severity": "error"
     },
     {
+      "line": 159,
+      "column": 16,
+      "stop_line": 159,
+      "stop_column": 26,
+      "path": "src\\streamdiffusion\\preprocessing\\processors\\openpose.py",
+      "code": -2,
+      "name": "bad-return",
+      "description": "Returned type `Image | object | Unknown` is not assignable to declared return type `Image`",
+      "concise_description": "Returned type `Image | object | Unknown` is not assignable to declared return type `Image`",
+      "severity": "error"
+    },
+    {
       "line": 215,
       "column": 43,
       "stop_line": 215,

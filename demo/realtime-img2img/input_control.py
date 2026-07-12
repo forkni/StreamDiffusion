@@ -161,6 +161,7 @@ class InputManager:
     def __init__(self):
         self.inputs: Dict[str, InputControl] = {}
         self.parameter_update_callback: Optional[Callable[[str, float], None]] = None
+        self._background_tasks: set = set()
 
     def add_input(self, input_id: str, input_control: InputControl) -> None:
         """Add an input control"""
@@ -171,7 +172,9 @@ class InputManager:
     def remove_input(self, input_id: str) -> None:
         """Remove an input control"""
         if input_id in self.inputs:
-            asyncio.create_task(self.inputs[input_id].stop())
+            task = asyncio.create_task(self.inputs[input_id].stop())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
             del self.inputs[input_id]
             logging.info(f"InputManager: Removed input control {input_id}")
 

@@ -42,7 +42,7 @@ async def handle_api_request(
 
     except Exception as e:
         logging.exception(f"{operation_name}: Failed to parse request: {e}")
-        raise HTTPException(status_code=400, detail=f"Invalid request format: {e!s}")
+        raise HTTPException(status_code=400, detail=f"Invalid request format: {e!s}") from e
 
 
 def create_success_response(message: str, **extra_data) -> JSONResponse:
