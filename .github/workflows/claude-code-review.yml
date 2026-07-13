@@ -26,7 +26,6 @@ jobs:
           plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
           plugins: "code-review@claude-code-plugins"
           prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
-          show_full_output: true # TEMP debug: reveal SDK error output; remove once harness is confirmed working
           claude_args: >-
             --max-turns 15
             --append-system-prompt "Repo-specific focus: real-time diffusion hot-path discipline (flag
