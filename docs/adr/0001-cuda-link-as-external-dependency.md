@@ -51,7 +51,7 @@ inside the repo is no longer needed either.
   interpreter. The stale 3.10 references are a separate, pre-existing doc/CI inaccuracy
   (`README.md:91`'s `conda create ... python=3.10`, `README.md:196`'s "demo expects Python
   3.10", and `.github/workflows/release.yml:17`'s `python-version: '3.10'`).
-  **Known gap from this hard-pin:** `setup.py`'s `python_requires=">=3.10.0"` still nominally
+  **Known gap from this hard-pin:** `setup.py:134`'s `python_requires=">=3.10.0"` still nominally
   permits a 3.10 install, but a 3.10 interpreter cannot install a `cp311`-tagged wheel — pip
   will refuse it. Tightening `python_requires` to `>=3.11.0` is the correct follow-up, but is
   deliberately deferred: `.github/workflows/release.yml` still builds on Python 3.10, so bumping
