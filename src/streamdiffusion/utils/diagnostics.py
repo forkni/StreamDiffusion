@@ -120,7 +120,7 @@ def _nvidia_smi_driver() -> str:
     return "unknown"
 
 
-def _collect_system() -> Dict[str, Any]:
+def _collect_system(wrapper: Any = None) -> Dict[str, Any]:
     """OS / Python / CUDA driver / GPU / VRAM / compute capability. Deliberately queries
     torch.cuda directly rather than acceleration/tensorrt/utilities.detect_gpu_profile() --
     that module imports tensorrt+onnx at module scope, which are optional deps this
@@ -135,10 +135,14 @@ def _collect_system() -> Dict[str, Any]:
 
         info["cuda_runtime"] = str(torch.version.cuda)
         if torch.cuda.is_available():
-            props = torch.cuda.get_device_properties(0)
+            wrapper_device = getattr(wrapper, "device", None)
+            device_index = getattr(wrapper_device, "index", None)
+            if device_index is None:
+                device_index = torch.cuda.current_device()
+            props = torch.cuda.get_device_properties(device_index)
             info["gpu_name"] = props.name
             info["compute_capability"] = f"{props.major}.{props.minor}"
-            free_bytes, total_bytes = torch.cuda.mem_get_info(0)
+            free_bytes, total_bytes = torch.cuda.mem_get_info(device_index)
             info["vram_total_mb"] = total_bytes // (1024 * 1024)
             info["vram_free_mb"] = free_bytes // (1024 * 1024)
         else:
@@ -232,7 +236,7 @@ def collect_diagnostics(wrapper: Any = None, extra: Optional[Dict[str, Any]] = N
         config.update({str(k): v for k, v in extra.items()})
 
     return {
-        "system": _safe(_collect_system, {}),
+        "system": _safe(lambda: _collect_system(wrapper), {}),
         "versions": _safe(_collect_versions, {}),
         "config": config,
         "env": _safe(_collect_env_allowlist, {}),
