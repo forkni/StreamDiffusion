@@ -18,3 +18,7 @@ Bump 3: re-trigger with show_full_output: true temporarily enabled on both
 `forkni:SDTD_032_dev` and `forkni:main`, to reveal why the Claude Code SDK
 invocation errors out immediately (is_error: true) after the default-branch
 validation fix.
+
+Bump 4: re-trigger after regenerating CLAUDE_CODE_OAUTH_TOKEN via
+`claude setup-token` (prior token was rejected with a 401
+authentication_failed against the Anthropic API).
