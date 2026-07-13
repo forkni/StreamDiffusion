@@ -12,9 +12,8 @@ relative-import patches re-applied on every re-vendor) and the dependency seam w
 dishonest — `wrapper.py` hard-imported `cuda_link` while `setup.py` never declared it.
 
 We now **depend solely on the pip-installed `cuda-link`** (declared in `setup.py` as a direct
-wheel-URL pin — `cuda-link @ https://github.com/forkni/cuda-link/releases/download/v1.12.1/
-cuda_link-1.12.1-cp311-cp311-win_amd64.whl` — exposed via the `cuda_ipc` optional extra). The
-TouchDesigner side consumes the same installed package through
+wheel-URL pin — `cuda-link @ https://github.com/forkni/cuda-link/releases/download/v1.12.1/cuda_link-1.12.1-cp311-cp311-win_amd64.whl`
+— exposed via the `cuda_ipc` optional extra). The TouchDesigner side consumes the same installed package through
 `CUDALinkBootstrap`'s **library mode** (`CUDALINK_LIB_PATH` injects the venv onto TD's
 `sys.path` and aliases the 14 bare module names used by TD DATs), so the TD DAT mirror
 inside the repo is no longer needed either.
