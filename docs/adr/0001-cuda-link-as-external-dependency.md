@@ -11,9 +11,10 @@ maintenance trap (the "RE-VENDORING TRAP" documented in `VENDORED_VERSION.txt`: 
 relative-import patches re-applied on every re-vendor) and the dependency seam was
 dishonest — `wrapper.py` hard-imported `cuda_link` while `setup.py` never declared it.
 
-We now **depend solely on the pip-installed `cuda-link`** (declared in `setup.py` as
-`cuda-link @ git+https://github.com/forkni/cuda-link@v1.12.1`, exposed via the `cuda_ipc`
-optional extra). The TouchDesigner side consumes the same installed package through
+We now **depend solely on the pip-installed `cuda-link`** (declared in `setup.py` as a direct
+wheel-URL pin — `cuda-link @ https://github.com/forkni/cuda-link/releases/download/v1.12.1/
+cuda_link-1.12.1-cp311-cp311-win_amd64.whl` — exposed via the `cuda_ipc` optional extra). The
+TouchDesigner side consumes the same installed package through
 `CUDALinkBootstrap`'s **library mode** (`CUDALINK_LIB_PATH` injects the venv onto TD's
 `sys.path` and aliases the 14 bare module names used by TD DATs), so the TD DAT mirror
 inside the repo is no longer needed either.
@@ -34,9 +35,21 @@ inside the repo is no longer needed either.
   with cuda-link). See `_patches/__init__.py` for the import-time side effect.
 - IPC is an **optional feature**: `pip install -e .[cuda_ipc]`. The `wrapper.py` imports
   are lazy/in-method so the core package installs and runs without cuda-link.
-- The `github.com/forkni/cuda-link` remote **must carry the referenced tag** or clean installs
-  fail. Current pin in `setup.py`: **`v1.12.1`** (tagged 2026-07-12; published release
-  `v1.12.1` on the cuda-link remote — https://github.com/forkni/cuda-link/releases/tag/v1.12.1).
+- The `github.com/forkni/cuda-link` release **must publish the exact wheel asset** the pin names
+  or clean installs fail. Current pin in `setup.py`: **`v1.12.1`**'s
+  `cuda_link-1.12.1-cp311-cp311-win_amd64.whl` (tagged 2026-07-12 —
+  https://github.com/forkni/cuda-link/releases/tag/v1.12.1).
+- **Pinned to the wheel URL, not the VCS tag.** An earlier draft of this pin used
+  `cuda-link @ git+https://github.com/forkni/cuda-link@v1.12.1`, which looks equivalent but
+  isn't: `cuda-link` builds via `scikit_build_core.build` (compiles `_native_waiter.cpp`), so a
+  VCS pin makes `pip install` clone the repo and build from source — requiring MSVC on Windows
+  — even though a prebuilt wheel is published for the same tag. Pinning straight to the release
+  wheel asset makes `pip install .[cuda_ipc]` a pure wheel install, no compiler required. This
+  is safe to hard-pin to `cp311-win_amd64` specifically (rather than resolving a wheel per the
+  installer's tag-matching logic) because SD's actual Python constraint is **3.11**, not the
+  3.10 the README/CI currently document — TouchDesigner embeds cp311, and cuda-link's TD-side
+  consumption via `CUDALinkBootstrap` library mode requires the installed package to match TD's
+  interpreter. The stale 3.10 references are a separate, pre-existing doc/CI inaccuracy.
 - **1.10.x history and the CUDA 719 incident (2026-06-10):** cuda-link 1.10.0 introduced
   async-by-default `export()` (no per-frame `cudaStreamSynchronize`) and opt-in
   `CUDALINK_D2H_PIPELINED` for overlapped D2H copy. However, **1.10.0 had a producer-side
