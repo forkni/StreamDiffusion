@@ -13,3 +13,8 @@ is wired on `forkni:SDTD_032_dev` (workflow + path instructions).
 Bump 2: re-trigger after landing claude-code-review.yml + .charlie/config.yml
 on `forkni:main` (default-branch validation requirement for Claude Actions;
 Charlie config previously absent entirely).
+
+Bump 3: re-trigger with show_full_output: true temporarily enabled on both
+`forkni:SDTD_032_dev` and `forkni:main`, to reveal why the Claude Code SDK
+invocation errors out immediately (is_error: true) after the default-branch
+validation fix.
