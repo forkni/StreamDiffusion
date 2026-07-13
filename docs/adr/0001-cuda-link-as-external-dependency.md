@@ -49,6 +49,11 @@ inside the repo is no longer needed either.
   3.10 the README/CI currently document — TouchDesigner embeds cp311, and cuda-link's TD-side
   consumption via `CUDALinkBootstrap` library mode requires the installed package to match TD's
   interpreter. The stale 3.10 references are a separate, pre-existing doc/CI inaccuracy.
+  **Known gap from this hard-pin:** `setup.py`'s `python_requires=">=3.10.0"` still nominally
+  permits a 3.10 install, but a 3.10 interpreter cannot install a `cp311`-tagged wheel — pip
+  will refuse it. Tightening `python_requires` to `>=3.11.0` is the correct follow-up, but is
+  deliberately deferred: `.github/workflows/release.yml` still builds on Python 3.10, so bumping
+  `python_requires` here would need a coordinated CI change, not a silent `setup.py` edit.
 - **1.10.x history and the CUDA 719 incident (2026-06-10):** cuda-link 1.10.0 introduced
   async-by-default `export()` (no per-frame `cudaStreamSynchronize`) and opt-in
   `CUDALINK_D2H_PIPELINED` for overlapped D2H copy. However, **1.10.0 had a producer-side
