@@ -48,7 +48,9 @@ inside the repo is no longer needed either.
   installer's tag-matching logic) because SD's actual Python constraint is **3.11**, not the
   3.10 the README/CI currently document — TouchDesigner embeds cp311, and cuda-link's TD-side
   consumption via `CUDALinkBootstrap` library mode requires the installed package to match TD's
-  interpreter. The stale 3.10 references are a separate, pre-existing doc/CI inaccuracy.
+  interpreter. The stale 3.10 references are a separate, pre-existing doc/CI inaccuracy
+  (`README.md:91`'s `conda create ... python=3.10`, `README.md:196`'s "demo expects Python
+  3.10", and `.github/workflows/release.yml:17`'s `python-version: '3.10'`).
   **Known gap from this hard-pin:** `setup.py`'s `python_requires=">=3.10.0"` still nominally
   permits a 3.10 install, but a 3.10 interpreter cannot install a `cp311`-tagged wheel — pip
   will refuse it. Tightening `python_requires` to `>=3.11.0` is the correct follow-up, but is
