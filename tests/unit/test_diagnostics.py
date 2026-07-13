@@ -278,6 +278,31 @@ class TestWriteErrorReport:
         assert "prompt: a photo of a cat" in text
         assert "num_inference_steps: 4" in text
 
+    def test_stream_config_secrets_redacted(self, tmp_path, monkeypatch):
+        """config is caller-supplied and arbitrary (unlike the wrapper-attr `config` section,
+        which only ever holds a fixed allowlist of attrs) -- nested secret-looking keys must
+        be masked before the report is written, including inside nested dicts/lists."""
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+        report_path = diagnostics.write_error_report(
+            RuntimeError("boom"),
+            stage="inference",
+            out_dir=tmp_path,
+            config={
+                "prompt": "a photo of a cat",
+                "hf_token": "hf_secretvalue",
+                "connection": {"api_key": "sk-secretvalue", "endpoint": "https://example.com"},
+                "extra_models": [{"password": "hunter2"}, {"name": "model-a"}],
+            },
+        )
+        text = report_path.read_text(encoding="utf-8")
+        assert "prompt: a photo of a cat" in text
+        assert "https://example.com" in text
+        assert "model-a" in text
+        assert "hf_secretvalue" not in text
+        assert "sk-secretvalue" not in text
+        assert "hunter2" not in text
+        assert "***REDACTED***" in text
+
     def test_stream_config_absent_renders_none(self, tmp_path, monkeypatch):
         monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
         report_path = diagnostics.write_error_report(RuntimeError("boom"), stage="inference", out_dir=tmp_path)

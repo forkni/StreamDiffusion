@@ -185,6 +185,23 @@ def _collect_env_allowlist() -> Dict[str, str]:
     }
 
 
+_REDACTED = "***REDACTED***"
+
+
+def _redact_secrets(value: Any) -> Any:
+    """Recursively mask dict values whose key looks secret-ish (reuses ENV_DENYLIST_SUBSTRINGS),
+    so a caller-supplied stream/pipeline config (arbitrary, unlike the wrapper-attr allowlist
+    used for `config`) can't leak a nested hf_token/api_key/password into a shared report."""
+    if isinstance(value, dict):
+        return {
+            k: (_REDACTED if any(bad in str(k).upper() for bad in ENV_DENYLIST_SUBSTRINGS) else _redact_secrets(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_secrets(item) for item in value]
+    return value
+
+
 def _render_stream_config(config: Optional[Dict[str, Any]]) -> str:
     """Best-effort pretty-print of the raw stream/pipeline config dict for == STREAM CONFIG ==.
     Tries YAML first (most readable for nested pipeline configs), falls back to JSON, then repr --
@@ -320,8 +337,9 @@ def write_error_report(
             is also surfaced as the SUMMARY "Context:" line.
         wrapper: StreamDiffusionWrapper instance, for config + GPU state.
         config: Raw stream/pipeline config dict (e.g. td_manager's loaded YAML), dumped
-            verbatim into == STREAM CONFIG ==. Complementary to `wrapper` -- the wrapper
-            only exposes resolved runtime attrs, not the original input config.
+            into == STREAM CONFIG == with secret-looking keys recursively redacted (see
+            _redact_secrets). Complementary to `wrapper` -- the wrapper only exposes
+            resolved runtime attrs, not the original input config.
         out_dir: Directory to write into. Defaults to $SDTD_BASE_FOLDER_PATH/error_reports,
             pinned at install time the same way as CUDALINK_*; falls back to
             <repo root>/error_reports (resolved from this module's own path, reliable
@@ -336,7 +354,7 @@ def write_error_report(
         diag["error"] = f"{type(exc).__name__}: {exc}"
         diag["context_note"] = (context or {}).get("where", stage)
         diag["traceback"] = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        diag["stream_config"] = config
+        diag["stream_config"] = _redact_secrets(config) if config else config
         diag["log_tail"] = _get_log_tail()
 
         if out_dir:
