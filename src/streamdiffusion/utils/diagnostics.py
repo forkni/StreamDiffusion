@@ -18,6 +18,7 @@ import importlib.metadata
 import logging
 import os
 import platform
+import re
 import subprocess
 import sys
 import threading
@@ -250,7 +251,7 @@ def collect_diagnostics(wrapper: Any = None, extra: Optional[Dict[str, Any]] = N
 
     config = _safe(lambda: _collect_config(wrapper), {})
     if extra:
-        config.update({str(k): v for k, v in extra.items()})
+        config.update(_redact_secrets({str(k): v for k, v in extra.items()}))
 
     return {
         "system": _safe(lambda: _collect_system(wrapper), {}),
@@ -369,7 +370,8 @@ def write_error_report(
         # burst (e.g. a retried streaming-loop error) get distinct filenames instead of one
         # silently overwriting the last via write_text()'s truncate-on-open.
         timestamp = _utc_now().strftime("%Y%m%d_%H%M%S_%f")
-        report_path = target_dir / f"inference_error_report_{timestamp}.txt"
+        stage_slug = re.sub(r"[^A-Za-z0-9_-]", "_", stage) or "unknown"
+        report_path = target_dir / f"{stage_slug}_error_report_{timestamp}.txt"
         report_path.write_text(format_report_text(diag), encoding="utf-8")
         return report_path
     except Exception as write_exc:

@@ -343,6 +343,27 @@ class TestWriteErrorReport:
         assert "Context: streaming_loop" in text
         assert "where: streaming_loop" in text  # also present in CONFIG via the `extra` merge
 
+    def test_context_secrets_redacted_in_config(self, tmp_path, monkeypatch):
+        """context is merged into CONFIG via the same `extra` path as `where` -- a secret-looking
+        key there must be redacted just like the stream_config path, since nothing prevents a
+        future caller from passing richer context than just `where`."""
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+        report_path = diagnostics.write_error_report(
+            RuntimeError("boom"),
+            stage="inference",
+            context={"where": "streaming_loop", "api_key": "sk-secretvalue"},
+            out_dir=tmp_path,
+        )
+        text = report_path.read_text(encoding="utf-8")
+        assert "where: streaming_loop" in text
+        assert "sk-secretvalue" not in text
+        assert "***REDACTED***" in text
+
+    def test_filename_reflects_stage(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+        report_path = diagnostics.write_error_report(RuntimeError("boom"), stage="startup", out_dir=tmp_path)
+        assert report_path.name.startswith("startup_error_report_")
+
 
 # ---------------------------------------------------------------------------
 # log tail buffer
