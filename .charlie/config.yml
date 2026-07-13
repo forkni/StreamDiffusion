@@ -1,0 +1,7 @@
+checkCommands:
+  fix: ruff check --fix . && ruff format .
+  lint: pip install ruff && ruff check .
+  types: pip install pyrefly && pyrefly check
+  test: pip install pytest && python -m pytest tests/unit -q
+beta:
+  canApprovePullRequests: false
