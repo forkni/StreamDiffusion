@@ -13,6 +13,7 @@ from .model_detection import detect_model
 from .pipeline import StreamDiffusion
 from .tools.gpu_profiler import configure as _configure_profiler
 from .tools.gpu_profiler import profiler
+from .utils.diagnostics import write_error_report as _write_error_report_util
 
 
 logger = logging.getLogger(__name__)
@@ -737,8 +738,7 @@ class StreamDiffusionWrapper:
             _normalized = [(str(p), float(w)) for p, w in prompt_list]
             _current = self.stream._param_updater.get_current_prompts()
             _neg_unchanged = (
-                negative_prompt is None
-                or negative_prompt == self.stream._param_updater._current_negative_prompt
+                negative_prompt is None or negative_prompt == self.stream._param_updater._current_negative_prompt
             )
             if _normalized == _current and _neg_unchanged:
                 logger.debug(
@@ -1197,6 +1197,28 @@ class StreamDiffusionWrapper:
             except Exception:
                 logger.debug("cleanup_cuda_ipc: _cuda_ipc_cn_exporter.close() failed", exc_info=True)
             self._cuda_ipc_cn_exporter = None
+
+    def write_error_report(
+        self,
+        exc: BaseException,
+        *,
+        context: Optional[Dict[str, Any]] = None,
+        config: Optional[Dict[str, Any]] = None,
+        out_dir: Optional[Union[str, Path]] = None,
+    ) -> Optional[Path]:
+        """Write a best-effort inference-stage diagnostic report for `exc`.
+
+        Convenience wrapper around streamdiffusion.utils.diagnostics.write_error_report
+        with wrapper=self already bound, for manual/ad-hoc use outside the TD streaming
+        loop (e.g. a demo script or notebook). Never raises -- returns None on failure.
+
+        `config` is an optional passthrough for the raw stream/pipeline config dict
+        (== STREAM CONFIG ==) -- the wrapper itself has no such dict (only resolved
+        runtime attrs), so callers that have one (e.g. td_manager) should pass it in.
+        """
+        return _write_error_report_util(
+            exc, stage="inference", context=context, wrapper=self, config=config, out_dir=out_dir
+        )
 
     def _denormalize_on_gpu(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """
@@ -2358,7 +2380,9 @@ class StreamDiffusionWrapper:
                             try:
                                 del stream.unet
                             except Exception as del_error:
-                                logger.debug(f"Failed to delete stream.unet during OOM fallback: {del_error}", exc_info=True)
+                                logger.debug(
+                                    f"Failed to delete stream.unet during OOM fallback: {del_error}", exc_info=True
+                                )
 
                         self.cleanup_gpu_memory()
 
@@ -2416,7 +2440,9 @@ class StreamDiffusionWrapper:
                                 try:
                                     del stream.vae
                                 except Exception as del_error:
-                                    logger.debug(f"Failed to delete stream.vae during OOM fallback: {del_error}", exc_info=True)
+                                    logger.debug(
+                                        f"Failed to delete stream.vae during OOM fallback: {del_error}", exc_info=True
+                                    )
 
                             self.cleanup_gpu_memory()
 
