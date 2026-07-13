@@ -38,7 +38,7 @@ jobs:
           prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
           claude_args: >-
             --max-turns 40
-            --allowedTools "Bash(git diff:*),Bash(git status:*),Bash(git log:*),Bash(git fetch:*),Bash(git merge-base:*),Bash(git rev-parse:*),Bash(git remote:*),Bash(git branch:*),Bash(git show:*),Bash(echo:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh release view:*)"
+            --allowedTools "Bash(git diff:*),Bash(git status:*),Bash(git log:*),Bash(git fetch:*),Bash(git merge-base:*),Bash(git rev-parse:*),Bash(git remote:*),Bash(git branch:*),Bash(git show:*),Bash(echo:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh release view:*),Bash(python:*),Bash(python3:*),Bash(pytest:*),Skill,Write(/tmp/*)"
             --append-system-prompt "Repo-specific focus: real-time diffusion hot-path discipline (flag
             .item()/.cpu()/.numpy()/print(tensor) in step/frame loops), no hard-coded .cuda()/device,
             best-effort error paths must never raise into the render loop, use raise ... from e, TensorRT
