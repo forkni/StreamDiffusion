@@ -32,7 +32,7 @@ SCHEMA_VERSION = "v1"
 ENV_ALLOWLIST_PREFIXES = ("CUDALINK_", "HF_", "SD_", "SDTD_")
 # Even an allowlisted-prefix var is dropped if its name contains one of these substrings --
 # a prefix match alone isn't enough (e.g. HF_TOKEN matches "HF_" but must never be dumped).
-ENV_DENYLIST_SUBSTRINGS = ("TOKEN", "KEY", "SECRET", "PASSWORD", "PASSWD", "CRED")
+ENV_DENYLIST_SUBSTRINGS = ("TOKEN", "KEY", "SECRET", "PASSWORD", "PASSWD", "CRED", "AUTH", "SESSION", "COOKIE")
 # Packages reported in == VERSIONS ==. Looked up individually so one missing/optional
 # package (e.g. tensorrt on a non-TensorRT install) never blanks the rest.
 VERSION_PACKAGES = (
@@ -136,7 +136,7 @@ def _collect_system(wrapper: Any = None) -> Dict[str, Any]:
         info["cuda_runtime"] = str(torch.version.cuda)
         if torch.cuda.is_available():
             wrapper_device = getattr(wrapper, "device", None)
-            device_index = getattr(wrapper_device, "index", None)
+            device_index = torch.device(wrapper_device).index if wrapper_device is not None else None
             if device_index is None:
                 device_index = torch.cuda.current_device()
             props = torch.cuda.get_device_properties(device_index)

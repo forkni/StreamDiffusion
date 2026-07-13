@@ -9,6 +9,7 @@ on hardware or adding a GPU pytest marker -- see test_safety_checker.py.
 """
 
 import logging
+from pathlib import Path
 
 import torch
 
@@ -97,6 +98,53 @@ class TestCollectDiagnostics:
         assert diag["system"]["vram_total_mb"] == 2_000_000_000 // (1024 * 1024)
         assert diag["system"]["vram_free_mb"] == 1_000_000_000 // (1024 * 1024)
 
+    def test_cuda_device_index_resolved_from_wrapper_device_string(self, monkeypatch):
+        """wrapper.device is a plain str (e.g. "cuda:1"), not a torch.device -- the resolved
+        index must come from torch.device(wrapper.device).index, not str.index (a bound
+        method that getattr(wrapper.device, "index", None) would otherwise return)."""
+
+        class _FakeProps:
+            name = "Fake GPU 1"
+            major = 8
+            minor = 9
+
+        class _FakeWrapper:
+            device = "cuda:1"
+
+        seen_indices = []
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(
+            torch.cuda, "get_device_properties", lambda idx: (seen_indices.append(idx), _FakeProps())[1]
+        )
+        monkeypatch.setattr(
+            torch.cuda, "mem_get_info", lambda idx: (seen_indices.append(idx), (1_000_000_000, 2_000_000_000))[1]
+        )
+
+        diag = diagnostics.collect_diagnostics(wrapper=_FakeWrapper())
+
+        assert seen_indices == [1, 1]
+        assert diag["system"]["gpu_name"] == "Fake GPU 1"
+
+    def test_cuda_device_index_falls_back_when_wrapper_device_is_cpu(self, monkeypatch):
+        class _FakeWrapper:
+            device = "cpu"
+
+        seen_indices = []
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+        monkeypatch.setattr(
+            torch.cuda,
+            "get_device_properties",
+            lambda idx: seen_indices.append(idx) or type("P", (), {"name": "GPU0", "major": 8, "minor": 9})(),
+        )
+        monkeypatch.setattr(
+            torch.cuda, "mem_get_info", lambda idx: seen_indices.append(idx) or (1_000_000_000, 2_000_000_000)
+        )
+
+        diagnostics.collect_diagnostics(wrapper=_FakeWrapper())
+
+        assert seen_indices == [0, 0]
+
     def test_torch_failure_is_caught_not_raised(self, monkeypatch):
         def _boom():
             raise RuntimeError("no driver")
@@ -145,6 +193,19 @@ class TestCollectDiagnostics:
         assert "HF_TOKEN" not in diag["env"]
         assert diag["env"].get("HF_HOME") == "C:/hf"
         assert diag["env"].get("SDTD_BASE_FOLDER_PATH") == "D:/repo"
+
+    def test_env_denylist_blocks_auth_and_session_vars(self, monkeypatch):
+        """Denylist substrings extend beyond TOKEN/KEY/SECRET to AUTH/SESSION/COOKIE, since a
+        var like HF_AUTH or SD_SESSION would otherwise pass the prefix allowlist unredacted."""
+        monkeypatch.setenv("HF_AUTH", "should-not-appear")
+        monkeypatch.setenv("SD_SESSION", "should-not-appear")
+        monkeypatch.setenv("SD_COOKIE", "should-not-appear")
+        monkeypatch.setenv("HF_HOME", "C:/hf")
+        diag = diagnostics.collect_diagnostics()
+        assert "HF_AUTH" not in diag["env"]
+        assert "SD_SESSION" not in diag["env"]
+        assert "SD_COOKIE" not in diag["env"]
+        assert diag["env"].get("HF_HOME") == "C:/hf"
 
 
 # ---------------------------------------------------------------------------
@@ -270,3 +331,52 @@ def test_reexported_from_utils_package():
     assert collect_diagnostics is diagnostics.collect_diagnostics
     assert format_report_text is diagnostics.format_report_text
     assert write_error_report is diagnostics.write_error_report
+
+
+# ---------------------------------------------------------------------------
+# StreamDiffusionWrapper.write_error_report delegation
+#
+# Calls the unbound method against a bare object rather than constructing a real
+# StreamDiffusionWrapper (whose __init__ loads a model/GPU pipeline) -- this only
+# needs to verify the wrapper=self binding and argument forwarding, not wrapper
+# construction, which is out of scope for a CPU-only diagnostics test.
+# ---------------------------------------------------------------------------
+
+
+def test_wrapper_write_error_report_forwards_self_and_args(monkeypatch):
+    from streamdiffusion import wrapper as wrapper_module
+
+    captured = {}
+
+    def _fake_util(exc, *, stage, context=None, wrapper=None, config=None, out_dir=None):
+        captured.update(exc=exc, stage=stage, context=context, wrapper=wrapper, config=config, out_dir=out_dir)
+        return Path("fake_report.txt")
+
+    monkeypatch.setattr(wrapper_module, "_write_error_report_util", _fake_util)
+
+    fake_self = object()
+    exc = RuntimeError("boom")
+    context = {"where": "streaming_loop"}
+    config = {"prompt": "a photo of a cat"}
+
+    result = wrapper_module.StreamDiffusionWrapper.write_error_report(
+        fake_self, exc, context=context, config=config, out_dir="C:/reports"
+    )
+
+    assert result == Path("fake_report.txt")
+    assert captured["exc"] is exc
+    assert captured["stage"] == "inference"
+    assert captured["context"] is context
+    assert captured["wrapper"] is fake_self
+    assert captured["config"] is config
+    assert captured["out_dir"] == "C:/reports"
+
+
+def test_wrapper_write_error_report_returns_none_on_util_failure(monkeypatch):
+    from streamdiffusion import wrapper as wrapper_module
+
+    monkeypatch.setattr(wrapper_module, "_write_error_report_util", lambda *a, **k: None)
+
+    result = wrapper_module.StreamDiffusionWrapper.write_error_report(object(), RuntimeError("boom"))
+
+    assert result is None
