@@ -365,7 +365,10 @@ def write_error_report(
             target_dir = target_dir / "error_reports"
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        timestamp = _utc_now().strftime("%Y%m%d_%H%M%S")
+        # Microsecond precision (not just seconds) so back-to-back reports in a tight failure
+        # burst (e.g. a retried streaming-loop error) get distinct filenames instead of one
+        # silently overwriting the last via write_text()'s truncate-on-open.
+        timestamp = _utc_now().strftime("%Y%m%d_%H%M%S_%f")
         report_path = target_dir / f"inference_error_report_{timestamp}.txt"
         report_path.write_text(format_report_text(diag), encoding="utf-8")
         return report_path

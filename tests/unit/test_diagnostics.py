@@ -303,6 +303,19 @@ class TestWriteErrorReport:
         assert "hunter2" not in text
         assert "***REDACTED***" in text
 
+    def test_back_to_back_calls_do_not_overwrite_each_other(self, tmp_path, monkeypatch):
+        """Filenames use microsecond precision, not just seconds -- two reports written in
+        quick succession (e.g. a retried streaming-loop failure) must land at distinct paths
+        rather than the second truncating/overwriting the first via write_text()."""
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+        path_a = diagnostics.write_error_report(RuntimeError("first"), stage="inference", out_dir=tmp_path)
+        path_b = diagnostics.write_error_report(RuntimeError("second"), stage="inference", out_dir=tmp_path)
+        assert path_a is not None and path_b is not None
+        assert path_a != path_b
+        assert path_a.exists() and path_b.exists()
+        assert "RuntimeError: first" in path_a.read_text(encoding="utf-8")
+        assert "RuntimeError: second" in path_b.read_text(encoding="utf-8")
+
     def test_stream_config_absent_renders_none(self, tmp_path, monkeypatch):
         monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
         report_path = diagnostics.write_error_report(RuntimeError("boom"), stage="inference", out_dir=tmp_path)
