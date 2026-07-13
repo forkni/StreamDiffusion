@@ -443,7 +443,7 @@ def CUASSERT(cuda_ret):
     return None
 
 
-def _atomic_write_bytes(path: str, data) -> None:
+def _atomic_write_bytes(path: str, data: bytes) -> None:
     """Write `data` to `path` atomically via a temp file + os.replace.
 
     A crash/interrupt mid-write leaves at most a stale ``.tmp`` file; ``path`` is only
