@@ -6,3 +6,6 @@ once installed on the fork.
 
 This file and its branch (`test/charlie-harness-probe`) are deleted once the
 probe PR has been evaluated. Not part of any real change.
+
+Bump: re-trigger PR sync now that the Claude Code + Copilot reviewer harness
+is wired on `forkni:SDTD_032_dev` (workflow + path instructions).
