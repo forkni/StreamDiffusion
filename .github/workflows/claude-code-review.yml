@@ -27,9 +27,14 @@ jobs:
           plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
           plugins: "code-review@claude-code-plugins"
           prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
+          # Skill must be allowlisted: track_progress forces tag mode, where the
+          # /code-review:code-review prompt is delivered as custom instructions and the
+          # plugin only runs via a Skill tool call (denied otherwise). max-turns 15 was
+          # exhausted by tag mode's sticky-comment todo updates before the review posted
+          # (run 29263350264 died with error_max_turns at turn 16).
           claude_args: >-
-            --max-turns 15
-            --allowedTools "Bash(git diff:*),Bash(git status:*),Bash(git log:*),Bash(git fetch:*)"
+            --max-turns 50
+            --allowedTools "Skill,Bash(git diff:*),Bash(git status:*),Bash(git log:*),Bash(git fetch:*)"
             --append-system-prompt "Repo-specific focus: real-time diffusion hot-path discipline (flag
             .item()/.cpu()/.numpy()/print(tensor) in step/frame loops), no hard-coded .cuda()/device,
             best-effort error paths must never raise into the render loop, use raise ... from e, TensorRT
