@@ -464,7 +464,7 @@
       "path": "src\\streamdiffusion\\acceleration\\sfast\\__init__.py",
       "code": -2,
       "name": "missing-import",
-      "description": "Cannot find module `sfast.compilers.stable_diffusion_pipeline_compiler`\n  Looked in these locations (from config in `D:\\dev\\SDTD_032_dev\\StreamDiffusion\\pyproject.toml`):\n  Search path (from config file): [\"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\"]\n  Import root (inferred from project layout): \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\"\n  Site package path queried from interpreter: [\"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\\\\DLLs\", \"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\\\\lib\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\Pythonwin\"]",
+      "description": "Cannot find module `sfast.compilers.stable_diffusion_pipeline_compiler`\n  Looked in these locations (from config in `D:\\dev\\SDTD_032_dev\\wt-release\\pyproject.toml`):\n  Search path (from config file): [\"D:\\\\dev\\\\SDTD_032_dev\\\\wt-release\\\\src\"]\n  Import root (inferred from project layout): \"D:\\\\dev\\\\SDTD_032_dev\\\\wt-release\\\\src\"\n  Site package path queried from interpreter: [\"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\\\\DLLs\", \"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\\\\lib\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\Pythonwin\"]",
       "concise_description": "Cannot find module `sfast.compilers.stable_diffusion_pipeline_compiler`",
       "severity": "error"
     },
@@ -476,7 +476,7 @@
       "path": "src\\streamdiffusion\\acceleration\\sfast\\__init__.py",
       "code": -2,
       "name": "missing-import",
-      "description": "Cannot find module `xformers`\n  Looked in these locations (from config in `D:\\dev\\SDTD_032_dev\\StreamDiffusion\\pyproject.toml`):\n  Search path (from config file): [\"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\"]\n  Import root (inferred from project layout): \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\"\n  Site package path queried from interpreter: [\"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\\\\DLLs\", \"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\\\\lib\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\Pythonwin\"]",
+      "description": "Cannot find module `xformers`\n  Looked in these locations (from config in `D:\\dev\\SDTD_032_dev\\wt-release\\pyproject.toml`):\n  Search path (from config file): [\"D:\\\\dev\\\\SDTD_032_dev\\\\wt-release\\\\src\"]\n  Import root (inferred from project layout): \"D:\\\\dev\\\\SDTD_032_dev\\\\wt-release\\\\src\"\n  Site package path queried from interpreter: [\"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\\\\DLLs\", \"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\\\\lib\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\Pythonwin\"]",
       "concise_description": "Cannot find module `xformers`",
       "severity": "error"
     },
@@ -2132,7 +2132,7 @@
       "path": "src\\streamdiffusion\\acceleration\\tensorrt\\export_wrappers\\unet_sdxl_export.py",
       "code": -2,
       "name": "missing-import",
-      "description": "Cannot find module `diffusers.models.transformers.clip_text_model`\n  Looked in these locations (from config in `D:\\dev\\SDTD_032_dev\\StreamDiffusion\\pyproject.toml`):\n  Search path (from config file): [\"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\"]\n  Import root (inferred from project layout): \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\"\n  Site package path queried from interpreter: [\"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\\\\DLLs\", \"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\\\\lib\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\Pythonwin\"]",
+      "description": "Cannot find module `diffusers.models.transformers.clip_text_model`\n  Looked in these locations (from config in `D:\\dev\\SDTD_032_dev\\wt-release\\pyproject.toml`):\n  Search path (from config file): [\"D:\\\\dev\\\\SDTD_032_dev\\\\wt-release\\\\src\"]\n  Import root (inferred from project layout): \"D:\\\\dev\\\\SDTD_032_dev\\\\wt-release\\\\src\"\n  Site package path queried from interpreter: [\"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\\\\DLLs\", \"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\\\\lib\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\Pythonwin\"]",
       "concise_description": "Cannot find module `diffusers.models.transformers.clip_text_model`",
       "severity": "error"
     },
@@ -2144,7 +2144,7 @@
       "path": "src\\streamdiffusion\\acceleration\\tensorrt\\export_wrappers\\unet_sdxl_export.py",
       "code": -2,
       "name": "missing-import",
-      "description": "Cannot find module `diffusers.models.clip_text_model`\n  Looked in these locations (from config in `D:\\dev\\SDTD_032_dev\\StreamDiffusion\\pyproject.toml`):\n  Search path (from config file): [\"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\"]\n  Import root (inferred from project layout): \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\"\n  Site package path queried from interpreter: [\"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\\\\DLLs\", \"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\\\\lib\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\Pythonwin\"]",
+      "description": "Cannot find module `diffusers.models.clip_text_model`\n  Looked in these locations (from config in `D:\\dev\\SDTD_032_dev\\wt-release\\pyproject.toml`):\n  Search path (from config file): [\"D:\\\\dev\\\\SDTD_032_dev\\\\wt-release\\\\src\"]\n  Import root (inferred from project layout): \"D:\\\\dev\\\\SDTD_032_dev\\\\wt-release\\\\src\"\n  Site package path queried from interpreter: [\"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\\\\DLLs\", \"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\\\\lib\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\Pythonwin\"]",
       "concise_description": "Cannot find module `diffusers.models.clip_text_model`",
       "severity": "error"
     },
@@ -4412,7 +4412,7 @@
       "path": "src\\streamdiffusion\\model_detection.py",
       "code": -2,
       "name": "missing-import",
-      "description": "Cannot find module `diffusers.models.transformers.mm_dit`\n  Looked in these locations (from config in `D:\\dev\\SDTD_032_dev\\StreamDiffusion\\pyproject.toml`):\n  Search path (from config file): [\"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\"]\n  Import root (inferred from project layout): \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\"\n  Site package path queried from interpreter: [\"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\\\\DLLs\", \"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\\\\lib\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\Pythonwin\"]",
+      "description": "Cannot find module `diffusers.models.transformers.mm_dit`\n  Looked in these locations (from config in `D:\\dev\\SDTD_032_dev\\wt-release\\pyproject.toml`):\n  Search path (from config file): [\"D:\\\\dev\\\\SDTD_032_dev\\\\wt-release\\\\src\"]\n  Import root (inferred from project layout): \"D:\\\\dev\\\\SDTD_032_dev\\\\wt-release\\\\src\"\n  Site package path queried from interpreter: [\"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\\\\DLLs\", \"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\\\\lib\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\Pythonwin\"]",
       "concise_description": "Cannot find module `diffusers.models.transformers.mm_dit`",
       "severity": "error"
     },
@@ -5948,7 +5948,7 @@
       "path": "src\\streamdiffusion\\preprocessing\\preprocessing_orchestrator.py",
       "code": -2,
       "name": "missing-import",
-      "description": "Cannot find module `streamdiffusion.preprocessing.processors.temporal_net`\n  Looked in these locations (from config in `D:\\dev\\SDTD_032_dev\\StreamDiffusion\\pyproject.toml`):\n  Search path (from config file): [\"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\"]\n  Import root (inferred from project layout): \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\"\n  Site package path queried from interpreter: [\"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\\\\DLLs\", \"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\\\\lib\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\Pythonwin\"]",
+      "description": "Cannot find module `streamdiffusion.preprocessing.processors.temporal_net`\n  Looked in these locations (from config in `D:\\dev\\SDTD_032_dev\\wt-release\\pyproject.toml`):\n  Search path (from config file): [\"D:\\\\dev\\\\SDTD_032_dev\\\\wt-release\\\\src\"]\n  Import root (inferred from project layout): \"D:\\\\dev\\\\SDTD_032_dev\\\\wt-release\\\\src\"\n  Site package path queried from interpreter: [\"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\\\\DLLs\", \"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\\\\lib\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\Pythonwin\"]",
       "concise_description": "Cannot find module `streamdiffusion.preprocessing.processors.temporal_net`",
       "severity": "error"
     },
@@ -6608,7 +6608,7 @@
       "path": "src\\streamdiffusion\\preprocessing\\processors\\realesrgan_trt.py",
       "code": -2,
       "name": "missing-import",
-      "description": "Cannot find module `spandrel`\n  Looked in these locations (from config in `D:\\dev\\SDTD_032_dev\\StreamDiffusion\\pyproject.toml`):\n  Search path (from config file): [\"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\"]\n  Import root (inferred from project layout): \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\"\n  Site package path queried from interpreter: [\"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\\\\DLLs\", \"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\\\\lib\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\Pythonwin\"]",
+      "description": "Cannot find module `spandrel`\n  Looked in these locations (from config in `D:\\dev\\SDTD_032_dev\\wt-release\\pyproject.toml`):\n  Search path (from config file): [\"D:\\\\dev\\\\SDTD_032_dev\\\\wt-release\\\\src\"]\n  Import root (inferred from project layout): \"D:\\\\dev\\\\SDTD_032_dev\\\\wt-release\\\\src\"\n  Site package path queried from interpreter: [\"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\\\\DLLs\", \"C:\\\\Users\\\\Inter\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\src\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\win32\\\\lib\", \"D:\\\\dev\\\\SDTD_032_dev\\\\StreamDiffusion\\\\venv\\\\Lib\\\\site-packages\\\\Pythonwin\"]",
       "concise_description": "Cannot find module `spandrel`",
       "severity": "error"
     },
@@ -7909,9 +7909,9 @@
       "severity": "error"
     },
     {
-      "line": 393,
+      "line": 394,
       "column": 26,
-      "stop_line": 393,
+      "stop_line": 394,
       "stop_column": 38,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -7921,9 +7921,9 @@
       "severity": "error"
     },
     {
-      "line": 579,
+      "line": 580,
       "column": 17,
-      "stop_line": 579,
+      "stop_line": 580,
       "stop_column": 34,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -7933,9 +7933,9 @@
       "severity": "error"
     },
     {
-      "line": 582,
+      "line": 583,
       "column": 17,
-      "stop_line": 582,
+      "stop_line": 583,
       "stop_column": 36,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -7945,9 +7945,9 @@
       "severity": "error"
     },
     {
-      "line": 596,
+      "line": 597,
       "column": 13,
-      "stop_line": 596,
+      "stop_line": 597,
       "stop_column": 30,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -7957,9 +7957,9 @@
       "severity": "error"
     },
     {
-      "line": 598,
+      "line": 599,
       "column": 13,
-      "stop_line": 598,
+      "stop_line": 599,
       "stop_column": 32,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -7969,9 +7969,9 @@
       "severity": "error"
     },
     {
-      "line": 829,
+      "line": 830,
       "column": 20,
-      "stop_line": 829,
+      "stop_line": 830,
       "stop_column": 63,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -7981,9 +7981,9 @@
       "severity": "error"
     },
     {
-      "line": 832,
+      "line": 833,
       "column": 20,
-      "stop_line": 832,
+      "stop_line": 833,
       "stop_column": 47,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -7993,9 +7993,9 @@
       "severity": "error"
     },
     {
-      "line": 832,
+      "line": 833,
       "column": 33,
-      "stop_line": 832,
+      "stop_line": 833,
       "stop_column": 38,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8005,9 +8005,9 @@
       "severity": "error"
     },
     {
-      "line": 834,
+      "line": 835,
       "column": 20,
-      "stop_line": 834,
+      "stop_line": 835,
       "stop_column": 40,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8017,9 +8017,9 @@
       "severity": "error"
     },
     {
-      "line": 946,
+      "line": 947,
       "column": 17,
-      "stop_line": 946,
+      "stop_line": 947,
       "stop_column": 83,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8029,9 +8029,9 @@
       "severity": "error"
     },
     {
-      "line": 948,
+      "line": 949,
       "column": 16,
-      "stop_line": 948,
+      "stop_line": 949,
       "stop_column": 21,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8041,9 +8041,9 @@
       "severity": "error"
     },
     {
-      "line": 1029,
+      "line": 1030,
       "column": 20,
-      "stop_line": 1029,
+      "stop_line": 1030,
       "stop_column": 24,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8053,9 +8053,9 @@
       "severity": "error"
     },
     {
-      "line": 1056,
+      "line": 1057,
       "column": 17,
-      "stop_line": 1056,
+      "stop_line": 1057,
       "stop_column": 39,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8065,9 +8065,9 @@
       "severity": "error"
     },
     {
-      "line": 1057,
+      "line": 1058,
       "column": 17,
-      "stop_line": 1057,
+      "stop_line": 1058,
       "stop_column": 44,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8077,9 +8077,9 @@
       "severity": "error"
     },
     {
-      "line": 1075,
+      "line": 1076,
       "column": 20,
-      "stop_line": 1075,
+      "stop_line": 1076,
       "stop_column": 85,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8089,9 +8089,9 @@
       "severity": "error"
     },
     {
-      "line": 1127,
+      "line": 1128,
       "column": 26,
-      "stop_line": 1127,
+      "stop_line": 1128,
       "stop_column": 49,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8101,9 +8101,9 @@
       "severity": "error"
     },
     {
-      "line": 1185,
+      "line": 1186,
       "column": 26,
-      "stop_line": 1185,
+      "stop_line": 1186,
       "stop_column": 62,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8113,9 +8113,9 @@
       "severity": "error"
     },
     {
-      "line": 1332,
+      "line": 1355,
       "column": 13,
-      "stop_line": 1332,
+      "stop_line": 1355,
       "stop_column": 35,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8125,9 +8125,9 @@
       "severity": "error"
     },
     {
-      "line": 1333,
+      "line": 1356,
       "column": 13,
-      "stop_line": 1333,
+      "stop_line": 1356,
       "stop_column": 40,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8137,9 +8137,9 @@
       "severity": "error"
     },
     {
-      "line": 1601,
+      "line": 1624,
       "column": 24,
-      "stop_line": 1601,
+      "stop_line": 1624,
       "stop_column": 30,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8149,9 +8149,9 @@
       "severity": "error"
     },
     {
-      "line": 1601,
+      "line": 1624,
       "column": 24,
-      "stop_line": 1601,
+      "stop_line": 1624,
       "stop_column": 51,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8161,9 +8161,9 @@
       "severity": "error"
     },
     {
-      "line": 1610,
+      "line": 1633,
       "column": 32,
-      "stop_line": 1610,
+      "stop_line": 1633,
       "stop_column": 74,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8173,9 +8173,9 @@
       "severity": "error"
     },
     {
-      "line": 1640,
+      "line": 1663,
       "column": 17,
-      "stop_line": 1640,
+      "stop_line": 1663,
       "stop_column": 34,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8185,9 +8185,9 @@
       "severity": "error"
     },
     {
-      "line": 1642,
+      "line": 1665,
       "column": 17,
-      "stop_line": 1642,
+      "stop_line": 1665,
       "stop_column": 36,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8197,9 +8197,9 @@
       "severity": "error"
     },
     {
-      "line": 1645,
+      "line": 1668,
       "column": 17,
-      "stop_line": 1645,
+      "stop_line": 1668,
       "stop_column": 26,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8209,9 +8209,9 @@
       "severity": "error"
     },
     {
-      "line": 1647,
+      "line": 1670,
       "column": 17,
-      "stop_line": 1647,
+      "stop_line": 1670,
       "stop_column": 25,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8221,9 +8221,9 @@
       "severity": "error"
     },
     {
-      "line": 1653,
+      "line": 1676,
       "column": 41,
-      "stop_line": 1653,
+      "stop_line": 1676,
       "stop_column": 50,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8233,9 +8233,9 @@
       "severity": "error"
     },
     {
-      "line": 1708,
+      "line": 1731,
       "column": 60,
-      "stop_line": 1708,
+      "stop_line": 1731,
       "stop_column": 69,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8245,9 +8245,9 @@
       "severity": "error"
     },
     {
-      "line": 1713,
+      "line": 1736,
       "column": 18,
-      "stop_line": 1713,
+      "stop_line": 1736,
       "stop_column": 22,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8257,9 +8257,9 @@
       "severity": "error"
     },
     {
-      "line": 1742,
+      "line": 1765,
       "column": 17,
-      "stop_line": 1742,
+      "stop_line": 1765,
       "stop_column": 26,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8269,9 +8269,9 @@
       "severity": "error"
     },
     {
-      "line": 1760,
+      "line": 1783,
       "column": 17,
-      "stop_line": 1760,
+      "stop_line": 1783,
       "stop_column": 26,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8281,9 +8281,9 @@
       "severity": "error"
     },
     {
-      "line": 1820,
+      "line": 1843,
       "column": 21,
-      "stop_line": 1820,
+      "stop_line": 1843,
       "stop_column": 42,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8293,9 +8293,9 @@
       "severity": "error"
     },
     {
-      "line": 1823,
+      "line": 1846,
       "column": 17,
-      "stop_line": 1823,
+      "stop_line": 1846,
       "stop_column": 48,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8305,9 +8305,9 @@
       "severity": "error"
     },
     {
-      "line": 1830,
+      "line": 1853,
       "column": 21,
-      "stop_line": 1830,
+      "stop_line": 1853,
       "stop_column": 52,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8317,9 +8317,9 @@
       "severity": "error"
     },
     {
-      "line": 1849,
+      "line": 1872,
       "column": 30,
-      "stop_line": 1849,
+      "stop_line": 1872,
       "stop_column": 72,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8329,9 +8329,9 @@
       "severity": "error"
     },
     {
-      "line": 1853,
+      "line": 1876,
       "column": 30,
-      "stop_line": 1853,
+      "stop_line": 1876,
       "stop_column": 77,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8341,9 +8341,9 @@
       "severity": "error"
     },
     {
-      "line": 1857,
+      "line": 1880,
       "column": 17,
-      "stop_line": 1857,
+      "stop_line": 1880,
       "stop_column": 25,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8353,9 +8353,9 @@
       "severity": "error"
     },
     {
-      "line": 1861,
+      "line": 1884,
       "column": 17,
-      "stop_line": 1861,
+      "stop_line": 1884,
       "stop_column": 71,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8365,9 +8365,9 @@
       "severity": "error"
     },
     {
-      "line": 1883,
+      "line": 1906,
       "column": 48,
-      "stop_line": 1883,
+      "stop_line": 1906,
       "stop_column": 58,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8377,9 +8377,9 @@
       "severity": "error"
     },
     {
-      "line": 1990,
+      "line": 2013,
       "column": 31,
-      "stop_line": 1990,
+      "stop_line": 2013,
       "stop_column": 40,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8389,9 +8389,9 @@
       "severity": "error"
     },
     {
-      "line": 2124,
+      "line": 2147,
       "column": 29,
-      "stop_line": 2124,
+      "stop_line": 2147,
       "stop_column": 53,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8401,9 +8401,9 @@
       "severity": "error"
     },
     {
-      "line": 2158,
+      "line": 2181,
       "column": 68,
-      "stop_line": 2158,
+      "stop_line": 2181,
       "stop_column": 90,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8413,9 +8413,9 @@
       "severity": "error"
     },
     {
-      "line": 2178,
+      "line": 2201,
       "column": 64,
-      "stop_line": 2178,
+      "stop_line": 2201,
       "stop_column": 86,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8425,9 +8425,9 @@
       "severity": "error"
     },
     {
-      "line": 2222,
+      "line": 2245,
       "column": 35,
-      "stop_line": 2222,
+      "stop_line": 2245,
       "stop_column": 79,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8437,9 +8437,9 @@
       "severity": "error"
     },
     {
-      "line": 2246,
+      "line": 2269,
       "column": 41,
-      "stop_line": 2246,
+      "stop_line": 2269,
       "stop_column": 60,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8449,9 +8449,9 @@
       "severity": "error"
     },
     {
-      "line": 2393,
+      "line": 2416,
       "column": 56,
-      "stop_line": 2393,
+      "stop_line": 2416,
       "stop_column": 67,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8461,9 +8461,9 @@
       "severity": "error"
     },
     {
-      "line": 2398,
+      "line": 2421,
       "column": 66,
-      "stop_line": 2398,
+      "stop_line": 2421,
       "stop_column": 91,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8473,9 +8473,9 @@
       "severity": "error"
     },
     {
-      "line": 2403,
+      "line": 2426,
       "column": 65,
-      "stop_line": 2403,
+      "stop_line": 2426,
       "stop_column": 106,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8485,9 +8485,9 @@
       "severity": "error"
     },
     {
-      "line": 2489,
+      "line": 2512,
       "column": 29,
-      "stop_line": 2489,
+      "stop_line": 2512,
       "stop_column": 57,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8497,9 +8497,9 @@
       "severity": "error"
     },
     {
-      "line": 2492,
+      "line": 2515,
       "column": 25,
-      "stop_line": 2492,
+      "stop_line": 2515,
       "stop_column": 42,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8509,9 +8509,9 @@
       "severity": "error"
     },
     {
-      "line": 2493,
+      "line": 2516,
       "column": 25,
-      "stop_line": 2493,
+      "stop_line": 2516,
       "stop_column": 41,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8521,9 +8521,9 @@
       "severity": "error"
     },
     {
-      "line": 2535,
+      "line": 2558,
       "column": 38,
-      "stop_line": 2535,
+      "stop_line": 2558,
       "stop_column": 61,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8533,9 +8533,9 @@
       "severity": "error"
     },
     {
-      "line": 2568,
+      "line": 2591,
       "column": 29,
-      "stop_line": 2568,
+      "stop_line": 2591,
       "stop_column": 48,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8545,9 +8545,9 @@
       "severity": "error"
     },
     {
-      "line": 2614,
+      "line": 2637,
       "column": 17,
-      "stop_line": 2614,
+      "stop_line": 2637,
       "stop_column": 42,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8557,9 +8557,9 @@
       "severity": "error"
     },
     {
-      "line": 2630,
+      "line": 2653,
       "column": 42,
-      "stop_line": 2630,
+      "stop_line": 2653,
       "stop_column": 56,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8569,9 +8569,9 @@
       "severity": "error"
     },
     {
-      "line": 2637,
+      "line": 2660,
       "column": 49,
-      "stop_line": 2637,
+      "stop_line": 2660,
       "stop_column": 60,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8581,9 +8581,9 @@
       "severity": "error"
     },
     {
-      "line": 2643,
+      "line": 2666,
       "column": 49,
-      "stop_line": 2643,
+      "stop_line": 2666,
       "stop_column": 60,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8593,9 +8593,9 @@
       "severity": "error"
     },
     {
-      "line": 2658,
+      "line": 2681,
       "column": 29,
-      "stop_line": 2658,
+      "stop_line": 2681,
       "stop_column": 54,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8605,9 +8605,9 @@
       "severity": "error"
     },
     {
-      "line": 2712,
+      "line": 2735,
       "column": 17,
-      "stop_line": 2712,
+      "stop_line": 2735,
       "stop_column": 41,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8617,9 +8617,9 @@
       "severity": "error"
     },
     {
-      "line": 2724,
+      "line": 2747,
       "column": 56,
-      "stop_line": 2724,
+      "stop_line": 2747,
       "stop_column": 83,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8629,9 +8629,9 @@
       "severity": "error"
     },
     {
-      "line": 2752,
+      "line": 2775,
       "column": 17,
-      "stop_line": 2752,
+      "stop_line": 2775,
       "stop_column": 51,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8641,9 +8641,9 @@
       "severity": "error"
     },
     {
-      "line": 2764,
+      "line": 2787,
       "column": 17,
-      "stop_line": 2764,
+      "stop_line": 2787,
       "stop_column": 52,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8653,9 +8653,9 @@
       "severity": "error"
     },
     {
-      "line": 2776,
+      "line": 2799,
       "column": 17,
-      "stop_line": 2776,
+      "stop_line": 2799,
       "stop_column": 52,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8665,9 +8665,9 @@
       "severity": "error"
     },
     {
-      "line": 2788,
+      "line": 2811,
       "column": 17,
-      "stop_line": 2788,
+      "stop_line": 2811,
       "stop_column": 53,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8677,9 +8677,9 @@
       "severity": "error"
     },
     {
-      "line": 2811,
+      "line": 2834,
       "column": 16,
-      "stop_line": 2811,
+      "stop_line": 2834,
       "stop_column": 52,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8689,9 +8689,9 @@
       "severity": "error"
     },
     {
-      "line": 2819,
+      "line": 2842,
       "column": 13,
-      "stop_line": 2819,
+      "stop_line": 2842,
       "stop_column": 44,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8701,9 +8701,9 @@
       "severity": "error"
     },
     {
-      "line": 2828,
+      "line": 2851,
       "column": 13,
-      "stop_line": 2828,
+      "stop_line": 2851,
       "stop_column": 43,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8713,9 +8713,9 @@
       "severity": "error"
     },
     {
-      "line": 2889,
+      "line": 2912,
       "column": 23,
-      "stop_line": 2889,
+      "stop_line": 2912,
       "stop_column": 59,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8725,9 +8725,9 @@
       "severity": "error"
     },
     {
-      "line": 3044,
+      "line": 3067,
       "column": 29,
-      "stop_line": 3044,
+      "stop_line": 3067,
       "stop_column": 63,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8737,9 +8737,9 @@
       "severity": "error"
     },
     {
-      "line": 3059,
+      "line": 3082,
       "column": 27,
-      "stop_line": 3059,
+      "stop_line": 3082,
       "stop_column": 31,
       "path": "src\\streamdiffusion\\wrapper.py",
       "code": -2,
@@ -8806,6 +8806,102 @@
       "name": "missing-attribute",
       "description": "Object of class `StreamParameterUpdater` has no attribute `_lock`",
       "concise_description": "Object of class `StreamParameterUpdater` has no attribute `_lock`",
+      "severity": "error"
+    },
+    {
+      "line": 275,
+      "column": 16,
+      "stop_line": 275,
+      "stop_column": 37,
+      "path": "tests\\unit\\test_diagnostics.py",
+      "code": -2,
+      "name": "missing-attribute",
+      "description": "Object of class `NoneType` has no attribute `read_text`",
+      "concise_description": "Object of class `NoneType` has no attribute `read_text`",
+      "severity": "error"
+    },
+    {
+      "line": 296,
+      "column": 16,
+      "stop_line": 296,
+      "stop_column": 37,
+      "path": "tests\\unit\\test_diagnostics.py",
+      "code": -2,
+      "name": "missing-attribute",
+      "description": "Object of class `NoneType` has no attribute `read_text`",
+      "concise_description": "Object of class `NoneType` has no attribute `read_text`",
+      "severity": "error"
+    },
+    {
+      "line": 321,
+      "column": 16,
+      "stop_line": 321,
+      "stop_column": 37,
+      "path": "tests\\unit\\test_diagnostics.py",
+      "code": -2,
+      "name": "missing-attribute",
+      "description": "Object of class `NoneType` has no attribute `read_text`",
+      "concise_description": "Object of class `NoneType` has no attribute `read_text`",
+      "severity": "error"
+    },
+    {
+      "line": 341,
+      "column": 16,
+      "stop_line": 341,
+      "stop_column": 37,
+      "path": "tests\\unit\\test_diagnostics.py",
+      "code": -2,
+      "name": "missing-attribute",
+      "description": "Object of class `NoneType` has no attribute `read_text`",
+      "concise_description": "Object of class `NoneType` has no attribute `read_text`",
+      "severity": "error"
+    },
+    {
+      "line": 356,
+      "column": 16,
+      "stop_line": 356,
+      "stop_column": 37,
+      "path": "tests\\unit\\test_diagnostics.py",
+      "code": -2,
+      "name": "missing-attribute",
+      "description": "Object of class `NoneType` has no attribute `read_text`",
+      "concise_description": "Object of class `NoneType` has no attribute `read_text`",
+      "severity": "error"
+    },
+    {
+      "line": 364,
+      "column": 16,
+      "stop_line": 364,
+      "stop_column": 32,
+      "path": "tests\\unit\\test_diagnostics.py",
+      "code": -2,
+      "name": "missing-attribute",
+      "description": "Object of class `NoneType` has no attribute `name`",
+      "concise_description": "Object of class `NoneType` has no attribute `name`",
+      "severity": "error"
+    },
+    {
+      "line": 421,
+      "column": 9,
+      "stop_line": 421,
+      "stop_column": 18,
+      "path": "tests\\unit\\test_diagnostics.py",
+      "code": -2,
+      "name": "bad-argument-type",
+      "description": "Argument `object` is not assignable to parameter `self` with type `StreamDiffusionWrapper` in function `streamdiffusion.wrapper.StreamDiffusionWrapper.write_error_report`",
+      "concise_description": "Argument `object` is not assignable to parameter `self` with type `StreamDiffusionWrapper` in function `streamdiffusion.wrapper.StreamDiffusionWrapper.write_error_report`",
+      "severity": "error"
+    },
+    {
+      "line": 438,
+      "column": 71,
+      "stop_line": 438,
+      "stop_column": 79,
+      "path": "tests\\unit\\test_diagnostics.py",
+      "code": -2,
+      "name": "bad-argument-type",
+      "description": "Argument `object` is not assignable to parameter `self` with type `StreamDiffusionWrapper` in function `streamdiffusion.wrapper.StreamDiffusionWrapper.write_error_report`",
+      "concise_description": "Argument `object` is not assignable to parameter `self` with type `StreamDiffusionWrapper` in function `streamdiffusion.wrapper.StreamDiffusionWrapper.write_error_report`",
       "severity": "error"
     },
     {
