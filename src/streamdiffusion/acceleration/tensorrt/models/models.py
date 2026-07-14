@@ -51,7 +51,15 @@ class Optimizer:
                 self.graph.outputs[i].name = name
 
     def fold_constants(self, return_onnx=False):
-        onnx_graph = fold_constants(gs.export_onnx(self.graph), allow_onnxruntime_shape_inference=True)
+        # FP8 QDQ graphs crash ORT's symbolic_shape_infer (upstream ort bug on Expand nodes),
+        # so polygraphy logs a scary [W] "Falling back..." block then succeeds via onnx.shape_inference
+        # anyway. Skip the doomed ORT attempt for QDQ graphs so the fallback runs directly.
+        # FP16/CLIP/VAE (no QDQ) keep the faster ORT path. Output is byte-identical either way.
+        is_fp8 = any(n.op in ("QuantizeLinear", "DequantizeLinear") for n in self.graph.nodes)
+        onnx_graph = fold_constants(
+            gs.export_onnx(self.graph),
+            allow_onnxruntime_shape_inference=not is_fp8,
+        )
         self.graph = gs.import_onnx(onnx_graph)
         if return_onnx:
             return onnx_graph
