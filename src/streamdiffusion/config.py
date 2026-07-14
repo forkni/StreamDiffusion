@@ -199,6 +199,10 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
     # Piggy-backs on send_controlnet_preview so no new config key is needed.
     param_map["controlnet_preview_passthrough"] = config.get("send_controlnet_preview", False)
     param_map["debug_mode"] = config.get("debug_mode", False)
+    # l2_persist: control the runtime [L2] cache-persistence tool (tools/cuda_l2_cache.py).
+    # Absent/None -> mode-aware default in the wrapper (off for TensorRT, where Tier 1 is
+    # inert on a serialized engine; on otherwise). Explicit here wins over SDTD_L2_PERSIST.
+    param_map["l2_persist"] = config.get("l2_persist")
 
     # Pipeline hook configurations (Phase 4: Configuration Integration)
     hook_configs = _prepare_pipeline_hook_configs(config)

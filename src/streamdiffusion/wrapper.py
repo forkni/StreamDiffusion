@@ -162,6 +162,10 @@ class StreamDiffusionWrapper:
         # Debug mode — gates IPC health tracking and other diagnostic instrumentation
         debug_mode: bool = False,
         vae_builder_optimization_level: Optional[int] = None,
+        # Control the runtime [L2] cache-persistence tool (tools/cuda_l2_cache.py).
+        # None -> mode-aware default in the wrapper (off for TensorRT, on otherwise).
+        # Explicit True/False here wins over SDTD_L2_PERSIST env.
+        l2_persist: Optional[bool] = None,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -281,10 +285,14 @@ class StreamDiffusionWrapper:
         cache_interval : int, optional
             The interval to cache the frames, by default 1.
         pin_cache_frames : bool, optional
-            When True, bakes cache_maxframes into the TRT engine (min==opt==max on the
-            KVO/FI cache-frames axis) so the exported graph has no symbolic dims left and
-            TRT's l2tc (L2 tiling) optimization can engage. Trade-off: cache_maxframes can
-            no longer be raised at runtime without a rebuild. By default False.
+            When True, bakes the KVO/FI cache-frames axis to the CEILING
+            (min==opt==max==max_cache_maxframes) so the exported graph has no symbolic dims
+            left and TRT's l2tc (L2 tiling) optimization can engage. The buffer is already
+            allocated at max_cache_maxframes and fed to the engine whole every frame, so this
+            is a zero-runtime-change pin: the runtime cache_maxframes slider keeps its full
+            1..max_cache_maxframes live range (clamped by the existing buffer-size guard).
+            Only raising max_cache_maxframes itself requires a rebuild — same as unpinned.
+            By default False.
         builder_optimization_level : Optional[int], optional
             TensorRT IBuilderConfig.builder_optimization_level (range 0-5,
             TRT default 3). When set, overrides the per-GPU auto-detect default
@@ -389,6 +397,9 @@ class StreamDiffusionWrapper:
         # Tiny-VAE engines are small and gain little from optlvl 4 — defaulting to
         # optlvl 3 via config.py shaves VAE encoder build time without affecting UNet quality.
         self.vae_builder_optimization_level = vae_builder_optimization_level
+        # Explicit on/off override for the runtime [L2] cache-persistence tool; must be set
+        # before _load_model() runs, since setup_l2_persistence() is called from within it.
+        self.l2_persist = l2_persist
 
         self.stream: StreamDiffusion = self._load_model(
             model_id_or_path=model_id_or_path,
@@ -1578,13 +1589,22 @@ class StreamDiffusionWrapper:
         """
 
         if pin_cache_frames:
-            # Bake cache_maxframes into the engine (min==opt==max on the KVO/FI cache-frames
-            # axis) so the exported ONNX graph has no symbolic dims left and TRT's l2tc
-            # (L2 tiling) pass can validate. Trade-off: cache_maxframes can no longer be
-            # raised at runtime without a rebuild — see get_dynamic_axes/has_symbolic_cache_dims
-            # in acceleration/tensorrt/models/models.py.
-            min_cache_maxframes = max_cache_maxframes = cache_maxframes
-            logger.info(f"_load_model: pin_cache_frames=True — cache frames pinned at {cache_maxframes}")
+            # Bake the cache-frames axis to the CEILING (max_cache_maxframes), not the current
+            # cache_maxframes value. The KVO/FI buffers are allocated once at max_cache_maxframes
+            # and fed to the engine WHOLE every frame (pipeline.py update_kvo_cache callers) —
+            # cache_maxframes is only a logical write window, clamped to the buffer size at
+            # runtime (stream_parameter_updater.py, "no tensor resize"). Pinning at the ceiling
+            # makes the exported ONNX graph fully static (TRT's l2tc/L2-tiling pass can validate)
+            # with ZERO runtime change: the buffer size is unchanged and the runtime slider keeps
+            # its full 1..max_cache_maxframes live range. Pinning at the *current* cache_maxframes
+            # instead would shrink the buffer and strand the slider below the ceiling — see
+            # get_dynamic_axes/has_symbolic_cache_dims in acceleration/tensorrt/models/models.py.
+            min_cache_maxframes = cache_maxframes = max_cache_maxframes
+            logger.info(
+                f"_load_model: pin_cache_frames=True — cache frames pinned at ceiling "
+                f"max_cache_maxframes={max_cache_maxframes} (runtime slider retains full "
+                f"1..{max_cache_maxframes} range)"
+            )
 
         # Clean up GPU memory before loading new model to prevent OOM errors
         try:
@@ -2845,12 +2865,14 @@ class StreamDiffusionWrapper:
                 logger.error(f"Failed to install LatentPostprocessingModule: {e}")
 
         # L2 cache persistence: pin hot UNet attention weights in GPU L2 cache.
-        # Gated by SDTD_L2_PERSIST=1 (default on). Silent fallback on unsupported GPUs.
+        # Gated by config l2_persist (self.l2_persist) > SDTD_L2_PERSIST env (read at call
+        # time) > mode-aware default (off for TensorRT, where Tier 1 is inert on a
+        # serialized engine; on otherwise). Silent fallback on unsupported GPUs.
         # Requires Ampere+ (compute 8.0+). Expected gain: 2-5% end-to-end on SD1.5/SD-Turbo.
         try:
             from streamdiffusion.tools.cuda_l2_cache import setup_l2_persistence
 
-            setup_l2_persistence(stream.unet)
+            setup_l2_persistence(stream.unet, enabled=self.l2_persist, acceleration=acceleration)
         except Exception as e:
             logger.debug(f"L2 cache persistence setup skipped: {e}")
 
