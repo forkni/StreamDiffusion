@@ -23,9 +23,9 @@ import onnx_graphsurgeon as gs
 import torch
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
 from onnx import shape_inference
+from polygraphy.backend.onnx.loader import fold_constants
 
 logger = logging.getLogger(__name__)
-from polygraphy.backend.onnx.loader import fold_constants
 
 
 class Optimizer:
@@ -51,14 +51,21 @@ class Optimizer:
                 self.graph.outputs[i].name = name
 
     def fold_constants(self, return_onnx=False):
-        # FP8 QDQ graphs crash ORT's symbolic_shape_infer (upstream ort bug on Expand nodes),
-        # so polygraphy logs a scary [W] "Falling back..." block then succeeds via onnx.shape_inference
-        # anyway. Skip the doomed ORT attempt for QDQ graphs so the fallback runs directly.
-        # FP16/CLIP/VAE (no QDQ) keep the faster ORT path. Output is byte-identical either way.
+        # ORT's symbolic_shape_infer is unreliable on large SDXL graphs: it can't handle >2GB
+        # protobufs (raw fp16 UNet / ControlNet-wrapped export) and crashes on FP8 QDQ (upstream
+        # ort bug on Expand nodes). In every case polygraphy logs a scary [W] "Falling back..."
+        # block, then succeeds via onnx.shape_inference anyway (byte-identical output). The QDQ
+        # check alone misses the warning because fold_constants runs during ONNX optimize --
+        # BEFORE FP8 quantization inserts QDQ nodes (builder.py: export -> optimize/fold -> fp8
+        # quantize), so is_fp8 is always False here for the UNet/ControlNet path. Gate on size
+        # too (same >2GB threshold Optimizer.infer_shapes uses below) so the doomed ORT attempt
+        # is skipped for any large graph. Small fp16/CLIP/VAE graphs keep the faster ORT path.
+        onnx_graph = gs.export_onnx(self.graph)
         is_fp8 = any(n.op in ("QuantizeLinear", "DequantizeLinear") for n in self.graph.nodes)
+        is_large = onnx_graph.ByteSize() > 2147483648
         onnx_graph = fold_constants(
-            gs.export_onnx(self.graph),
-            allow_onnxruntime_shape_inference=not is_fp8,
+            onnx_graph,
+            allow_onnxruntime_shape_inference=not (is_fp8 or is_large),
         )
         self.graph = gs.import_onnx(onnx_graph)
         if return_onnx:
@@ -831,16 +838,20 @@ class UNet(BaseModel):
                     (max_batch, channels, max_control_h, max_control_w),  # max
                 ]
         if self.use_cached_attn:
-            for name, _profile in zip(
-                self.get_kvo_cache_names("in"), self.get_kvo_cache_input_profile(min_batch, batch_size, max_batch)
-            ):
-                profile[name] = _profile
+            profile.update(
+                zip(
+                    self.get_kvo_cache_names("in"),
+                    self.get_kvo_cache_input_profile(min_batch, batch_size, max_batch),
+                )
+            )
 
         if self.use_feature_injection:
-            for name, _profile in zip(
-                self.get_fi_cache_names("in"), self.get_fi_cache_input_profile(min_batch, batch_size, max_batch)
-            ):
-                profile[name] = _profile
+            profile.update(
+                zip(
+                    self.get_fi_cache_names("in"),
+                    self.get_fi_cache_input_profile(min_batch, batch_size, max_batch),
+                )
+            )
             # fi_strength and fi_threshold are static [1] fp32 scalars
             profile["fi_strength"] = [(1,), (1,), (1,)]
             profile["fi_threshold"] = [(1,), (1,), (1,)]
