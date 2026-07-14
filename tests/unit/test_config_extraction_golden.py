@@ -61,6 +61,7 @@ EXPECTED_WRAPPER_PARAMS = {
     "fi_strength": 0.75,
     "fi_threshold": 0.98,
     "max_cache_maxframes": 4,
+    "pin_cache_frames": False,
     "use_cuda_ipc_output": False,
     "cuda_ipc_num_slots": 2,
     "controlnet_preview_passthrough": False,

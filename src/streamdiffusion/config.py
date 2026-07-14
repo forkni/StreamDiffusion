@@ -182,6 +182,12 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
     # max_cache_maxframes: allocation cap for the KVO/FI cache ring buffers (VRAM).
     # cache_maxframes is the live logical write window; this is the hard upper bound.
     param_map["max_cache_maxframes"] = config.get("max_cache_maxframes", 4)
+    # pin_cache_frames: bake cache_maxframes into the engine (min==opt==max on the
+    # KVO/FI cache-frames axis) so the exported graph is fully static and TRT's l2tc
+    # (L2 tiling) optimization can engage. Opt-in: cache_maxframes can no longer be
+    # raised at runtime without a rebuild when this is on. Default off = current
+    # behavior, byte-for-byte.
+    param_map["pin_cache_frames"] = config.get("pin_cache_frames", False)
 
     # CUDA IPC output (SD→TD zero-copy GPU transport via cuda-link)
     param_map["use_cuda_ipc_output"] = config.get("use_cuda_ipc_output", False)

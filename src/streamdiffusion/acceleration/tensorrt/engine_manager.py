@@ -116,6 +116,8 @@ class EngineManager:
         builder_optimization_level: Optional[int] = None,
         build_static_batch: Optional[bool] = None,
         static_batch_size: Optional[int] = None,
+        pin_cache_frames: bool = False,
+        cache_maxframes: Optional[int] = None,
     ) -> Path:
         """
         Generate engine path using wrapper.py's current logic.
@@ -187,6 +189,12 @@ class EngineManager:
                 # frame. min_batch/max_batch above are only the capacity range.
                 if build_static_batch and static_batch_size is not None:
                     prefix += f"--batch-{static_batch_size}"
+                # pin_cache_frames bakes cache_maxframes into the engine (min==opt==max on
+                # the KVO/FI cache-frames axis) so TRT l2tc can engage — the resulting engine
+                # only accepts that exact frame count and is not interchangeable with an
+                # unpinned engine, so the value must be part of the cache key.
+                if pin_cache_frames and cache_maxframes is not None:
+                    prefix += f"--cachef{cache_maxframes}"
 
             prefix += optlvl_suffix
 

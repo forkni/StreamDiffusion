@@ -141,6 +141,7 @@ class StreamDiffusionWrapper:
         cache_interval: int = 1,
         min_cache_maxframes: int = 1,
         max_cache_maxframes: int = 4,
+        pin_cache_frames: bool = False,
         cn_cache_interval: int = 1,
         use_feature_injection: bool = False,
         fi_strength: float = 0.75,
@@ -279,6 +280,11 @@ class StreamDiffusionWrapper:
             The maximum number of frames to cache, by default 1.
         cache_interval : int, optional
             The interval to cache the frames, by default 1.
+        pin_cache_frames : bool, optional
+            When True, bakes cache_maxframes into the TRT engine (min==opt==max on the
+            KVO/FI cache-frames axis) so the exported graph has no symbolic dims left and
+            TRT's l2tc (L2 tiling) optimization can engage. Trade-off: cache_maxframes can
+            no longer be raised at runtime without a rebuild. By default False.
         builder_optimization_level : Optional[int], optional
             TensorRT IBuilderConfig.builder_optimization_level (range 0-5,
             TRT default 3). When set, overrides the per-GPU auto-detect default
@@ -415,6 +421,7 @@ class StreamDiffusionWrapper:
             cache_interval=cache_interval,
             min_cache_maxframes=min_cache_maxframes,
             max_cache_maxframes=max_cache_maxframes,
+            pin_cache_frames=pin_cache_frames,
             cn_cache_interval=cn_cache_interval,
             use_feature_injection=use_feature_injection,
             fi_strength=fi_strength,
@@ -1474,6 +1481,7 @@ class StreamDiffusionWrapper:
         cache_interval: int = 1,
         min_cache_maxframes: int = 1,
         max_cache_maxframes: int = 4,
+        pin_cache_frames: bool = False,
         cn_cache_interval: int = 1,
         use_feature_injection: bool = False,
         fi_strength: float = 0.75,
@@ -1568,6 +1576,15 @@ class StreamDiffusionWrapper:
         StreamDiffusion
             The loaded model (potentially wrapped with ControlNet pipeline).
         """
+
+        if pin_cache_frames:
+            # Bake cache_maxframes into the engine (min==opt==max on the KVO/FI cache-frames
+            # axis) so the exported ONNX graph has no symbolic dims left and TRT's l2tc
+            # (L2 tiling) pass can validate. Trade-off: cache_maxframes can no longer be
+            # raised at runtime without a rebuild — see get_dynamic_axes/has_symbolic_cache_dims
+            # in acceleration/tensorrt/models/models.py.
+            min_cache_maxframes = max_cache_maxframes = cache_maxframes
+            logger.info(f"_load_model: pin_cache_frames=True — cache frames pinned at {cache_maxframes}")
 
         # Clean up GPU memory before loading new model to prevent OOM errors
         try:
@@ -2022,6 +2039,11 @@ class StreamDiffusionWrapper:
                     # additionally encode the exact batch they are frozen at.
                     build_static_batch=self.static_shapes,
                     static_batch_size=stream.trt_unet_batch_size if self.static_shapes else None,
+                    # Pinned-cache engines are not interchangeable with unpinned ones — encode
+                    # the cache-frames value in the cache key so a stale unpinned engine is
+                    # never silently reused after switching pin_cache_frames on.
+                    pin_cache_frames=pin_cache_frames,
+                    cache_maxframes=cache_maxframes if pin_cache_frames else None,
                 )
                 # Effective VAE optlvl: per-engine override first, then global fallback.
                 _vae_optlvl = (
@@ -2341,8 +2363,13 @@ class StreamDiffusionWrapper:
                         "opt_image_width": self.width,
                         "build_dynamic_shape": not self.static_shapes,
                         "build_static_batch": self.static_shapes,
+                        # NOTE: this used to also set build_all_tactics=True — that knob
+                        # was dead (never forwarded) and has been replaced by the
+                        # profile-driven max_num_tactics computed centrally in
+                        # build_engine() (utilities.py), which already applies a wider
+                        # tactic budget (128) to dynamic/Flexible builds like this one.
                         **(
-                            {"min_image_resolution": 384, "max_image_resolution": 1024, "build_all_tactics": True}
+                            {"min_image_resolution": 384, "max_image_resolution": 1024}
                             if not self.static_shapes
                             else {}
                         ),
@@ -2371,8 +2398,13 @@ class StreamDiffusionWrapper:
                         "opt_image_width": self.width,
                         "build_dynamic_shape": not self.static_shapes,
                         "build_static_batch": self.static_shapes,
+                        # NOTE: this used to also set build_all_tactics=True — that knob
+                        # was dead (never forwarded) and has been replaced by the
+                        # profile-driven max_num_tactics computed centrally in
+                        # build_engine() (utilities.py), which already applies a wider
+                        # tactic budget (128) to dynamic/Flexible builds like this one.
                         **(
-                            {"min_image_resolution": 384, "max_image_resolution": 1024, "build_all_tactics": True}
+                            {"min_image_resolution": 384, "max_image_resolution": 1024}
                             if not self.static_shapes
                             else {}
                         ),

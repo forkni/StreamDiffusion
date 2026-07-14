@@ -24,7 +24,6 @@ import torch
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
 from onnx import shape_inference
 
-
 logger = logging.getLogger(__name__)
 from polygraphy.backend.onnx.loader import fold_constants
 
@@ -494,6 +493,17 @@ class UNet(BaseModel):
             # Shapes in fi-local order (same walk order as fi_layer_indices)
             self.fi_cache_shapes = [self.kvo_cache_shapes[i] for i in self.fi_layer_indices]
 
+    @property
+    def has_symbolic_cache_dims(self) -> bool:
+        """Whether the KVO/FI cache-frames axis (kvo "C" / fio "FC" in get_dynamic_axes)
+        is still symbolic. True unless pin_cache_frames has pinned
+        min_cache_maxframes == max_cache_maxframes, in which case the axis is dropped
+        from get_dynamic_axes and the profile collapses to a single concrete shape —
+        required for TRT's l2tc (L2 tiling) pass to validate a fully-static graph."""
+        if not self.use_cached_attn:
+            return False
+        return self.min_cache_maxframes != self.max_cache_maxframes
+
     def get_control(self, image_height: int = 512, image_width: int = 512) -> dict:
         """Generate ControlNet input configurations with dynamic spatial dimensions based on input resolution."""
         block_out_channels = self.unet_arch.get("block_out_channels", (320, 640, 1280, 1280))
@@ -690,15 +700,20 @@ class UNet(BaseModel):
             # hardcoded resolution for now due to VRAM limitations
             # NOTE: dim[0]=2 (K/V pair) must stay static — attention Gather nodes
             # index into it at idx=0 and idx=1, so dim[0]<2 causes OOB errors.
+            # The "C" (cache-frames) axis is itself dropped when pin_cache_frames has
+            # pinned min_cache_maxframes == max_cache_maxframes (has_symbolic_cache_dims
+            # False) so the exported graph has no symbolic dims left and TRT's l2tc
+            # (L2 tiling) pass can validate.
             for i in range(self.kvo_cache_count):
-                base_axes[f"kvo_cache_in_{i}"] = {1: "C", 2: "2B"}
+                base_axes[f"kvo_cache_in_{i}"] = {1: "C", 2: "2B"} if self.has_symbolic_cache_dims else {2: "2B"}
                 base_axes[f"kvo_cache_out_{i}"] = {2: "2B"}
 
         if self.use_feature_injection:
             # fio_cache shape: (maxframes, batch, S, H) — no K/V dim
             # dim 0 (maxframes) and dim 1 (batch) are dynamic; dims 2,3 (S,H) are static.
+            # See kvo note above: "FC" is dropped when has_symbolic_cache_dims is False.
             for i in range(self.fi_cache_count):
-                base_axes[f"fio_cache_in_{i}"] = {0: "FC", 1: "2B"}
+                base_axes[f"fio_cache_in_{i}"] = {0: "FC", 1: "2B"} if self.has_symbolic_cache_dims else {1: "2B"}
                 base_axes[f"fio_cache_out_{i}"] = {1: "2B"}
             # fi_strength, fi_threshold: static [1] — no dynamic axes
 

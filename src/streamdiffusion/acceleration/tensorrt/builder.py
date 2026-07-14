@@ -194,7 +194,6 @@ class EngineBuilder:
         build_enable_refit: bool = False,
         build_static_batch: bool = False,
         build_dynamic_shape: bool = True,
-        build_all_tactics: bool = False,
         onnx_opset: int = 17,
         force_engine_build: bool = False,
         force_onnx_export: bool = False,
@@ -225,7 +224,6 @@ class EngineBuilder:
             "opt_resolution": f"{opt_image_width}x{opt_image_height}",
             "dynamic_range": f"{min_image_resolution}-{max_image_resolution}" if build_dynamic_shape else "static",
             "batch_size": opt_batch_size,
-            "build_all_tactics": build_all_tactics,
             "stages": {},
         }
 
@@ -399,7 +397,6 @@ class EngineBuilder:
                     opt_batch_size=opt_batch_size,
                     build_static_batch=build_static_batch,
                     build_dynamic_shape=build_dynamic_shape,
-                    build_all_tactics=build_all_tactics,
                     build_enable_refit=build_enable_refit,
                     fp8=fp8,
                     builder_optimization_level=builder_optimization_level,

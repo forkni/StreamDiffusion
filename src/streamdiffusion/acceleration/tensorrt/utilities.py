@@ -276,6 +276,7 @@ def _apply_gpu_profile_to_config(
     config: "trt.IBuilderConfig",
     gpu_profile: Optional[GPUBuildProfile],
     dynamic_shapes: bool = True,
+    max_num_tactics: int = 64,
 ) -> None:
     """
     Apply hardware-aware IBuilderConfig parameters that Polygraphy does not expose.
@@ -290,6 +291,10 @@ def _apply_gpu_profile_to_config(
             - True  (default): tiling and l2_limit skipped — TRT confirms these have
               no effect on symbolic-shape graphs and only produce warning spam.
             - False (static): tiling and l2_limit applied for full L2 cache benefit.
+        max_num_tactics: Per-layer tactic-profiling cap (-1 = uncapped). Caller derives
+            this from the TrtProfile: -1 for Performance/fp8 (deploy-once, search
+            everything), 128 for Flexible/dynamic (kernels must generalize across the
+            shape range), 64 (default) for Fast Build/Quality (static FP16).
     """
     if gpu_profile is None:
         return
@@ -404,11 +409,12 @@ def _apply_gpu_profile_to_config(
             )
 
     # max_num_tactics: cap profiling candidates per layer to reduce build time.
-    # Available since TRT 10.x; -1 (default) lets TRT decide heuristically. 64 is a
-    # reasonable cap that matches FLUX's config. Gracefully ignored on older TRT.
+    # Available since TRT 10.x; -1 lets TRT search its full tactic set. Caller
+    # resolves the tier from the active TrtProfile (see build_engine) — 64 is the
+    # FLUX-matched default for static-FP16 profiles. Gracefully ignored on older TRT.
     try:
-        config.max_num_tactics = 64
-        logger.info("[TRT Config] max_num_tactics=64")
+        config.max_num_tactics = max_num_tactics
+        logger.info(f"[TRT Config] max_num_tactics={max_num_tactics}")
     except AttributeError:
         logger.debug("[TRT Config] max_num_tactics not supported — skipping")
 
@@ -750,7 +756,7 @@ class Engine:
         fp16,
         input_profile=None,
         enable_refit=False,
-        enable_all_tactics=False,
+        max_num_tactics=64,
         timing_cache=None,
         workspace_size=0,
         fp8=False,
@@ -764,6 +770,7 @@ class Engine:
                 onnx_path,
                 input_profile,
                 workspace_size,
+                max_num_tactics=max_num_tactics,
                 timing_cache=timing_cache,
                 gpu_profile=gpu_profile,
                 dynamic_shapes=dynamic_shapes,
@@ -836,7 +843,9 @@ class Engine:
         config.set_timing_cache(trt_cache, ignore_mismatch=False)
 
         # Apply hardware-aware profile parameters
-        _apply_gpu_profile_to_config(config, gpu_profile, dynamic_shapes=dynamic_shapes)
+        _apply_gpu_profile_to_config(
+            config, gpu_profile, dynamic_shapes=dynamic_shapes, max_num_tactics=max_num_tactics
+        )
 
         # Build and serialize
         logger.info(f"[TRT Build] Building FP16 engine (raw API): {self.engine_path}")
@@ -877,6 +886,7 @@ class Engine:
         onnx_path,
         input_profile,
         workspace_size,
+        max_num_tactics=64,
         timing_cache=None,
         gpu_profile: Optional["GPUBuildProfile"] = None,
         dynamic_shapes: bool = True,
@@ -892,6 +902,8 @@ class Engine:
             onnx_path: Path to *.fp8.onnx (Q/DQ-annotated by fp8_quantize.py).
             input_profile: Dict of {name: (min, opt, max)} shapes.
             workspace_size: TRT workspace limit in bytes.
+            max_num_tactics: Per-layer tactic-profiling cap (-1 = uncapped). FP8/Performance
+                builds default to -1 at the build_engine() call site.
             timing_cache: Path to timing cache file for load/save.
             gpu_profile: Hardware-aware build parameters from detect_gpu_profile().
             dynamic_shapes: Whether the engine uses dynamic input shapes.
@@ -963,7 +975,9 @@ class Engine:
         config.set_timing_cache(trt_cache, ignore_mismatch=False)
 
         # Apply hardware-aware profile parameters
-        _apply_gpu_profile_to_config(config, gpu_profile, dynamic_shapes=dynamic_shapes)
+        _apply_gpu_profile_to_config(
+            config, gpu_profile, dynamic_shapes=dynamic_shapes, max_num_tactics=max_num_tactics
+        )
 
         logger.info(f"[FP8] Building TRT FP8 engine (STRONGLY_TYPED): {self.engine_path}")
         serialized = builder.build_serialized_network(network, config)
@@ -1381,7 +1395,6 @@ def build_engine(
     opt_batch_size: int,
     build_static_batch: bool = False,
     build_dynamic_shape: bool = False,
-    build_all_tactics: bool = False,
     build_enable_refit: bool = False,
     fp8: bool = False,
     builder_optimization_level: Optional[int] = None,
@@ -1428,10 +1441,19 @@ def build_engine(
         f"allocated={max_workspace_size / GiB:.1f} GiB"
     )
 
-    # --- Timing cache: shared per engine directory ---
-    # Cache is stored alongside the engine files so it persists across rebuilds.
+    # --- Timing cache: shared across ALL engine configs, keyed by TRT version ---
+    # Previously stored inside the per-config engine dir (os.path.dirname(engine_path)),
+    # so every distinct config (--cachef/--sbatch/--batch/--res variants, LoRA hash, etc.)
+    # started cold and per-config-dir churn silently discarded it. engine_path is always
+    # <engine_root>/<config-prefix>/<file>.engine, so one level above the per-config dir is
+    # exactly EngineManager.engine_dir — living there means the cache survives rebuilds and
+    # is reused across every config on this machine. Keyed by TRT version so a TRT/driver
+    # upgrade starts a fresh cache instead of hitting set_timing_cache's
+    # ignore_mismatch=False guard against a stale cross-version cache.
     engine_dir = os.path.dirname(engine_path)
-    timing_cache_path = os.path.join(engine_dir, "timing.cache")
+    engine_root = os.path.dirname(engine_dir)
+    timing_cache_dir = os.path.join(engine_root, "_timing_cache")
+    timing_cache_path = os.path.join(timing_cache_dir, f"timing_trt{trt.__version__}.cache")
 
     engine = Engine(engine_path)
     input_profile = model_data.get_input_profile(
@@ -1441,24 +1463,40 @@ def build_engine(
         static_batch=build_static_batch,
         static_shape=not build_dynamic_shape,
     )
-    # Note: build_all_tactics is accepted by build_engine() for API compat but
-    # Engine.build() does not forward it — tactic selection is now driven by
-    # set_tactic_sources (SM_120+) and max_tactics_per_layer in _apply_gpu_profile_to_config.
+    # Per-profile tactic-search budget (max_num_tactics, applied in
+    # _apply_gpu_profile_to_config): fp8/Performance is deploy-once, so search the
+    # full tactic set (-1) for the best kernel. Dynamic/Flexible engines must
+    # generalize across the whole min/opt/max range, so get a wider-but-bounded pool
+    # (128, 2x default) without blowing up its already-slow, frequently-rebuilt
+    # profile. Static-FP16 Fast Build/Quality keep the FLUX-matched default (64).
+    if fp8:
+        max_num_tactics = -1
+    elif build_dynamic_shape or not build_static_batch:
+        max_num_tactics = 128
+    else:
+        max_num_tactics = 64
     engine.build(
         onnx_opt_path,
         fp16=True,
         input_profile=input_profile,
         enable_refit=build_enable_refit,
+        max_num_tactics=max_num_tactics,
         timing_cache=timing_cache_path,
         workspace_size=max_workspace_size,
         fp8=fp8,
         gpu_profile=gpu_profile,
-        # Any symbolic dim (resolution OR batch) disqualifies l2tc tiling — see
-        # _apply_gpu_profile_to_config. build_dynamic_shape alone misses the
-        # batch-dynamic/resolution-static case (e.g. default "Flexible" UNet
-        # preset), which previously reached the tiling branch and TRT emitted
-        # "[l2tc] VALIDATE FAIL - Graph contains symbolic shape" as a no-op.
-        dynamic_shapes=build_dynamic_shape or not build_static_batch,
+        # Any symbolic dim (resolution OR batch OR the KVO/FI cache-frames axis)
+        # disqualifies l2tc tiling — see _apply_gpu_profile_to_config.
+        # build_dynamic_shape / build_static_batch alone miss the StreamV2V
+        # cache-frames case: get_kvo_cache_input_profile / get_fi_cache_input_profile
+        # always span min_cache_maxframes..max_cache_maxframes unless pin_cache_frames
+        # has pinned them equal (has_symbolic_cache_dims), so even a fully static-batch
+        # build still carries a symbolic "C"/"FC" dim and previously reached the tiling
+        # branch, where TRT emitted "[l2tc] VALIDATE FAIL - Graph contains symbolic
+        # shape" as a no-op.
+        dynamic_shapes=(
+            build_dynamic_shape or not build_static_batch or getattr(model_data, "has_symbolic_cache_dims", False)
+        ),
     )
 
     return engine
