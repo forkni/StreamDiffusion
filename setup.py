@@ -56,7 +56,9 @@ _deps = [
     "transformers==4.56.0",
     "accelerate==1.13.0",
     "huggingface_hub==0.35.0",
-    "Pillow>=12.2.0",  # CVE-2026-25990: out-of-bounds write in PSD loading; 12.2.0 verified
+    "Pillow>=12.3.0",  # CVE-2026-25990 (PSD OOB write) + 8 CVEs fixed in 12.3.0 (ImageCms heap
+    # CVE-2026-59205, coord OOB write -59199, EPS neg-byte-count -59203, font parsers); patch
+    # bump, verified 2026-07-15 deps-audit
     "fire==0.7.1",
     "omegaconf==2.3.0",
     "onnx==1.19.1",  # IR 11; modelopt FLOAT4E2M1 (1.18+); 1.21.0 breaks FP8 quant (external-data loading → negative QDQ scale); 6 path-traversal CVEs accepted: require untrusted model loading
