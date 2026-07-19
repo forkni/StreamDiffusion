@@ -1,15 +1,15 @@
-import logging
-import os
-import sys
-import yaml
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
 
 import yaml
 
+from .param_schema import DEFAULTS
+
 
 logger = logging.getLogger(__name__)
+
 
 def load_config(config_path: Union[str, Path]) -> Dict[str, Any]:
     """Load StreamDiffusion configuration from YAML or JSON file"""
@@ -96,7 +96,7 @@ def create_wrapper_from_config(config: Dict[str, Any], **overrides) -> Any:
         seed_blend_config = final_config["seed_blending"]
         wrapper.update_stream_params(
             seed_list=seed_blend_config.get("seed_list", []),
-            interpolation_method=seed_blend_config.get("interpolation_method", "linear"),
+            seed_interpolation_method=seed_blend_config.get("interpolation_method", "linear"),
         )
 
     return wrapper
@@ -106,7 +106,7 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
     """Extract parameters for StreamDiffusionWrapper.__init__() from config"""
     param_map = {
         "model_id_or_path": config.get("model_id", "stabilityai/sd-turbo"),
-        "t_index_list": config.get("t_index_list", [0, 16, 32, 45]),
+        "t_index_list": config.get("t_index_list", list(DEFAULTS["t_index_list"])),
         "lora_dict": config.get("lora_dict"),
         "mode": config.get("mode", "img2img"),
         "output_type": config.get("output_type", "pil"),
@@ -128,12 +128,12 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         "similar_filter_sleep_fraction": config.get("similar_filter_sleep_fraction", 0.025),
         "use_denoising_batch": config.get("use_denoising_batch", True),
         "cfg_type": config.get("cfg_type", "self"),
-        "seed": config.get("seed", 2),
-        "use_safety_checker": config.get("use_safety_checker", False),
+        "seed": config.get("seed", DEFAULTS["seed"]),
+        "use_safety_checker": config.get("use_safety_checker", DEFAULTS["use_safety_checker"]),
         "skip_diffusion": config.get("skip_diffusion", False),
         "engine_dir": config.get("engine_dir", "engines"),
-        "normalize_prompt_weights": config.get("normalize_prompt_weights", True),
-        "normalize_seed_weights": config.get("normalize_seed_weights", True),
+        "normalize_prompt_weights": config.get("normalize_prompt_weights", DEFAULTS["normalize_prompt_weights"]),
+        "normalize_seed_weights": config.get("normalize_seed_weights", DEFAULTS["normalize_seed_weights"]),
         "scheduler": config.get("scheduler", "lcm"),
         "sampler": config.get("sampler", "normal"),
         "compile_engines_only": config.get("compile_engines_only", False),
@@ -161,12 +161,12 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
 
     param_map["use_cached_attn"] = config.get("use_cached_attn", False)
 
-    param_map["cache_maxframes"] = config.get("cache_maxframes", 1)
-    param_map["cache_interval"] = config.get("cache_interval", 1)
+    param_map["cache_maxframes"] = config.get("cache_maxframes", DEFAULTS["cache_maxframes"])
+    param_map["cache_interval"] = config.get("cache_interval", DEFAULTS["cache_interval"])
     # cn_cache_interval: ControlNet residual reuse interval.
     # 1 (default) = disabled, run CN every frame.
     # N > 1 = run CN once every N frames; reuse residuals between (control latency = N-1 frames).
-    param_map["cn_cache_interval"] = config.get("cn_cache_interval", 1)
+    param_map["cn_cache_interval"] = config.get("cn_cache_interval", DEFAULTS["cn_cache_interval"])
 
     # Feature Injection (StreamV2V §3.4.2) — requires use_cached_attn=True
     if "use_feature_injection" not in config:
@@ -178,8 +178,8 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
     param_map["use_feature_injection"] = config.get("use_feature_injection", True)
     # fi_strength: blend weight α (thesis §3.4.2 Eq 3.2 α=0.75; default matches thesis).
     # fi_threshold: cosine-similarity gate below which injection is skipped (default 0.98).
-    param_map["fi_strength"] = config.get("fi_strength", 0.75)
-    param_map["fi_threshold"] = config.get("fi_threshold", 0.98)
+    param_map["fi_strength"] = config.get("fi_strength", DEFAULTS["fi_strength"])
+    param_map["fi_threshold"] = config.get("fi_threshold", DEFAULTS["fi_threshold"])
     # max_cache_maxframes: allocation cap for the KVO/FI cache ring buffers (VRAM).
     # cache_maxframes is the live logical write window; this is the hard upper bound.
     param_map["max_cache_maxframes"] = config.get("max_cache_maxframes", 4)
@@ -206,10 +206,10 @@ def _extract_prepare_params(config: Dict[str, Any]) -> Dict[str, Any]:
     """Extract parameters for wrapper.prepare() from config"""
     prepare_params = {
         "prompt": config.get("prompt", ""),
-        "negative_prompt": config.get("negative_prompt", ""),
-        "num_inference_steps": config.get("num_inference_steps", 50),
-        "guidance_scale": config.get("guidance_scale", 1.2),
-        "delta": config.get("delta", 1.0),
+        "negative_prompt": config.get("negative_prompt", DEFAULTS["negative_prompt"]),
+        "num_inference_steps": config.get("num_inference_steps", DEFAULTS["num_inference_steps"]),
+        "guidance_scale": config.get("guidance_scale", DEFAULTS["guidance_scale"]),
+        "delta": config.get("delta", DEFAULTS["delta"]),
     }
 
     # Handle prompt blending configuration
@@ -333,67 +333,6 @@ def _prepare_single_hook_config(hook_config: Dict[str, Any], hook_type: str) -> 
         "processors": hook_config.get("processors", []),
         "hook_type": hook_type,
     }
-
-
-def _validate_pipeline_hook_configs(config: Dict[str, Any]) -> None:
-    """Validate pipeline hook configurations following ControlNet/IPAdapter validation pattern"""
-    hook_types = ["image_preprocessing", "image_postprocessing", "latent_preprocessing", "latent_postprocessing"]
-
-    for hook_type in hook_types:
-        if hook_type in config:
-            hook_config = config[hook_type]
-            if not isinstance(hook_config, dict):
-                raise ValueError(f"_validate_config: '{hook_type}' must be a dictionary")
-
-            # Validate enabled field
-            if "enabled" in hook_config:
-                enabled = hook_config["enabled"]
-                if not isinstance(enabled, bool):
-                    raise ValueError(f"_validate_config: '{hook_type}.enabled' must be a boolean")
-
-            # Validate processors field
-            if "processors" in hook_config:
-                processors = hook_config["processors"]
-                if not isinstance(processors, list):
-                    raise ValueError(f"_validate_config: '{hook_type}.processors' must be a list")
-
-                for i, processor in enumerate(processors):
-                    if not isinstance(processor, dict):
-                        raise ValueError(f"_validate_config: '{hook_type}.processors[{i}]' must be a dictionary")
-
-                    # Validate processor type (required)
-                    if "type" not in processor:
-                        raise ValueError(
-                            f"_validate_config: '{hook_type}.processors[{i}]' missing required 'type' field"
-                        )
-
-                    if not isinstance(processor["type"], str):
-                        raise ValueError(f"_validate_config: '{hook_type}.processors[{i}].type' must be a string")
-
-                    # Validate enabled field (optional, defaults to True)
-                    if "enabled" in processor:
-                        enabled = processor["enabled"]
-                        if not isinstance(enabled, bool):
-                            raise ValueError(
-                                f"_validate_config: '{hook_type}.processors[{i}].enabled' must be a boolean"
-                            )
-
-                    # Validate order field (optional)
-                    if "order" in processor:
-                        order = processor["order"]
-                        if not isinstance(order, int):
-                            raise ValueError(
-                                f"_validate_config: '{hook_type}.processors[{i}].order' must be an integer"
-                            )
-
-                    # Validate params field (optional, coerce None to empty dict)
-                    if "params" in processor:
-                        if processor["params"] is None:
-                            processor["params"] = {}
-                        elif not isinstance(processor["params"], dict):
-                            raise ValueError(
-                                f"_validate_config: '{hook_type}.processors[{i}].params' must be a dictionary"
-                            )
 
 
 def create_prompt_blending_config(

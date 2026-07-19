@@ -10,6 +10,7 @@ from PIL import Image
 
 from .image_utils import postprocess_image
 from .model_detection import detect_model
+from .param_schema import PromptInterpolationMethod, SeedInterpolationMethod
 from .pipeline import StreamDiffusion
 from .tools.gpu_profiler import configure as _configure_profiler
 from .tools.gpu_profiler import profiler
@@ -690,11 +691,11 @@ class StreamDiffusionWrapper:
         # Prompt blending parameters
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
-        prompt_interpolation_method: Literal["linear", "slerp", "cosine_weighted"] = "slerp",
+        prompt_interpolation_method: PromptInterpolationMethod = "slerp",
         normalize_prompt_weights: Optional[bool] = None,
         # Seed blending parameters
         seed_list: Optional[List[Tuple[int, float]]] = None,
-        seed_interpolation_method: Literal["linear", "slerp"] = "linear",
+        seed_interpolation_method: SeedInterpolationMethod = "linear",
         normalize_seed_weights: Optional[bool] = None,
         # ControlNet configuration
         controlnet_config: Optional[List[Dict[str, Any]]] = None,

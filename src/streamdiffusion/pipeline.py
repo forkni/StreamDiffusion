@@ -153,7 +153,11 @@ class StreamDiffusion:
             self.add_time_ids = None
 
         # Initialize parameter updater
-        self._param_updater = StreamParameterUpdater(self, normalize_prompt_weights, normalize_seed_weights)
+        self._param_updater = StreamParameterUpdater(
+            self,
+            normalize_prompt_weights=normalize_prompt_weights,
+            normalize_seed_weights=normalize_seed_weights,
+        )
 
         # Hook containers (step 1: introduced but initially no-op)
         self.embedding_hooks: List[EmbeddingHook] = []

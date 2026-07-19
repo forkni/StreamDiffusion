@@ -14,9 +14,10 @@ ASCII only -- no Unicode symbols (Windows cp1252 terminal compatibility).
 """
 
 import threading
-import types
 import unittest
 from typing import Any, Dict, Optional
+
+from streamdiffusion.param_schema import PARAM_NAMES
 
 
 # ---------------------------------------------------------------------------
@@ -25,12 +26,14 @@ from typing import Any, Dict, Optional
 # td_manager.py will break these tests and alert the developer.
 # ---------------------------------------------------------------------------
 
+
 class _FakeStream:
     cfg_type = "none"
 
 
 class _FakeWrapper:
     """Records calls made to update_stream_params."""
+
     def __init__(self):
         self.stream = _FakeStream()
         self.calls: list = []
@@ -50,15 +53,31 @@ class _Manager:
     """
 
     VALID_PARAMS = {
-        'num_inference_steps', 'guidance_scale', 'delta', 't_index_list', 'seed',
-        'prompt_list', 'negative_prompt', 'prompt_interpolation_method',
-        'normalize_prompt_weights', 'seed_list', 'seed_interpolation_method',
-        'normalize_seed_weights', 'controlnet_config', 'ipadapter_config',
-        'image_preprocessing_config', 'image_postprocessing_config',
-        'latent_preprocessing_config', 'latent_postprocessing_config',
-        'use_safety_checker', 'safety_checker_threshold',
-        'cache_maxframes', 'cache_interval', 'fi_strength', 'fi_threshold',
-        'cn_cache_interval',
+        "num_inference_steps",
+        "guidance_scale",
+        "delta",
+        "t_index_list",
+        "seed",
+        "prompt_list",
+        "negative_prompt",
+        "prompt_interpolation_method",
+        "normalize_prompt_weights",
+        "seed_list",
+        "seed_interpolation_method",
+        "normalize_seed_weights",
+        "controlnet_config",
+        "ipadapter_config",
+        "image_preprocessing_config",
+        "image_postprocessing_config",
+        "latent_preprocessing_config",
+        "latent_postprocessing_config",
+        "use_safety_checker",
+        "safety_checker_threshold",
+        "cache_maxframes",
+        "cache_interval",
+        "fi_strength",
+        "fi_threshold",
+        "cn_cache_interval",
     }
 
     def __init__(self):
@@ -71,33 +90,30 @@ class _Manager:
 
     # --- Replica of td_manager.py _apply_parameters ---
     def _apply_parameters(self, params: Dict[str, Any]) -> None:
-        import logging, random
+        import random
+
         filtered_params = {k: v for k, v in params.items() if k in self.VALID_PARAMS}
 
-        if 'guidance_scale' in filtered_params:
-            cfg_type = getattr(self.wrapper.stream, 'cfg_type', None)
-            if cfg_type in ("full", "initialize") and filtered_params['guidance_scale'] <= 1.0:
-                filtered_params['guidance_scale'] = 1.2
+        if "guidance_scale" in filtered_params:
+            cfg_type = getattr(self.wrapper.stream, "cfg_type", None)
+            if cfg_type in ("full", "initialize") and filtered_params["guidance_scale"] <= 1.0:
+                filtered_params["guidance_scale"] = 1.2
 
-        if 'seed_list' in filtered_params:
+        if "seed_list" in filtered_params:
             self._randomize_seed_indices = []
             new_seed_list = []
-            for idx, (seed, weight) in enumerate(filtered_params['seed_list']):
+            for idx, (seed, weight) in enumerate(filtered_params["seed_list"]):
                 if seed == -1:
                     self._randomize_seed_indices.append(idx)
                     seed = random.randint(0, 2**32 - 1)
                 new_seed_list.append((seed, weight))
-            filtered_params['seed_list'] = new_seed_list
+            filtered_params["seed_list"] = new_seed_list
 
         self.wrapper.update_stream_params(**filtered_params)
 
     # --- Replica of td_manager.py update_parameters ---
     def update_parameters(self, params: Dict[str, Any]) -> None:
-        render_alive = (
-            self.streaming
-            and self.stream_thread is not None
-            and self.stream_thread.is_alive()
-        )
+        render_alive = self.streaming and self.stream_thread is not None and self.stream_thread.is_alive()
         if render_alive:
             with self._pending_params_lock:
                 self._pending_params.update(params)
@@ -133,6 +149,7 @@ def _stop_thread(t: threading.Thread):
 # ---------------------------------------------------------------------------
 # Test cases
 # ---------------------------------------------------------------------------
+
 
 class TestUpdateParametersDefer(unittest.TestCase):
     """
@@ -281,6 +298,22 @@ class TestDrainClearsPending(unittest.TestCase):
         self.assertEqual(len(mgr.wrapper.calls), 1)
         self.assertNotIn("nonexistent_key", mgr.wrapper.calls[0])
         self.assertAlmostEqual(mgr.wrapper.calls[0]["guidance_scale"], 1.5)
+
+
+class TestValidParamsMatchesSchema(unittest.TestCase):
+    """
+    Drift lock (Stage 2 Increment 4): td_manager.py's runtime whitelist (now
+    `set(param_schema.PARAM_NAMES)` in the real module -- see
+    StreamDiffusionTD/td_manager.py::_apply_parameters) must stay exactly
+    the 25-name set param_schema.py owns. _Manager.VALID_PARAMS above is a
+    frozen replica of the *pre-refactor* literal list, kept here so this
+    file never needs to import the real td_manager.py (CUDA/TD deps -- see
+    module docstring). If param_schema.PARAM_NAMES ever adds/removes/renames
+    a param, this test fails and both td_manager.py mirrors need updating.
+    """
+
+    def test_schema_param_names_matches_frozen_replica(self):
+        self.assertEqual(set(PARAM_NAMES), _Manager.VALID_PARAMS)
 
 
 if __name__ == "__main__":
