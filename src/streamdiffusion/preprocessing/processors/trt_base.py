@@ -132,7 +132,13 @@ class TensorRTEngine:
             if self.engine.get_tensor_mode(name) != trt.TensorIOMode.INPUT:
                 continue
             if input_shape is not None:
-                self.context.set_input_shape(name, input_shape)
+                if not self.context.set_input_shape(name, input_shape):
+                    raise RuntimeError(
+                        f"TensorRTEngine.allocate_buffers: set_input_shape failed for "
+                        f"'{name}' with shape {input_shape}. The engine was built for a "
+                        f"fixed shape range — revert the parameter change or rebuild the "
+                        f"engine for the new shape."
+                    )
             else:
                 static_shape = tuple(self.context.get_tensor_shape(name))
                 if any(d < 0 for d in static_shape):
@@ -141,7 +147,11 @@ class TensorRTEngine:
                         f"shape {static_shape} but no input_shape was provided. "
                         "Pass input_shape=(N, C, H, W) when using a dynamic engine."
                     )
-                self.context.set_input_shape(name, static_shape)
+                if not self.context.set_input_shape(name, static_shape):
+                    raise RuntimeError(
+                        f"TensorRTEngine.allocate_buffers: set_input_shape failed for "
+                        f"'{name}' with shape {static_shape}."
+                    )
 
         # Pass 2: allocate buffers for ALL tensors (output shapes resolved by TRT now).
         for idx in range(self.engine.num_io_tensors):
@@ -192,12 +202,18 @@ class TensorRTEngine:
                         self.tensors[name] = cached[name]
                 # Re-apply input shapes to TRT context (context state is NOT cached).
                 for name, shape in new_input_shapes.items():
-                    self.context.set_input_shape(name, shape)
+                    if not self.context.set_input_shape(name, shape):
+                        raise RuntimeError(
+                            f"TensorRTEngine.infer: set_input_shape failed for '{name}' with shape {shape}."
+                        )
             else:
                 # LRU miss: reallocate changed inputs, re-derive output shapes.
                 for name, fed_shape in new_input_shapes.items():
                     if fed_shape != tuple(self.tensors[name].shape):
-                        self.context.set_input_shape(name, fed_shape)
+                        if not self.context.set_input_shape(name, fed_shape):
+                            raise RuntimeError(
+                                f"TensorRTEngine.infer: set_input_shape failed for '{name}' with shape {fed_shape}."
+                            )
                         self.tensors[name] = torch.empty(
                             fed_shape,
                             dtype=self.tensors[name].dtype,
@@ -232,7 +248,8 @@ class TensorRTEngine:
             self.tensors[name].copy_(buf)
 
         for name, tensor in self.tensors.items():
-            self.context.set_tensor_address(name, tensor.data_ptr())
+            if not self.context.set_tensor_address(name, tensor.data_ptr()):
+                raise RuntimeError(f"TensorRTEngine.infer: set_tensor_address failed for '{name}'")
 
         # --- Cross-stream synchronization ---
         # The input copy_() calls above ran on the CURRENT (default) stream.

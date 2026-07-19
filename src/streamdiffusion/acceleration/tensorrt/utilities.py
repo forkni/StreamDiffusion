@@ -385,8 +385,11 @@ def _apply_gpu_profile_to_config(
     # + EDGE_MASK_CONVOLUTIONS — the sources that produce valid SM_120 kernels.
     # TRT 10.16 exposes TacticSource as an int enum (not IntFlag), so the bitmask
     # is built via (1 << int(source)). No-op on Ada/Ampere.
+    # CUBLAS/CUBLAS_LT are removed from TacticSource in TRT 11 (cuBLAS tactics
+    # dropped entirely) — gate on hasattr so that's a deliberate, logged branch
+    # rather than a silently-swallowed AttributeError.
     if gpu_profile.compute_capability >= (12, 0):
-        try:
+        if hasattr(trt.TacticSource, "CUBLAS"):
             sources = (
                 (1 << int(trt.TacticSource.CUBLAS))
                 | (1 << int(trt.TacticSource.CUBLAS_LT))
@@ -397,8 +400,11 @@ def _apply_gpu_profile_to_config(
             logger.info(
                 "[TRT Config] tactic sources = CUBLAS|CUBLAS_LT|JIT_CONV|EDGE_MASK (CUDNN excluded for SM_120+)"
             )
-        except (AttributeError, TypeError) as e:
-            logger.debug(f"[TRT Config] set_tactic_sources not available: {e}")
+        else:
+            logger.info(
+                "[TRT Config] TRT >=11: CUBLAS/CUBLAS_LT removed from TacticSource — "
+                "default tactic sources already exclude cuDNN/cuBLAS, nothing to scope"
+            )
 
     # max_num_tactics: cap profiling candidates per layer to reduce build time.
     # Available since TRT 10.x; -1 (default) lets TRT decide heuristically. 64 is a
@@ -558,12 +564,28 @@ def _staging_action(
 
     Returns one of:
       "copy"           - copy into self.tensors[name] (today's behavior; always safe)
+      "copy_and_reset" - copy into self.tensors[name], but reset the CUDA graph first
+                         because this name was previously bound zero-copy into a live
+                         graph, which still reads the old bound address rather than
+                         self.tensors[name]
       "bind"           - skip the copy; bind TensorRT directly to the caller's tensor
       "bind_and_reset" - skip the copy and bind directly, but reset the CUDA graph
                          first because the caller's address changed while a graph
                          built from the old address was still live
+
+    A pointer that is not 256-byte aligned falls back to "copy": TensorRT's
+    setTensorAddress contract requires ≥256-byte alignment, and real torch CUDA
+    allocations are always ≥512-byte aligned, so this guard is a defensive
+    invariant against config drift rather than a path exercised in production.
     """
-    if name not in zero_copy_names or not is_contiguous or not dtype_match:
+    if name not in zero_copy_names or not is_contiguous or not dtype_match or cur_ptr % 256 != 0:
+        # Falling back to copy. If this name was bound zero-copy into a LIVE graph,
+        # that graph still reads the stale bound address, not self.tensors[name] —
+        # force one reset so it re-captures reading the staging buffer. prev_ptr is
+        # only non-None for names actually bound before, so plain copy-path inputs
+        # (never in zero_copy_names) never trip this.
+        if graph_exists and prev_ptr is not None:
+            return "copy_and_reset"
         return "copy"
     if graph_exists and cur_ptr != prev_ptr:
         return "bind_and_reset"
@@ -999,12 +1021,8 @@ class Engine:
         except Exception:
             return None
 
-    def activate(self, reuse_device_memory=None):
-        if reuse_device_memory:
-            self.context = self.engine.create_execution_context_without_device_memory()
-            self.context.device_memory = reuse_device_memory
-        else:
-            self.context = self.engine.create_execution_context()
+    def activate(self):
+        self.context = self.engine.create_execution_context()
 
         # Attach per-layer profiler when STREAMDIFFUSION_PROFILE_TRT is set.
         # Requires engines built with profiling_verbosity=DETAILED for meaningful names.
@@ -1191,8 +1209,14 @@ class Engine:
                         cur_ptr,
                         graph_exists,
                     )
-                    if action == "copy":
+                    if action in ("copy", "copy_and_reset"):
                         self.tensors[name].copy_(buf)
+                        if action == "copy_and_reset":
+                            needs_reset = True
+                            # Next frame this name has no prior bind, so
+                            # _staging_action sees prev_ptr=None and returns
+                            # plain "copy" — converges after one reset.
+                            self._bound_ptrs.pop(name, None)
                     else:
                         bind_ptrs[name] = cur_ptr
                         if action == "bind_and_reset":
@@ -1525,7 +1549,6 @@ def export_onnx(
             onnx_path,
             export_params=True,
             opset_version=onnx_opset,
-            do_constant_folding=True,
             input_names=model_data.get_input_names(),
             output_names=model_data.get_output_names(),
             dynamic_axes=model_data.get_dynamic_axes(),
@@ -1577,15 +1600,17 @@ def optimize_onnx(
 ):
     import os
 
-    # Check if external data files exist (indicating external data format was used)
     onnx_dir = os.path.dirname(onnx_path)
-    external_data_files = [f for f in os.listdir(onnx_dir) if f.endswith(".pb")]
-    uses_external_data = len(external_data_files) > 0
+    # Inspect TensorProto.data_location on the raw (unloaded) model rather than
+    # scanning the directory for ".pb" filenames — load_external_data_for_model
+    # resets data_location back to DEFAULT once external data is loaded, so this
+    # check must happen before loading.
+    onnx_model = onnx.load(onnx_path, load_external_data=False)
+    uses_external_data = any(onnx.external_data_helper.uses_external_data(t) for t in onnx_model.graph.initializer)
 
     if uses_external_data:
-        logger.info(f"Optimizing ONNX with external data (found: {external_data_files})")
-        # Load model with external data
-        onnx_model = onnx.load(onnx_path, load_external_data=True)
+        logger.info("Optimizing ONNX with external data")
+        onnx.external_data_helper.load_external_data_for_model(onnx_model, onnx_dir)
         onnx_opt_graph = model_data.optimize(onnx_model)
 
         # Create output directory
@@ -1610,8 +1635,7 @@ def optimize_onnx(
         logger.info("ONNX optimization complete with external data")
 
     else:
-        # Standard optimization for smaller models
-        onnx_model = onnx.load(onnx_path)
+        # No external data to load — the model loaded above is already complete.
         onnx_opt_graph = model_data.optimize(onnx_model)
 
         onnx.save(onnx_opt_graph, onnx_opt_path)

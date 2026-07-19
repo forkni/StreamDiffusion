@@ -55,10 +55,39 @@ class UNet2DConditionModelEngine:
         self._fio_cache_len: int = -1  # -1 = not yet initialized
 
         # Sub-phase 5.6: kvo/fio cache inputs are persistent, address-stable,
-        # TRT-contiguous tensors (see models/utils.py create_kvo_cache/create_fi_cache),
-        # so Engine.infer() can bind TensorRT directly to them instead of copying into
-        # its own staging buffer every frame. Rebuilt only when the kvo/fio lazy-init
-        # branches below fire (cache length change), never per-frame.
+        # TRT-contiguous tensors in steady state (models/utils.py
+        # create_kvo_cache/create_fi_cache), so Engine.infer() can bind
+        # TensorRT directly to them instead of copying into its own staging
+        # buffer every frame. `_staging_action` falls back to a copy on
+        # non-contiguous/dtype-mismatch/mis-aligned inputs, and to
+        # bind_and_reset on a pointer change — see utilities.py. Rebuilt only
+        # when the kvo/fio lazy-init branches below fire (cache length
+        # change), never per-frame.
+        #
+        # ControlNet input_control_* residuals are deliberately, PERMANENTLY
+        # EXCLUDED here (reverted from Phase-2 D2 / f8ff50f) and stay on the
+        # DtoD-copy staging path. Two reasons, confirmed against code, not
+        # just bisection:
+        #   1. The residual source toggles between the ControlNet engine's
+        #      live output and idle cached-dummy-zero tensors
+        #      (_add_controlnet_residuals vs _add_cached_dummy_inputs below),
+        #      and a missed bind_and_reset on that toggle silently pins the
+        #      UNet's CUDA graph to whichever buffer was bound at capture
+        #      time.
+        #   2. copy_() runs on the engine stream and orders the ControlNet
+        #      engine's residual write before the UNet graph's read of it; a
+        #      zero-copy bind drops that ordering guarantee with no
+        #      replacement synchronization (see the "copy_() executes on
+        #      engine stream to guarantee ordering" log line in utilities.py).
+        # Re-enabling zero-copy for these names reproduced the "ControlNet
+        # produces no visual change" regression on the rig for both a
+        # single-scale (Canny) and ramped-scale (scribble) config, even
+        # though single-ControlNet residuals are themselves contiguous,
+        # 256-aligned, persistent buffers (controlnet_module.py
+        # build_unet_hook single-CN path) — i.e. the failure is NOT explained
+        # by the copy-fallback path ever firing; it is the ordering guarantee
+        # above. Do not re-add these names to _zero_copy_names without a
+        # rig-verified CUDA-event ordering fix.
         self._zero_copy_names: FrozenSet[str] = frozenset()
 
         self._shape_dict: Dict[str, Any] = {}
