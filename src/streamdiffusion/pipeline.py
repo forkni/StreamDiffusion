@@ -820,204 +820,212 @@ class StreamDiffusion:
         t_list: Union[torch.Tensor, list[int]],
         idx: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):
-            # Pre-allocated buf avoids torch.concat malloc for CFG latent doubling
-            self._cfg_latent_buf[:1].copy_(x_t_latent[0:1])
-            self._cfg_latent_buf[1:].copy_(x_t_latent)
-            x_t_latent_plus_uc = self._cfg_latent_buf
-            self._cfg_t_buf[:1].copy_(t_list[0:1])
-            self._cfg_t_buf[1:].copy_(t_list)
-            t_list = self._cfg_t_buf
-        elif self.guidance_scale > 1.0 and (self.cfg_type == "full"):
-            self._cfg_latent_buf[: len(x_t_latent)].copy_(x_t_latent)
-            self._cfg_latent_buf[len(x_t_latent) :].copy_(x_t_latent)
-            x_t_latent_plus_uc = self._cfg_latent_buf
-            self._cfg_t_buf[: len(t_list)].copy_(t_list)
-            self._cfg_t_buf[len(t_list) :].copy_(t_list)
-            t_list = self._cfg_t_buf
-        else:
-            x_t_latent_plus_uc = x_t_latent
+        with profiler.region("unet_step.prep"):
+            if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):
+                # Pre-allocated buf avoids torch.concat malloc for CFG latent doubling
+                self._cfg_latent_buf[:1].copy_(x_t_latent[0:1])
+                self._cfg_latent_buf[1:].copy_(x_t_latent)
+                x_t_latent_plus_uc = self._cfg_latent_buf
+                self._cfg_t_buf[:1].copy_(t_list[0:1])
+                self._cfg_t_buf[1:].copy_(t_list)
+                t_list = self._cfg_t_buf
+            elif self.guidance_scale > 1.0 and (self.cfg_type == "full"):
+                self._cfg_latent_buf[: len(x_t_latent)].copy_(x_t_latent)
+                self._cfg_latent_buf[len(x_t_latent) :].copy_(x_t_latent)
+                x_t_latent_plus_uc = self._cfg_latent_buf
+                self._cfg_t_buf[: len(t_list)].copy_(t_list)
+                self._cfg_t_buf[len(t_list) :].copy_(t_list)
+                t_list = self._cfg_t_buf
+            else:
+                x_t_latent_plus_uc = x_t_latent
 
-        # Prepare UNet call arguments (update pre-allocated dict in-place: avoids per-frame dict malloc)
-        self._unet_kwargs["sample"] = x_t_latent_plus_uc
-        self._unet_kwargs["timestep"] = t_list
-        self._unet_kwargs["encoder_hidden_states"] = self.prompt_embeds
-        unet_kwargs = self._unet_kwargs
+            # Prepare UNet call arguments (update pre-allocated dict in-place: avoids per-frame dict malloc)
+            self._unet_kwargs["sample"] = x_t_latent_plus_uc
+            self._unet_kwargs["timestep"] = t_list
+            self._unet_kwargs["encoder_hidden_states"] = self.prompt_embeds
+            unet_kwargs = self._unet_kwargs
 
         # Add SDXL-specific conditioning if this is an SDXL model
-        if self.is_sdxl and hasattr(self, "add_text_embeds") and hasattr(self, "add_time_ids"):
-            if self.add_text_embeds is not None and self.add_time_ids is not None:
-                # Handle batching for CFG - replicate conditioning to match batch size
-                batch_size = x_t_latent_plus_uc.shape[0]
+        with profiler.region("unet_step.sdxl_cond"):
+            if self.is_sdxl and hasattr(self, "add_text_embeds") and hasattr(self, "add_time_ids"):
+                if self.add_text_embeds is not None and self.add_time_ids is not None:
+                    # Handle batching for CFG - replicate conditioning to match batch size
+                    batch_size = x_t_latent_plus_uc.shape[0]
 
-                # Use optimized caching system for SDXL conditioning tensors
-                cached_conditioning = self._get_cached_sdxl_conditioning(
-                    batch_size, self.cfg_type, self.guidance_scale
-                )
-                if cached_conditioning is not None:
-                    # Cache hit - reuse existing tensors
-                    add_text_embeds = cached_conditioning["text_embeds"]
-                    add_time_ids = cached_conditioning["time_ids"]
-                else:
-                    # Cache miss - build new tensors using optimized operations
-                    conditioning = self._build_sdxl_conditioning(batch_size)
-                    add_text_embeds = conditioning["text_embeds"]
-                    add_time_ids = conditioning["time_ids"]
-                    # Cache for future use
-                    self._cache_sdxl_conditioning(
-                        batch_size, self.cfg_type, self.guidance_scale, add_text_embeds, add_time_ids
+                    # Use optimized caching system for SDXL conditioning tensors
+                    cached_conditioning = self._get_cached_sdxl_conditioning(
+                        batch_size, self.cfg_type, self.guidance_scale
                     )
+                    if cached_conditioning is not None:
+                        # Cache hit - reuse existing tensors
+                        add_text_embeds = cached_conditioning["text_embeds"]
+                        add_time_ids = cached_conditioning["time_ids"]
+                    else:
+                        # Cache miss - build new tensors using optimized operations
+                        conditioning = self._build_sdxl_conditioning(batch_size)
+                        add_text_embeds = conditioning["text_embeds"]
+                        add_time_ids = conditioning["time_ids"]
+                        # Cache for future use
+                        self._cache_sdxl_conditioning(
+                            batch_size, self.cfg_type, self.guidance_scale, add_text_embeds, add_time_ids
+                        )
 
-                unet_kwargs["added_cond_kwargs"] = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
+                    unet_kwargs["added_cond_kwargs"] = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
 
         # Allow modules to contribute additional UNet kwargs via hooks
-        if self.unet_hooks:
-            try:
-                step_ctx = StepCtx(
-                    x_t_latent=x_t_latent_plus_uc,
-                    t_list=t_list,
-                    step_index=idx if isinstance(idx, int) else (int(idx) if idx is not None else None),
-                    guidance_mode=self.cfg_type if self.guidance_scale > 1.0 else "none",
-                    sdxl_cond=unet_kwargs.get("added_cond_kwargs", None),
-                )
-                extra_from_hooks = {}
-                for hook in self.unet_hooks:
-                    delta: UnetKwargsDelta = hook(step_ctx)
-                    if delta is None:
-                        continue
-                    if delta.down_block_additional_residuals is not None:
-                        unet_kwargs["down_block_additional_residuals"] = delta.down_block_additional_residuals
-                    if delta.mid_block_additional_residual is not None:
-                        unet_kwargs["mid_block_additional_residual"] = delta.mid_block_additional_residual
-                    if delta.added_cond_kwargs is not None:
-                        # Merge SDXL cond if both exist
-                        base_added = unet_kwargs.get("added_cond_kwargs", {})
-                        base_added.update(delta.added_cond_kwargs)
-                        unet_kwargs["added_cond_kwargs"] = base_added
-                    if getattr(delta, "extra_unet_kwargs", None):
-                        # Merge extra kwargs from hooks (e.g., ipadapter_scale)
-                        try:
-                            extra_from_hooks.update(delta.extra_unet_kwargs)
-                        except Exception as e:
-                            logger.debug(f"unet_step: failed to merge extra_unet_kwargs from hook: {e}", exc_info=True)
-                if extra_from_hooks:
-                    unet_kwargs["extra_unet_kwargs"] = extra_from_hooks
-            except Exception as e:
-                logger.error(f"unet_step: unet hook failed: {e}")
-                raise
-
-        # Extract potential ControlNet residual kwargs and generic extra kwargs (e.g., ipadapter_scale)
-        hook_down_res = unet_kwargs.get("down_block_additional_residuals", None)
-        hook_mid_res = unet_kwargs.get("mid_block_additional_residual", None)
-        hook_extra_kwargs = unet_kwargs.get("extra_unet_kwargs", None) if "extra_unet_kwargs" in unet_kwargs else None
-
-        # Call UNet with appropriate conditioning
-        if self.is_sdxl:
-            try:
-                # Detect UNet type and use appropriate calling convention
-                added_cond_kwargs = unet_kwargs.get("added_cond_kwargs", {})
-
-                # Check if this is a TensorRT engine or PyTorch UNet
-                is_tensorrt_engine = self._check_unet_tensorrt()
-
-                if is_tensorrt_engine:
-                    # TensorRT engine expects positional args + kwargs. IP-Adapter scale vector, if any, is provided by hooks via extra_unet_kwargs
-                    extra_kwargs = {}
-                    if isinstance(hook_extra_kwargs, dict):
-                        extra_kwargs.update(hook_extra_kwargs)
-
-                    # Include ControlNet residuals if provided by hooks
-                    if hook_down_res is not None:
-                        extra_kwargs["down_block_additional_residuals"] = hook_down_res
-                    if hook_mid_res is not None:
-                        extra_kwargs["mid_block_additional_residual"] = hook_mid_res
-
-                    _unet_result = self.unet(
-                        unet_kwargs["sample"],  # latent_model_input (positional)
-                        unet_kwargs["timestep"],  # timestep (positional)
-                        unet_kwargs["encoder_hidden_states"],  # encoder_hidden_states (positional)
-                        kvo_cache=self.kvo_cache,
-                        fio_cache=self.fio_cache,
-                        fi_strength=self._fi_strength_tensor,
-                        fi_threshold=self._fi_threshold_tensor,
-                        **extra_kwargs,
-                        # For TRT engines, ensure SDXL cond shapes match engine builds; if engine expects 81 tokens (77+4), append dummy image tokens when none
-                        **added_cond_kwargs,  # SDXL conditioning as kwargs
+        with profiler.region("unet_step.hooks"):
+            if self.unet_hooks:
+                try:
+                    step_ctx = StepCtx(
+                        x_t_latent=x_t_latent_plus_uc,
+                        t_list=t_list,
+                        step_index=idx if isinstance(idx, int) else (int(idx) if idx is not None else None),
+                        guidance_mode=self.cfg_type if self.guidance_scale > 1.0 else "none",
+                        sdxl_cond=unet_kwargs.get("added_cond_kwargs", None),
                     )
-                    model_pred = _unet_result[0]
-                    kvo_cache_out = _unet_result[1] if len(_unet_result) > 1 else []
-                    fio_cache_out = _unet_result[2] if len(_unet_result) > 2 else []
-                    self.update_kvo_cache(kvo_cache_out, fio_cache_out)
-                else:
-                    # PyTorch UNet expects diffusers-style named arguments. Any processor scaling is handled by IP-Adapter hook
+                    extra_from_hooks = {}
+                    for hook in self.unet_hooks:
+                        delta: UnetKwargsDelta = hook(step_ctx)
+                        if delta is None:
+                            continue
+                        if delta.down_block_additional_residuals is not None:
+                            unet_kwargs["down_block_additional_residuals"] = delta.down_block_additional_residuals
+                        if delta.mid_block_additional_residual is not None:
+                            unet_kwargs["mid_block_additional_residual"] = delta.mid_block_additional_residual
+                        if delta.added_cond_kwargs is not None:
+                            # Merge SDXL cond if both exist
+                            base_added = unet_kwargs.get("added_cond_kwargs", {})
+                            base_added.update(delta.added_cond_kwargs)
+                            unet_kwargs["added_cond_kwargs"] = base_added
+                        if getattr(delta, "extra_unet_kwargs", None):
+                            # Merge extra kwargs from hooks (e.g., ipadapter_scale)
+                            try:
+                                extra_from_hooks.update(delta.extra_unet_kwargs)
+                            except Exception as e:
+                                logger.debug(
+                                    f"unet_step: failed to merge extra_unet_kwargs from hook: {e}", exc_info=True
+                                )
+                    if extra_from_hooks:
+                        unet_kwargs["extra_unet_kwargs"] = extra_from_hooks
+                except Exception as e:
+                    logger.error(f"unet_step: unet hook failed: {e}")
+                    raise
 
-                    call_kwargs = {
-                        "sample": unet_kwargs["sample"],
-                        "timestep": unet_kwargs["timestep"],
-                        "encoder_hidden_states": unet_kwargs["encoder_hidden_states"],
-                        "added_cond_kwargs": added_cond_kwargs,
-                        "return_dict": False,
-                    }
-                    # Include ControlNet residuals if present
-                    if hook_down_res is not None:
-                        call_kwargs["down_block_additional_residuals"] = hook_down_res
-                    if hook_mid_res is not None:
-                        call_kwargs["mid_block_additional_residual"] = hook_mid_res
-                    model_pred = self.unet(**call_kwargs)[0]
-                    # No restoration for per-layer scale; next step will set again via updater/time factor
-
-            except Exception as e:
-                logger.error(f"[PIPELINE] unet_step: *** ERROR: SDXL UNet call failed: {e} ***")
-                import traceback
-
-                traceback.print_exc()
-                raise
-        else:
-            # For SD1.5/SD2.1, use the old calling convention for compatibility
-            # Build kwargs from hooks and include residuals
-            ip_scale_kw = {}
-            if isinstance(hook_extra_kwargs, dict):
-                ip_scale_kw.update(hook_extra_kwargs)
-
-            # PyTorch processor time scaling is handled by the IP-Adapter hook
-
-            # Include ControlNet residuals if present
-            if hook_down_res is not None:
-                ip_scale_kw["down_block_additional_residuals"] = hook_down_res
-            if hook_mid_res is not None:
-                ip_scale_kw["mid_block_additional_residual"] = hook_mid_res
-
-            _unet_result = self.unet(
-                x_t_latent_plus_uc,
-                t_list,
-                encoder_hidden_states=self.prompt_embeds,
-                kvo_cache=self.kvo_cache,
-                fio_cache=self.fio_cache,
-                fi_strength=self._fi_strength_tensor,
-                fi_threshold=self._fi_threshold_tensor,
-                return_dict=False,
-                **ip_scale_kw,
+        # Extract potential ControlNet residual kwargs / extra kwargs (e.g., ipadapter_scale), then call UNet
+        with profiler.region("unet_step.engine"):
+            hook_down_res = unet_kwargs.get("down_block_additional_residuals", None)
+            hook_mid_res = unet_kwargs.get("mid_block_additional_residual", None)
+            hook_extra_kwargs = (
+                unet_kwargs.get("extra_unet_kwargs", None) if "extra_unet_kwargs" in unet_kwargs else None
             )
-            model_pred = _unet_result[0]
-            kvo_cache_out = _unet_result[1] if len(_unet_result) > 1 else []
-            fio_cache_out = _unet_result[2] if len(_unet_result) > 2 else []
-            self.update_kvo_cache(kvo_cache_out, fio_cache_out)
 
-        if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):
-            noise_pred_text = model_pred[1:]
-            self.stock_noise[0:1].copy_(model_pred[0:1])  # in-place: eliminates 1 malloc + copy kernel
-        elif self.guidance_scale > 1.0 and (self.cfg_type == "full"):
-            noise_pred_uncond, noise_pred_text = model_pred.chunk(2)
-        else:
-            noise_pred_text = model_pred
+            if self.is_sdxl:
+                try:
+                    # Detect UNet type and use appropriate calling convention
+                    added_cond_kwargs = unet_kwargs.get("added_cond_kwargs", {})
 
-        if self.guidance_scale > 1.0 and (self.cfg_type == "self" or self.cfg_type == "initialize"):
-            noise_pred_uncond = self.stock_noise * self.delta
+                    # Check if this is a TensorRT engine or PyTorch UNet
+                    is_tensorrt_engine = self._check_unet_tensorrt()
 
-        if self.guidance_scale > 1.0 and self.cfg_type != "none":
-            model_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
-        else:
-            model_pred = noise_pred_text
+                    if is_tensorrt_engine:
+                        # TensorRT engine expects positional args + kwargs. IP-Adapter scale vector, if any, is provided by hooks via extra_unet_kwargs
+                        extra_kwargs = {}
+                        if isinstance(hook_extra_kwargs, dict):
+                            extra_kwargs.update(hook_extra_kwargs)
+
+                        # Include ControlNet residuals if provided by hooks
+                        if hook_down_res is not None:
+                            extra_kwargs["down_block_additional_residuals"] = hook_down_res
+                        if hook_mid_res is not None:
+                            extra_kwargs["mid_block_additional_residual"] = hook_mid_res
+
+                        _unet_result = self.unet(
+                            unet_kwargs["sample"],  # latent_model_input (positional)
+                            unet_kwargs["timestep"],  # timestep (positional)
+                            unet_kwargs["encoder_hidden_states"],  # encoder_hidden_states (positional)
+                            kvo_cache=self.kvo_cache,
+                            fio_cache=self.fio_cache,
+                            fi_strength=self._fi_strength_tensor,
+                            fi_threshold=self._fi_threshold_tensor,
+                            **extra_kwargs,
+                            # For TRT engines, ensure SDXL cond shapes match engine builds; if engine expects 81 tokens (77+4), append dummy image tokens when none
+                            **added_cond_kwargs,  # SDXL conditioning as kwargs
+                        )
+                        model_pred = _unet_result[0]
+                        kvo_cache_out = _unet_result[1] if len(_unet_result) > 1 else []
+                        fio_cache_out = _unet_result[2] if len(_unet_result) > 2 else []
+                        self.update_kvo_cache(kvo_cache_out, fio_cache_out)
+                    else:
+                        # PyTorch UNet expects diffusers-style named arguments. Any processor scaling is handled by IP-Adapter hook
+
+                        call_kwargs = {
+                            "sample": unet_kwargs["sample"],
+                            "timestep": unet_kwargs["timestep"],
+                            "encoder_hidden_states": unet_kwargs["encoder_hidden_states"],
+                            "added_cond_kwargs": added_cond_kwargs,
+                            "return_dict": False,
+                        }
+                        # Include ControlNet residuals if present
+                        if hook_down_res is not None:
+                            call_kwargs["down_block_additional_residuals"] = hook_down_res
+                        if hook_mid_res is not None:
+                            call_kwargs["mid_block_additional_residual"] = hook_mid_res
+                        model_pred = self.unet(**call_kwargs)[0]
+                        # No restoration for per-layer scale; next step will set again via updater/time factor
+
+                except Exception as e:
+                    logger.error(f"[PIPELINE] unet_step: *** ERROR: SDXL UNet call failed: {e} ***")
+                    import traceback
+
+                    traceback.print_exc()
+                    raise
+            else:
+                # For SD1.5/SD2.1, use the old calling convention for compatibility
+                # Build kwargs from hooks and include residuals
+                ip_scale_kw = {}
+                if isinstance(hook_extra_kwargs, dict):
+                    ip_scale_kw.update(hook_extra_kwargs)
+
+                # PyTorch processor time scaling is handled by the IP-Adapter hook
+
+                # Include ControlNet residuals if present
+                if hook_down_res is not None:
+                    ip_scale_kw["down_block_additional_residuals"] = hook_down_res
+                if hook_mid_res is not None:
+                    ip_scale_kw["mid_block_additional_residual"] = hook_mid_res
+
+                _unet_result = self.unet(
+                    x_t_latent_plus_uc,
+                    t_list,
+                    encoder_hidden_states=self.prompt_embeds,
+                    kvo_cache=self.kvo_cache,
+                    fio_cache=self.fio_cache,
+                    fi_strength=self._fi_strength_tensor,
+                    fi_threshold=self._fi_threshold_tensor,
+                    return_dict=False,
+                    **ip_scale_kw,
+                )
+                model_pred = _unet_result[0]
+                kvo_cache_out = _unet_result[1] if len(_unet_result) > 1 else []
+                fio_cache_out = _unet_result[2] if len(_unet_result) > 2 else []
+                self.update_kvo_cache(kvo_cache_out, fio_cache_out)
+
+        with profiler.region("unet_step.post"):
+            if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):
+                noise_pred_text = model_pred[1:]
+                self.stock_noise[0:1].copy_(model_pred[0:1])  # in-place: eliminates 1 malloc + copy kernel
+            elif self.guidance_scale > 1.0 and (self.cfg_type == "full"):
+                noise_pred_uncond, noise_pred_text = model_pred.chunk(2)
+            else:
+                noise_pred_text = model_pred
+
+            if self.guidance_scale > 1.0 and (self.cfg_type == "self" or self.cfg_type == "initialize"):
+                noise_pred_uncond = self.stock_noise * self.delta
+
+            if self.guidance_scale > 1.0 and self.cfg_type != "none":
+                model_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
+            else:
+                model_pred = noise_pred_text
 
         # compute the previous noisy sample x_t -> x_t-1
         if self.use_denoising_batch:

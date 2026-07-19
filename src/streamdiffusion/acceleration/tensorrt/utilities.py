@@ -289,7 +289,7 @@ def _apply_gpu_profile_to_config(
     Args:
         config: TRT IBuilderConfig to modify.
         gpu_profile: Hardware-detected build parameters from detect_gpu_profile().
-        dynamic_shapes: Whether this engine uses dynamic input shapes.
+        dynamic_shapes: Whether this engine has any symbolic dim, incl. batch.
             - True  (default): tiling and l2_limit skipped — TRT confirms these have
               no effect on symbolic-shape graphs and only produce warning spam.
             - False (static): tiling and l2_limit applied for full L2 cache benefit.
@@ -541,6 +541,35 @@ class TRTProfiler(trt.IProfiler):
         return "\n".join(lines)
 
 
+def _staging_action(
+    name: str,
+    zero_copy_names: frozenset,
+    is_contiguous: bool,
+    dtype_match: bool,
+    prev_ptr: Optional[int],
+    cur_ptr: int,
+    graph_exists: bool,
+) -> str:
+    """Decide how Engine.infer() should stage one feed_dict input.
+
+    Pure function (no CUDA calls) so the zero-copy decision table is unit-testable
+    without a real CUDA graph — see Sub-phase 5.6,
+    docs/perf_bestpractices_audit_2026-07-10.md.
+
+    Returns one of:
+      "copy"           - copy into self.tensors[name] (today's behavior; always safe)
+      "bind"           - skip the copy; bind TensorRT directly to the caller's tensor
+      "bind_and_reset" - skip the copy and bind directly, but reset the CUDA graph
+                         first because the caller's address changed while a graph
+                         built from the old address was still live
+    """
+    if name not in zero_copy_names or not is_contiguous or not dtype_match:
+        return "copy"
+    if graph_exists and cur_ptr != prev_ptr:
+        return "bind_and_reset"
+    return "bind"
+
+
 class Engine:
     def __init__(
         self,
@@ -561,6 +590,11 @@ class Engine:
         # Cached ExternalStream wrapping the engine's polygraphy stream; allocated on
         # first infer() call so we avoid constructing a new Python wrapper every frame.
         self._engine_ext_stream = None
+        # Sub-phase 5.6: last-bound caller tensor address per zero-copy input name,
+        # so infer() can detect a pointer change and force a graph reset instead of
+        # silently replaying stale addresses. Only populated for names actually
+        # passed via infer()'s zero_copy_names.
+        self._bound_ptrs: dict[str, int] = {}
 
     def __del__(self):
         # Check if AttributeError: 'Engine' object has no attribute 'buffers'
@@ -1089,7 +1123,7 @@ class Engine:
             CUASSERT(cudart.cudaGraphDestroy(self.graph))
             self.graph = None
 
-    def infer(self, feed_dict, stream, use_cuda_graph=False):
+    def infer(self, feed_dict, stream, use_cuda_graph=False, zero_copy_names: frozenset = frozenset()):
         # IProfiler cannot report per-layer times through CUDA graph replay — disable graphs
         # when profiler is attached. This is automatically set when STREAMDIFFUSION_PROFILE_TRT
         # is set in activate(), so callers do not need to change anything.
@@ -1136,14 +1170,49 @@ class Engine:
                     pt_stream,
                     stream.ptr,
                 )
+        # Sub-phase 5.6: for opt-in zero-copy names (kvo/fio UNet cache inputs — already
+        # persistent, address-stable, TRT-contiguous tensors), skip the DtoD copy and
+        # point TensorRT directly at the caller's tensor instead. Every other input
+        # (zero_copy_names defaults to frozenset()) takes the original copy_() path,
+        # so non-UNet engines (VAE/ControlNet/safety) are byte-for-byte unchanged.
+        bind_ptrs: dict[str, int] = {}
+        needs_reset = False
+        graph_exists = self.cuda_graph_instance is not None
         with torch.cuda.stream(self._engine_ext_stream):
             with _gpu_profiler.region("trt.input_staging"):
                 for name, buf in feed_dict.items():
-                    self.tensors[name].copy_(buf)
+                    cur_ptr = buf.data_ptr()
+                    action = _staging_action(
+                        name,
+                        zero_copy_names,
+                        buf.is_contiguous(),
+                        buf.dtype == self.tensors[name].dtype,
+                        self._bound_ptrs.get(name),
+                        cur_ptr,
+                        graph_exists,
+                    )
+                    if action == "copy":
+                        self.tensors[name].copy_(buf)
+                    else:
+                        bind_ptrs[name] = cur_ptr
+                        if action == "bind_and_reset":
+                            needs_reset = True
 
-        for name, tensor in self.tensors.items():
-            if not self.context.set_tensor_address(name, tensor.data_ptr()):
-                raise RuntimeError(f"TensorRT: set_tensor_address failed for '{name}'")
+        if needs_reset and self.cuda_graph_instance is not None:
+            self.reset_cuda_graph()
+
+        # In graphed steady state the tensor addresses are baked into the captured graph
+        # (self.tensors[name] are persistent buffers reused via copy_() — see
+        # _can_reuse_buffers/allocate_buffers, which resets cuda_graph_instance to None
+        # whenever a buffer is actually reallocated). Re-binding every frame is then pure
+        # host overhead; only rebind on first capture or after a reset (instance is None).
+        if not (use_cuda_graph and self.cuda_graph_instance is not None):
+            for name, tensor in self.tensors.items():
+                address = bind_ptrs.get(name, tensor.data_ptr())
+                if not self.context.set_tensor_address(name, address):
+                    raise RuntimeError(f"TensorRT: set_tensor_address failed for '{name}'")
+                if name in bind_ptrs:
+                    self._bound_ptrs[name] = address
 
         with _gpu_profiler.region("trt_infer"):
             if use_cuda_graph:
@@ -1366,7 +1435,12 @@ def build_engine(
         workspace_size=max_workspace_size,
         fp8=fp8,
         gpu_profile=gpu_profile,
-        dynamic_shapes=build_dynamic_shape,
+        # Any symbolic dim (resolution OR batch) disqualifies l2tc tiling — see
+        # _apply_gpu_profile_to_config. build_dynamic_shape alone misses the
+        # batch-dynamic/resolution-static case (e.g. default "Flexible" UNet
+        # preset), which previously reached the tiling branch and TRT emitted
+        # "[l2tc] VALIDATE FAIL - Graph contains symbolic shape" as a no-op.
+        dynamic_shapes=build_dynamic_shape or not build_static_batch,
     )
 
     return engine

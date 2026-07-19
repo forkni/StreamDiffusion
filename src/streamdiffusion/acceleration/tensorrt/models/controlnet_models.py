@@ -65,12 +65,14 @@ class ControlNetTRT(BaseModel):
             min_ctrl_h = max_ctrl_h = opt_ctrl_h = image_height
             min_ctrl_w = max_ctrl_w = opt_ctrl_w = image_width
         else:
-            min_ctrl_h = 384
-            max_ctrl_h = 1024
-            opt_ctrl_h = 704
-            min_ctrl_w = 384
-            max_ctrl_w = 1024
-            opt_ctrl_w = 704
+            # Share the floor/ceiling with BaseModel (min_image_shape/max_image_shape)
+            # instead of a hardcoded 384 — keeps ControlNet's dynamic range aligned with
+            # the UNet's (256-1024), so [256, 384) resolutions no longer hard-fail with
+            # ControlNet active. opt stays 704, clamped into range defensively.
+            min_ctrl_h, max_ctrl_h = self.min_image_shape, self.max_image_shape
+            min_ctrl_w, max_ctrl_w = self.min_image_shape, self.max_image_shape
+            opt_ctrl_h = min(max(704, min_ctrl_h), max_ctrl_h)
+            opt_ctrl_w = min(max(704, min_ctrl_w), max_ctrl_w)
 
         min_latent_h = min_ctrl_h // 8
         max_latent_h = max_ctrl_h // 8

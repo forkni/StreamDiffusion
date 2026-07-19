@@ -350,6 +350,9 @@ class StreamDiffusionWrapper:
         self._output_pin_buf: Optional[torch.Tensor] = None  # pinned CPU buffer for async D2H output
         self._output_gpu_buf: Optional[torch.Tensor] = None  # persistent GPU fp32 staging (avoids per-frame alloc)
         self._d2h_event: Optional[torch.cuda.Event] = None  # event for fine-grained D2H sync
+        self._ipc_pack_buf: Optional[torch.Tensor] = None  # persistent GPU BGRA buffer for _ipc_pack_rgba (5f)
+        # persistent GPU BGRA buffer for _ipc_pack_unit_rgba (5f)
+        self._ipc_pack_unit_buf: Optional[torch.Tensor] = None
         self.use_cuda_ipc_output = use_cuda_ipc_output
         self._cuda_ipc_shm_name = cuda_ipc_shm_name
         self._cuda_ipc_num_slots = cuda_ipc_num_slots
@@ -374,6 +377,13 @@ class StreamDiffusionWrapper:
         # Caches the last clean (non-flagged) pipeline tensor for the "previous" fallback strategy.
         # Operates in diffusion range [-1, 1]; set by _apply_safety_checker().
         self._prev_clean_tensor: Optional[torch.Tensor] = None
+        # Pinned CPU scalar for the 1-frame-delayed async NSFW readback (lazy; see
+        # _apply_safety_checker). Distinct from _output_pin_buf, which is uint8
+        # image-shaped and reallocated by the output-postprocessing paths.
+        self._nsfw_prob_pin: Optional[torch.Tensor] = None
+        # Raw frame awaiting its own verdict; buffered one call for correct-attribution
+        # delayed emission (see _apply_safety_checker).
+        self._pending_frame: Optional[torch.Tensor] = None
         self.fp8 = fp8
         self.static_shapes = static_shapes
         self.fp8_allow_fp16_fallback = fp8_allow_fp16_fallback
@@ -1075,15 +1085,35 @@ class StreamDiffusionWrapper:
             return postprocess_image(image_tensor.cpu(), output_type=output_type)[0]
 
     def _ipc_pack_rgba(self, image_tensor: torch.Tensor) -> torch.Tensor:
-        """Convert pipeline output to HWC uint8 BGRA on GPU for cuda-link wire contract."""
+        """Convert pipeline output to HWC uint8 BGRA on GPU for cuda-link wire contract.
+
+        Writes into a persistent HWC×4 GPU buffer (realloc'd only on shape/device change)
+        instead of allocating a fresh alpha channel + concatenated tensor every frame (5f).
+        SAFE ONLY because the IPC exporter is forced to blocking export (see
+        _lazy_init_ipc_exporter / ADR-0001): the frame must be fully copied out via cuda-link
+        before this buffer is overwritten next call. Async export (CUDALINK_EXPORT_SYNC=0)
+        would race against this reused buffer and needs double-buffering first — not
+        implemented.
+        """
         with profiler.region("glue.ipc_pack_rgba"):
             denorm = self._denormalize_on_gpu(image_tensor)  # NCHW [0,1]
             if denorm.dim() == 4:
                 denorm = denorm[0]  # CHW [0,1]
             rgb_u8 = (denorm * 255).clamp(0, 255).to(torch.uint8)  # CHW uint8
             rgb_hwc = rgb_u8.permute(1, 2, 0).contiguous()  # HWC RGB
-            alpha = torch.full_like(rgb_hwc[..., :1], 255)
-            return torch.cat([rgb_hwc[..., 2:3], rgb_hwc[..., 1:2], rgb_hwc[..., 0:1], alpha], dim=-1).contiguous()
+            h, w = rgb_hwc.shape[0], rgb_hwc.shape[1]
+            if (
+                self._ipc_pack_buf is None
+                or self._ipc_pack_buf.shape[0] != h
+                or self._ipc_pack_buf.shape[1] != w
+                or self._ipc_pack_buf.device != rgb_hwc.device
+            ):
+                self._ipc_pack_buf = torch.empty((h, w, 4), dtype=torch.uint8, device=rgb_hwc.device)
+                self._ipc_pack_buf[..., 3] = 255  # constant alpha, set once at (re)allocation
+            self._ipc_pack_buf[..., 0] = rgb_hwc[..., 2]  # B
+            self._ipc_pack_buf[..., 1] = rgb_hwc[..., 1]  # G
+            self._ipc_pack_buf[..., 2] = rgb_hwc[..., 0]  # R
+            return self._ipc_pack_buf
 
     def _lazy_init_ipc_exporter(self, height: int, width: int):
         """Initialize Exporter on first frame (lazy to defer CUDA IPC SHM creation)."""
@@ -1093,10 +1123,11 @@ class StreamDiffusionWrapper:
 
         from cuda_link import Exporter, ExportPolicy, FrameSpec
 
-        # SD source buffers (_ipc_pack_rgba output) are transient torch tensors recycled by
-        # PyTorch's caching allocator the moment the caller returns.  Async export would read
-        # recycled memory → torn frames (ADR-0001 source-buffer lifetime race).  Force
-        # blocking unless the user explicitly opted into async with CUDALINK_EXPORT_SYNC=0.
+        # SD source buffers (_ipc_pack_rgba output) are a persistent GPU buffer reused every
+        # frame (5f), not a fresh allocation. Async export would read a buffer that's already
+        # been overwritten by the next frame → torn frames (ADR-0001 source-buffer lifetime
+        # race). Force blocking unless the user explicitly opted into async with
+        # CUDALINK_EXPORT_SYNC=0.
         policy = ExportPolicy.from_env()
         if os.environ.get("CUDALINK_EXPORT_SYNC") is None:
             policy = _dc_replace(policy, export_sync=True)
@@ -1119,6 +1150,10 @@ class StreamDiffusionWrapper:
 
         Like _ipc_pack_rgba but skips _denormalize_on_gpu — the ControlNet preprocessor
         output is already in [0, 1] (not the diffusion [-1, 1] range).
+
+        Writes into a persistent HWC×4 GPU buffer (5f), same rationale/caveat as
+        _ipc_pack_rgba: SAFE ONLY while the CN-preview exporter stays forced-blocking
+        (see _lazy_init_cn_ipc_exporter / ADR-0001).
         """
         with profiler.region("glue.ipc_pack_unit_rgba"):
             t = image_tensor
@@ -1126,8 +1161,19 @@ class StreamDiffusionWrapper:
                 t = t[0]  # NCHW → CHW [0,1]
             rgb_u8 = (t * 255).clamp(0, 255).to(torch.uint8)  # CHW uint8
             rgb_hwc = rgb_u8.permute(1, 2, 0).contiguous()  # HWC RGB
-            alpha = torch.full_like(rgb_hwc[..., :1], 255)
-            return torch.cat([rgb_hwc[..., 2:3], rgb_hwc[..., 1:2], rgb_hwc[..., 0:1], alpha], dim=-1).contiguous()
+            h, w = rgb_hwc.shape[0], rgb_hwc.shape[1]
+            if (
+                self._ipc_pack_unit_buf is None
+                or self._ipc_pack_unit_buf.shape[0] != h
+                or self._ipc_pack_unit_buf.shape[1] != w
+                or self._ipc_pack_unit_buf.device != rgb_hwc.device
+            ):
+                self._ipc_pack_unit_buf = torch.empty((h, w, 4), dtype=torch.uint8, device=rgb_hwc.device)
+                self._ipc_pack_unit_buf[..., 3] = 255  # constant alpha, set once at (re)allocation
+            self._ipc_pack_unit_buf[..., 0] = rgb_hwc[..., 2]  # B
+            self._ipc_pack_unit_buf[..., 1] = rgb_hwc[..., 1]  # G
+            self._ipc_pack_unit_buf[..., 2] = rgb_hwc[..., 0]  # R
+            return self._ipc_pack_unit_buf
 
     def _lazy_init_cn_ipc_exporter(self, height: int, width: int):
         """Initialize the CN-preview Exporter on first frame (lazy, mirrors _lazy_init_ipc_exporter)."""
@@ -1138,7 +1184,7 @@ class StreamDiffusionWrapper:
         from cuda_link import Exporter, ExportPolicy, FrameSpec
 
         # Same source-buffer lifetime race as _lazy_init_ipc_exporter: _ipc_pack_unit_rgba
-        # returns a transient tensor that the caching allocator recycles on return.
+        # returns a persistent GPU buffer (5f) reused every frame, overwritten on the next call.
         # Force blocking unless CUDALINK_EXPORT_SYNC=0 explicitly opts into async.
         policy = ExportPolicy.from_env()
         if os.environ.get("CUDALINK_EXPORT_SYNC") is None:
@@ -1299,20 +1345,29 @@ class StreamDiffusionWrapper:
         List[Image.Image]
             List of PIL RGB images, one for each item in the batch.
         """
-        # Denormalize on GPU first
+        # 5d: convert to uint8 NHWC on GPU (identical layout to the "np" output path @1045),
+        # then route through the shared pinned-buffer + Event machinery instead of a blocking,
+        # unpinned .cpu() into pageable memory. Only one output_type's fast path executes per
+        # postprocess_image() call, so sharing _output_pin_buf/_d2h_event with the "np" path
+        # is safe (shape/dtype-guarded realloc below covers either caller).
         denormalized = self._denormalize_on_gpu(image_tensor)
-
-        # Convert to uint8 on GPU to reduce transfer size
-        # Scale to [0, 255] and convert to uint8
-        # Scale to [0, 255] and convert to uint8
-        uint8_tensor = (denormalized * 255).clamp(0, 255).to(torch.uint8)
-
-        # Single efficient CPU transfer
-        cpu_tensor = uint8_tensor.cpu()
-
-        # Convert to HWC format for PIL
-        # From BCHW to BHWC
-        cpu_tensor = cpu_tensor.permute(0, 2, 3, 1)
+        uint8_nhwc = (denormalized * 255).clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1).contiguous()
+        if (
+            self._output_pin_buf is None
+            or self._output_pin_buf.shape != uint8_nhwc.shape
+            or self._output_pin_buf.dtype != torch.uint8
+        ):
+            self._output_pin_buf = torch.empty(uint8_nhwc.shape, dtype=torch.uint8, pin_memory=True)
+            self._d2h_event = torch.cuda.Event()
+        self._output_pin_buf.copy_(uint8_nhwc, non_blocking=True)
+        with profiler.region("d2h_sync"):
+            self._d2h_event.record()
+            self._d2h_event.synchronize()
+        # NOTE: like the "np" output path, each PIL Image below wraps a view of
+        # `_output_pin_buf` (Image.fromarray shares the numpy buffer, it does not copy).
+        # Callers that retain a returned PIL Image across frames must .copy() it themselves;
+        # this pinned buffer is overwritten in place on the next call.
+        cpu_tensor = self._output_pin_buf
 
         # Convert to PIL images efficiently
         pil_images = []
@@ -1335,6 +1390,25 @@ class StreamDiffusionWrapper:
         CUDA-IPC export path: postprocess_image() exports the frame inside its own body and
         returns None, making any post-hoc substitution unreachable and unsafe.
 
+        1-frame-delayed async classification with delayed EMISSION (mirrors the async-launch
+        idea in SimilarImageFilter, image_filter.py, but — unlike that filter — buffers the raw
+        frame so each frame is gated on its OWN verdict, never a neighbor's). Each call:
+        reads the pinned verdict for the frame buffered on the PREVIOUS call (now landed),
+        emits that buffered frame gated on its own verdict, launches classification for THIS
+        frame, and buffers this frame for the next call. No explicit sync guards the pinned
+        read — the same trade-off SimilarImageFilter already makes: stream ordering means the
+        async copy is enqueued before all of this frame's remaining GPU work, and by the time
+        Python reaches this call again next frame (after a full diffusion step + decode, and —
+        for "np"/"pil" output — a hard _d2h_event.synchronize() in postprocess_image) the tiny
+        4-byte D2H copy has long since landed in practice. This avoids forcing a
+        cudaStreamSynchronize on the hot path. Accepted trade-off for an opt-in, off-by-default,
+        TensorRT-only feature.
+
+        Two consequences are inherent to gating each frame on its own async verdict without a
+        sync: (1) output is delayed by exactly one frame; (2) the very first call has no buffered
+        frame yet, so it emits a black startup frame instead of passing raw pixels through
+        unscreened, and the final buffered frame of a stream is never emitted at shutdown.
+
         Parameters
         ----------
         image_tensor : torch.Tensor
@@ -1343,8 +1417,9 @@ class StreamDiffusionWrapper:
         Returns
         -------
         torch.Tensor
-            The original tensor when content is clean, or a fallback tensor (previous clean
-            frame, or all-black encoded as -1.0 in diffusion range) when content is flagged.
+            The previously-buffered frame, unchanged when clean, or a fallback tensor (previous
+            clean frame, or all-black encoded as -1.0 in diffusion range) when flagged. On the
+            very first call, an all-black startup frame (no buffered frame exists yet).
         """
         if not self.use_safety_checker:
             return image_tensor
@@ -1352,18 +1427,40 @@ class StreamDiffusionWrapper:
         # Denormalize to [0, 1] NCHW for the classifier; stays on GPU.
         denormalized = self._denormalize_on_gpu(image_tensor)
 
-        if self.safety_checker(denormalized, self.safety_checker_threshold):
+        if self._pending_frame is None:
+            # First call: nothing buffered yet, so no frame can be gated on its own verdict.
+            # Prime the pipeline (launch this frame's classification, buffer it) and emit a
+            # black safety frame rather than ungated pixels.
+            pin = torch.zeros(1, dtype=torch.float32, device="cpu")
+            if torch.cuda.is_available():
+                pin = pin.pin_memory()
+            self._nsfw_prob_pin = pin
+            self.safety_checker(denormalized, self._nsfw_prob_pin)
+            self._pending_frame = image_tensor.clone()
+            return torch.full_like(image_tensor, -1.0)
+
+        # Step 1: read the PENDING frame's own async result (pinned CPU read, no GPU sync).
+        flagged = self._nsfw_prob_pin.item() >= self.safety_checker_threshold
+
+        # Step 2: launch THIS frame's classification + async pinned copy (no sync).
+        self.safety_checker(denormalized, self._nsfw_prob_pin)
+
+        # Step 3: rotate the pending frame out and this frame in.
+        pending = self._pending_frame
+        self._pending_frame = image_tensor.clone()
+
+        if flagged:
             logger.info("NSFW content detected, applying safety fallback frame")
             if self.safety_checker_fallback_type == "previous" and self._prev_clean_tensor is not None:
                 return self._prev_clean_tensor
             # -1.0 in diffusion range → 0.0 after denormalization → true black on every output
             # path (pt, np, pil, CUDA-IPC).
-            return torch.full_like(image_tensor, -1.0)
+            return torch.full_like(pending, -1.0)
 
-        # Content is clean — cache it for the "previous" fallback strategy.
+        # Pending frame is clean — cache it for the "previous" fallback strategy.
         if self.safety_checker_fallback_type == "previous":
-            self._prev_clean_tensor = image_tensor.clone()
-        return image_tensor
+            self._prev_clean_tensor = pending
+        return pending
 
     def _load_model(
         self,
@@ -3010,6 +3107,10 @@ class StreamDiffusionWrapper:
         self._output_pin_buf = None
         self._output_gpu_buf = None
         self._d2h_event = None
+        self._ipc_pack_buf = None
+        self._ipc_pack_unit_buf = None
+        self._nsfw_prob_pin = None
+        self._pending_frame = None
 
         # Force multiple garbage collection cycles for thorough cleanup
         for i in range(3):
