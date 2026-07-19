@@ -15,7 +15,6 @@ from streamdiffusion.preprocessing.preprocessing_orchestrator import (
 )
 from streamdiffusion.tools.gpu_profiler import profiler
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -106,9 +105,9 @@ class ControlNetModule(OrchestratorUser):
         # Register UNet hook
         stream.unet_hooks.append(self.build_unet_hook())
         # Expose controlnet collections so existing updater can find them
-        setattr(stream, "controlnets", self.controlnets)
-        setattr(stream, "controlnet_scales", self.controlnet_scales)
-        setattr(stream, "preprocessors", self.preprocessors)
+        stream.controlnets = self.controlnets
+        stream.controlnet_scales = self.controlnet_scales
+        stream.preprocessors = self.preprocessors
         # Reset prepared tensors on install
         self._prepared_tensors = []
         self._prepared_device = None
@@ -147,7 +146,7 @@ class ControlNetModule(OrchestratorUser):
             if cfg.preprocessor_params:
                 params = cfg.preprocessor_params or {}
                 # If the preprocessor exposes a 'params' dict, update it
-                if hasattr(preproc, "params") and isinstance(getattr(preproc, "params"), dict):
+                if hasattr(preproc, "params") and isinstance(preproc.params, dict):
                     preproc.params.update(params)
                 # Also set attributes directly when they exist
                 for name, value in params.items():
@@ -159,13 +158,13 @@ class ControlNetModule(OrchestratorUser):
 
             # Align preprocessor target size with stream resolution once (avoid double-resize later)
             try:
-                if hasattr(preproc, "params") and isinstance(getattr(preproc, "params"), dict):
+                if hasattr(preproc, "params") and isinstance(preproc.params, dict):
                     preproc.params["image_width"] = int(self._stream.width)
                     preproc.params["image_height"] = int(self._stream.height)
                 if hasattr(preproc, "image_width"):
-                    setattr(preproc, "image_width", int(self._stream.width))
+                    preproc.image_width = int(self._stream.width)
                 if hasattr(preproc, "image_height"):
-                    setattr(preproc, "image_height", int(self._stream.height))
+                    preproc.image_height = int(self._stream.height)
             except Exception as e:
                 logger.debug(f"Failed to align preprocessor target size with stream resolution: {e}", exc_info=True)
 
@@ -396,7 +395,7 @@ class ControlNetModule(OrchestratorUser):
             self._prepared_dtype = dtype
             self._prepared_batch = batch_size
 
-    def _get_cached_sdxl_conditioning(self, ctx: "StepCtx") -> Optional[Dict[str, torch.Tensor]]:
+    def _get_cached_sdxl_conditioning(self, ctx: StepCtx) -> Optional[Dict[str, torch.Tensor]]:
         """Get cached SDXL conditioning to avoid repeated preparation"""
         if not self._is_sdxl or ctx.sdxl_cond is None:
             return None
@@ -739,7 +738,7 @@ class ControlNetModule(OrchestratorUser):
             controlnet = controlnet.to(device=self.device, dtype=self.dtype)
             # Track model_id for updater diffing
             try:
-                setattr(controlnet, "model_id", model_id)
+                controlnet.model_id = model_id
             except Exception as e:
                 logger.debug(f"Failed to set model_id attribute on controlnet: {e}", exc_info=True)
             return controlnet

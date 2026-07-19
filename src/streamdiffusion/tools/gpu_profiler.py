@@ -41,7 +41,6 @@ from contextlib import contextmanager
 from functools import wraps
 from typing import Any, Callable, Dict, Generator, List, Optional
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # RegionStats — per-region histogram with percentile support
 # ─────────────────────────────────────────────────────────────────────────────
@@ -50,7 +49,7 @@ from typing import Any, Callable, Dict, Generator, List, Optional
 class RegionStats:
     """Histogram-based timing statistics for a named profiling region."""
 
-    __slots__ = ("name", "samples", "count", "total_ms")
+    __slots__ = ("count", "name", "samples", "total_ms")
 
     MAX_SAMPLES = 10_000  # cap to avoid unbounded memory
 
@@ -123,16 +122,16 @@ class _RegionCtx:
     On exit:  optional NVTX range_pop + CUDA event elapsed_time -> RegionStats.
     """
 
-    __slots__ = ("_profiler", "_name", "_nvtx", "_start_evt", "_end_evt")
+    __slots__ = ("_end_evt", "_name", "_nvtx", "_profiler", "_start_evt")
 
-    def __init__(self, profiler: "GPUProfiler", name: str) -> None:
+    def __init__(self, profiler: GPUProfiler, name: str) -> None:
         self._profiler = profiler
         self._name = name
         self._nvtx = profiler._nvtx_enabled
         self._start_evt = None
         self._end_evt = None
 
-    def __enter__(self) -> "_RegionCtx":
+    def __enter__(self) -> _RegionCtx:
         p = self._profiler
         if self._nvtx:
             p._torch.cuda.nvtx.range_push(self._name)
@@ -158,7 +157,7 @@ class _NullCtx:
 
     __slots__ = ()
 
-    def __enter__(self) -> "_NullCtx":
+    def __enter__(self) -> _NullCtx:
         return self
 
     def __exit__(self, *_: object) -> None:
@@ -471,10 +470,10 @@ class _NullProfiler:
 
     __slots__ = ()
 
-    def region(self, name: str) -> _NullCtx:  # noqa: ARG002
+    def region(self, name: str) -> _NullCtx:
         return _NULL_CTX
 
-    def trace(self, name: str) -> Callable:  # noqa: ARG002
+    def trace(self, name: str) -> Callable:
         """Return identity decorator — function is NOT wrapped."""
 
         def decorator(fn: Callable) -> Callable:
@@ -483,45 +482,45 @@ class _NullProfiler:
         return decorator
 
     def mark(self, name: str) -> None:
-        pass  # noqa: E704
+        pass
 
     def begin(self, name: str) -> None:
-        pass  # noqa: E704
+        pass
 
     def end(self, name: str) -> None:
-        pass  # noqa: E704
+        pass
 
     def nsys_start(self) -> None:
-        pass  # noqa: E704
+        pass
 
     def nsys_stop(self) -> None:
-        pass  # noqa: E704
+        pass
 
     def step(self) -> None:
-        pass  # noqa: E704
+        pass
 
     def flush(self) -> None:
-        pass  # noqa: E704
+        pass
 
     def report(self, top_n: int = 30) -> None:
-        pass  # noqa: E704, ARG002
+        pass
 
     def reset(self) -> None:
-        pass  # noqa: E704
+        pass
 
     @contextmanager
-    def torch_trace(self, path: Optional[str] = None, warmup: int = 1, active: int = 5) -> Generator[None, None, None]:  # noqa: ARG002
+    def torch_trace(self, path: Optional[str] = None, warmup: int = 1, active: int = 5) -> Generator[None, None, None]:
         yield
 
     @contextmanager
-    def memory_trace(self, path: str = "mem_snapshot.pkl") -> Generator[None, None, None]:  # noqa: ARG002
+    def memory_trace(self, path: str = "mem_snapshot.pkl") -> Generator[None, None, None]:
         yield
 
-    def export_stats(self, path: str = "gpu_profile_stats.json") -> None:  # noqa: ARG002
+    def export_stats(self, path: str = "gpu_profile_stats.json") -> None:
         pass
 
     def configure(self, **kwargs: Any) -> None:
-        pass  # noqa: E704, ARG002
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -616,7 +615,7 @@ def configure_from_dict(cfg: Dict[str, Any]) -> None:
                 "nvtx": true,
                 "events": true,
                 "memory": false,
-                "trace_path": "profiler_logs/trace.json"
+                "trace_path": "profiler_logs/trace.json",
             }
         }
     """

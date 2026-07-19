@@ -28,7 +28,6 @@ from PIL import Image
 
 from .base import BasePreprocessor
 
-
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from PIL import Image
 
 from .base import BasePreprocessor
-from .category_params import EDGE_SMOOTHNESS_PARAM, apply_edge_smoothness
+from .category_params import EDGE_SMOOTHNESS_PARAM
 
 
 class CannyPreprocessor(BasePreprocessor):
@@ -16,7 +16,6 @@ class CannyPreprocessor(BasePreprocessor):
     """
 
     gpu_native = True  # _process_tensor_core uses conv2d — no CPU/PIL round-trip
-
 
     @classmethod
     def get_preprocessor_metadata(cls):
@@ -71,7 +70,6 @@ class CannyPreprocessor(BasePreprocessor):
 
         low_threshold = self.params.get("low_threshold", 100)
         high_threshold = self.params.get("high_threshold", 200)
-
 
         edges = cv2.Canny(gray, low_threshold, high_threshold)
         edges_rgb = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)

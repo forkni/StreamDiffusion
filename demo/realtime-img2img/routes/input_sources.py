@@ -16,7 +16,6 @@ from utils.video_utils import is_supported_video_format, validate_video_file
 from .common.api_utils import create_success_response, handle_api_error, handle_api_request
 from .common.dependencies import get_app_instance
 
-
 router = APIRouter(prefix="/api/input-sources", tags=["input-sources"])
 
 logger = logging.getLogger("input_sources_api")
@@ -59,7 +58,7 @@ async def set_input_source(request: Request, app_instance=Depends(get_app_instan
         try:
             source_type = InputSourceType(source_type_str)
         except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid source type: {source_type_str}")
+            raise HTTPException(status_code=400, detail=f"Invalid source type: {source_type_str}") from None
 
         # Validate index for controlnet
         if component == "controlnet" and index is None:
@@ -139,7 +138,7 @@ async def upload_component_image(
         except Exception as e:
             # Clean up file if image processing fails
             file_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail=f"Invalid image file: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Invalid image file: {e!s}") from e
 
         # Get input source manager and set source
         manager = _get_input_source_manager(app_instance)

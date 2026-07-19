@@ -16,7 +16,6 @@ from __future__ import annotations
 import inspect
 import logging
 
-
 logger = logging.getLogger(__name__)
 
 _PATCHED = False
@@ -87,10 +86,10 @@ def _patch_attn_processor() -> None:
             self,
             attn,
             hidden_states,
+            *args,
             encoder_hidden_states=encoder_hidden_states,
             attention_mask=attention_mask,
             temb=temb,
-            *args,
             **kwargs,
         )
         return result, kvo_cache

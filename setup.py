@@ -16,7 +16,7 @@ def _check_torch_installed():
             "  pip install --index-url https://download.pytorch.org/whl/cu12x torch torchvision\n"
             "Replace the index URL and versions to match your CUDA runtime."
         )
-        raise RuntimeError(msg)
+        raise RuntimeError(msg) from None
 
     if not torch.version.cuda:
         raise RuntimeError(
@@ -120,7 +120,7 @@ setup(
     name="streamdiffusion",
     version="0.1.1",
     description="real-time interactive image generation pipeline",
-    long_description=open("README.md", "r", encoding="utf-8").read(),
+    long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     keywords="deep learning diffusion pytorch stable diffusion audioldm streamdiffusion real-time",
     license="Apache 2.0 License",

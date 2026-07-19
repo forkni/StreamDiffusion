@@ -42,7 +42,7 @@ async def handle_api_request(
 
     except Exception as e:
         logging.exception(f"{operation_name}: Failed to parse request: {e}")
-        raise HTTPException(status_code=400, detail=f"Invalid request format: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Invalid request format: {e!s}") from e
 
 
 def create_success_response(message: str, **extra_data) -> JSONResponse:
@@ -74,7 +74,7 @@ def handle_api_error(error: Exception, operation_name: str, status_code: int = 5
         HTTPException with standardized error message
     """
     logging.error(f"{operation_name}: Failed: {error}")
-    return HTTPException(status_code=status_code, detail=f"Failed to {operation_name.lower()}: {str(error)}")
+    return HTTPException(status_code=status_code, detail=f"Failed to {operation_name.lower()}: {error!s}")
 
 
 def validate_pipeline(pipeline: Any, operation_name: str) -> None:

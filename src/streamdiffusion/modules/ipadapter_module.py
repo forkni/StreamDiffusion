@@ -12,7 +12,6 @@ from streamdiffusion.hooks import EmbeddingHook, EmbedsCtx, StepCtx, UnetHook, U
 from streamdiffusion.preprocessing.orchestrator_user import OrchestratorUser
 from streamdiffusion.utils.reporting import report_error
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -365,11 +364,11 @@ class IPAdapterModule(OrchestratorUser):
 
         # Expose IPAdapter instance as single source of truth
         try:
-            setattr(stream, "ipadapter", ipadapter)
+            stream.ipadapter = ipadapter
             # Extend IPAdapter with our custom attributes since diffusers IPAdapter doesn't expose current state
-            setattr(ipadapter, "weight_type", self.config.weight_type)  # For build_layer_weights
-            setattr(ipadapter, "scale", float(self.config.scale))  # Track current scale
-            setattr(ipadapter, "enabled", bool(self.config.enabled))  # Track enabled state
+            ipadapter.weight_type = self.config.weight_type  # For build_layer_weights
+            ipadapter.scale = float(self.config.scale)  # Track current scale
+            ipadapter.enabled = bool(self.config.enabled)  # Track enabled state
         except Exception as e:
             logger.debug(f"Failed to attach custom attributes to ipadapter instance: {e}", exc_info=True)
 

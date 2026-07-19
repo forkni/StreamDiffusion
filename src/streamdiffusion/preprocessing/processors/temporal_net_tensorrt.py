@@ -9,7 +9,6 @@ from PIL import Image
 
 from .base import PipelineAwareProcessor
 
-
 # Try to import TensorRT dependencies
 try:
     from collections import OrderedDict
@@ -24,7 +23,10 @@ except ImportError:
 
 # Try to import torchvision for RAFT model
 try:
-    from torchvision.models.optical_flow import Raft_Small_Weights, raft_small
+    from torchvision.models.optical_flow import (  # noqa: F401  # TODO: pre-existing, untouched by this refactor
+        Raft_Small_Weights,
+        raft_small,
+    )
     from torchvision.utils import flow_to_image
 
     TORCHVISION_AVAILABLE = True
@@ -324,7 +326,7 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
                 f"Failed to load TensorRT engine from {self.engine_path}: {e}\n"
                 f"Make sure the engine was built with a resolution range that includes {self.height}x{self.width}.\n"
                 f"For example: python -m streamdiffusion.tools.compile_raft_tensorrt --min_resolution 512x512 --max_resolution 1024x1024"
-            )
+            ) from e
 
     def _process_core(self, image: Image.Image) -> Image.Image:
         """

@@ -32,7 +32,6 @@ from pathlib import Path
 
 import tomllib
 
-
 # ============================================================================
 # PACKAGE CLASSIFICATION CONSTANTS
 # ============================================================================
@@ -1399,7 +1398,7 @@ def generate_markdown_report(
             if has_safe:
                 lines.append("**Safe to Keep (Development Tools)**:")
                 for category in safe_categories:
-                    if category in orphan_data and orphan_data[category]:
+                    if orphan_data.get(category):
                         tag, description = CATEGORY_LABELS.get(category, ("[?]", category))
                         for pkg in sorted(orphan_data[category], key=lambda x: x["name"]):
                             lines.append(f"- `{pkg['name']}` ({pkg['version']})")
@@ -1410,7 +1409,7 @@ def generate_markdown_report(
             if has_domain:
                 lines.append("**Domain-Specific Packages (Auto-Detected)**:")
                 for category in domain_categories:
-                    if category in orphan_data and orphan_data[category]:
+                    if orphan_data.get(category):
                         tag, description = CATEGORY_LABELS.get(category, ("[?]", category))
                         lines.append(f"- {description}:")
                         for pkg in sorted(orphan_data[category], key=lambda x: x["name"]):
@@ -1645,7 +1644,7 @@ Examples:
             print(f"Error: File not found: {json_file}", file=sys.stderr)
             sys.exit(1)
 
-        with open(json_file, "r", encoding="utf-8") as f:
+        with open(json_file, encoding="utf-8") as f:
             content = f.read()
 
         # Handle pip-audit header line (e.g., "No known vulnerabilities found")

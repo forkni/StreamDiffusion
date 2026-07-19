@@ -4,7 +4,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -360,17 +359,17 @@ class EngineManager:
 
     def _set_unet_metadata(self, loaded_engine, kwargs: Dict) -> None:
         """Set metadata on UNet engine for runtime use."""
-        setattr(loaded_engine, "use_control", kwargs.get("use_controlnet_trt", False))
-        setattr(loaded_engine, "use_ipadapter", kwargs.get("use_ipadapter_trt", False))
+        loaded_engine.use_control = kwargs.get("use_controlnet_trt", False)
+        loaded_engine.use_ipadapter = kwargs.get("use_ipadapter_trt", False)
 
         if kwargs.get("use_controlnet_trt", False):
-            setattr(loaded_engine, "unet_arch", kwargs.get("unet_arch", {}))
+            loaded_engine.unet_arch = kwargs.get("unet_arch", {})
 
         if kwargs.get("use_ipadapter_trt", False):
-            setattr(loaded_engine, "ipadapter_arch", kwargs.get("unet_arch", {}))
+            loaded_engine.ipadapter_arch = kwargs.get("unet_arch", {})
             # number of IP-attention layers for runtime vector sizing
             if "num_ip_layers" in kwargs and kwargs["num_ip_layers"] is not None:
-                setattr(loaded_engine, "num_ip_layers", kwargs["num_ip_layers"])
+                loaded_engine.num_ip_layers = kwargs["num_ip_layers"]
 
     def get_or_load_controlnet_engine(
         self,

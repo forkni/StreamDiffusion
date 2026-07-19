@@ -16,7 +16,6 @@ Run with: pytest tests/unit/test_trt_atomic_engine_write.py -v
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Import guard — skip all tests if utilities.py's dependencies are unavailable
 # ---------------------------------------------------------------------------

@@ -5,7 +5,6 @@ Activated explicitly from StreamDiffusionWrapper when acceleration=='tensorrt'.
 
 import torch
 
-
 _ALREADY = False  # idempotence guard
 
 

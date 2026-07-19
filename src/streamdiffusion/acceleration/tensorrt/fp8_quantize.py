@@ -29,7 +29,6 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-
 logger = logging.getLogger(__name__)
 
 _BUNDLED_PROMPTS_PATH = Path(__file__).parent / "calibration_prompts_sdxl.txt"
@@ -45,7 +44,7 @@ def _load_calibration_prompts(user_path: Optional[str] = None) -> List[str]:
             "abstract colorful geometric pattern",
             "landscape photography at golden hour",
         ]
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         prompts = [line.strip() for line in f if line.strip() and not line.startswith("#")]
     logger.info(f"[FP8] Loaded {len(prompts)} calibration prompts from {path.name}")
     return prompts
@@ -126,7 +125,7 @@ def capture_calibration_data(
             for i, batch in enumerate(batches):
                 logger.info(f"[FP8] Capture batch {i + 1}/{len(batches)}: {batch[0][:60]}")
                 try:
-                    pipe(
+                    _ = pipe(
                         prompt=batch if len(batch) > 1 else batch[0],
                         num_inference_steps=num_inference_steps,
                         output_type="latent",
@@ -584,7 +583,6 @@ def quantize_onnx_fp8(
                 f"[FP8] Tiled '{_k}' {_arr.shape[0]} → {_target_rows} rows "
                 f"(n_itr={_n_itr} × resolved_dim0={_resolved_dim0[_k]})"
             )
-
 
     import inspect as _inspect
 

@@ -11,7 +11,6 @@ Run with: pytest tests/unit/test_cn_preprocessor_residency.py -v
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # CN-coupled type → expected preprocessor mappings
 # (matches the plan table and the updated CN_MODEL_REGISTRY 'preprocessor' fields)

@@ -233,7 +233,7 @@ def validate_video_file(video_path: str) -> Tuple[bool, str]:
         return True, "Video file is valid"
 
     except Exception as e:
-        return False, f"Video validation error: {str(e)}"
+        return False, f"Video validation error: {e!s}"
 
 
 # Supported video formats

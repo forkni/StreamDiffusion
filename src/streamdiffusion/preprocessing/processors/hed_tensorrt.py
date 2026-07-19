@@ -16,7 +16,6 @@ import torch
 
 from .trt_base import SelfBuildingTRTPreprocessor, _first_output
 
-
 logger = logging.getLogger(__name__)
 
 try:

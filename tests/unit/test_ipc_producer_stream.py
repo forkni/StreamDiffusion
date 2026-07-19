@@ -21,7 +21,6 @@ ASCII-only (Windows cp1252 terminal compat).
 import unittest
 from unittest.mock import MagicMock
 
-
 # ---------------------------------------------------------------------------
 # Helpers: minimal stubs so wrapper.py can be imported without CUDA / diffusers
 # ---------------------------------------------------------------------------

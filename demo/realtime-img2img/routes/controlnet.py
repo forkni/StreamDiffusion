@@ -15,7 +15,6 @@ from .common.api_utils import (
 )
 from .common.dependencies import get_app_instance, get_available_controlnets
 
-
 router = APIRouter(prefix="/api", tags=["controlnet"])
 
 
@@ -48,7 +47,7 @@ async def upload_controlnet_config(file: UploadFile = File(...), app_instance=De
         try:
             config_data = yaml.safe_load(content.decode("utf-8"))
         except yaml.YAMLError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid YAML format: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Invalid YAML format: {e!s}") from e
 
         # YAML is source of truth - completely replace any runtime modifications
         app_instance.app_state.uploaded_config = config_data
@@ -78,12 +77,12 @@ async def upload_controlnet_config(file: UploadFile = File(...), app_instance=De
         # Get config prompt if available
         config_prompt = config_data.get("prompt", None)
         # Get negative prompt if available
-        config_negative_prompt = config_data.get("negative_prompt", None)
+        config_negative_prompt = config_data.get("negative_prompt", None)  # noqa: F841  # TODO: pre-existing, untouched by this refactor
 
         # Get t_index_list from config if available
         from app_config import DEFAULT_SETTINGS
 
-        t_index_list = config_data.get("t_index_list", DEFAULT_SETTINGS.get("t_index_list", [35, 45]))
+        t_index_list = config_data.get("t_index_list", DEFAULT_SETTINGS.get("t_index_list", [35, 45]))  # noqa: F841  # TODO: pre-existing, untouched by this refactor
 
         # Get acceleration from config if available
         config_acceleration = config_data.get("acceleration", app_instance.args.acceleration)
@@ -109,7 +108,7 @@ async def upload_controlnet_config(file: UploadFile = File(...), app_instance=De
                 )
 
             except (ValueError, TypeError):
-                raise HTTPException(status_code=400, detail="Invalid width/height values in config")
+                raise HTTPException(status_code=400, detail="Invalid width/height values in config") from None
 
         # Build current resolution string
         current_resolution = None
@@ -165,7 +164,7 @@ async def upload_controlnet_config(file: UploadFile = File(...), app_instance=De
 
     except Exception as e:
         logging.exception(f"upload_controlnet_config: Failed to upload configuration: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to upload configuration: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload configuration: {e!s}") from e
 
 
 @router.get("/controlnet/info")
@@ -208,7 +207,7 @@ async def get_current_blending_config(app_instance=Depends(get_app_instance)):
         )
 
     except Exception as e:
-        raise handle_api_error(e, "get_current_blending_config")
+        raise handle_api_error(e, "get_current_blending_config") from e
 
 
 @router.post("/controlnet/update-strength")
@@ -243,7 +242,7 @@ async def update_controlnet_strength(request: Request, app_instance=Depends(get_
         return create_success_response(f"Updated ControlNet {controlnet_index} strength to {strength}")
 
     except Exception as e:
-        raise handle_api_error(e, "update_controlnet_strength")
+        raise handle_api_error(e, "update_controlnet_strength") from e
 
 
 @router.get("/controlnet/available")
@@ -274,7 +273,6 @@ async def get_available_controlnets_endpoint(
             elif "sd-turbo" in ml or "sd21" in ml or "sd2.1" in ml or "2-1" in ml or "stable-diffusion-2" in ml:
                 model_type = "sd21"
 
-
         # Handle case where available_controlnets dependency returns None
         if available_controlnets is None:
             logging.warning("get_available_controlnets: available_controlnets dependency returned None")
@@ -304,7 +302,7 @@ async def get_available_controlnets_endpoint(
         )
 
     except Exception as e:
-        raise handle_api_error(e, "get_available_controlnets_endpoint")
+        raise handle_api_error(e, "get_available_controlnets_endpoint") from e
 
 
 @router.post("/controlnet/add")
@@ -383,7 +381,7 @@ async def add_controlnet(
         )
 
     except Exception as e:
-        raise handle_api_error(e, "add_controlnet")
+        raise handle_api_error(e, "add_controlnet") from e
 
 
 @router.get("/controlnet/status")
@@ -411,7 +409,7 @@ async def get_controlnet_status(app_instance=Depends(get_app_instance)):
         )
 
     except Exception as e:
-        raise handle_api_error(e, "get_controlnet_status")
+        raise handle_api_error(e, "get_controlnet_status") from e
 
 
 @router.post("/controlnet/remove")
@@ -435,7 +433,7 @@ async def remove_controlnet(request: Request, app_instance=Depends(get_app_insta
         if index < 0 or index >= len(controlnets):
             raise HTTPException(status_code=400, detail=f"ControlNet index {index} out of range")
 
-        removed_controlnet = controlnets.pop(index)
+        removed_controlnet = controlnets.pop(index)  # noqa: F841  # TODO: pre-existing, untouched by this refactor
 
         # Remove from AppState - SINGLE SOURCE OF TRUTH
         app_instance.app_state.remove_controlnet(index)
@@ -461,7 +459,7 @@ async def remove_controlnet(request: Request, app_instance=Depends(get_app_insta
         )
 
     except Exception as e:
-        raise handle_api_error(e, "remove_controlnet")
+        raise handle_api_error(e, "remove_controlnet") from e
 
 
 # Preprocessor endpoints (closely related to ControlNet)
@@ -504,7 +502,7 @@ async def get_preprocessors_info(app_instance=Depends(get_app_instance)):
         )
 
     except Exception as e:
-        raise handle_api_error(e, "get_preprocessors_info")
+        raise handle_api_error(e, "get_preprocessors_info") from e
 
 
 @router.post("/preprocessors/switch")
@@ -536,7 +534,7 @@ async def switch_preprocessor(request: Request, app_instance=Depends(get_app_ins
 
         # Update the preprocessor in AppState
         controlnet = app_instance.app_state.controlnet_info["controlnets"][controlnet_index]
-        old_preprocessor = controlnet.get("preprocessor", "unknown")
+        old_preprocessor = controlnet.get("preprocessor", "unknown")  # noqa: F841  # TODO: pre-existing, untouched by this refactor
         controlnet["preprocessor"] = preprocessor_name
         controlnet["preprocessor_params"] = {}  # Reset parameters when switching
 
@@ -565,7 +563,7 @@ async def switch_preprocessor(request: Request, app_instance=Depends(get_app_ins
         return create_success_response(f"Switched ControlNet {controlnet_index} preprocessor to {preprocessor_name}")
 
     except Exception as e:
-        raise handle_api_error(e, "switch_preprocessor")
+        raise handle_api_error(e, "switch_preprocessor") from e
 
 
 @router.post("/preprocessors/update-params")
@@ -577,7 +575,7 @@ async def update_preprocessor_params(request: Request, app_instance=Depends(get_
             data = await request.json()
         except Exception as json_error:
             logging.error(f"update_preprocessor_params: JSON parsing failed: {json_error}")
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {json_error}")
+            raise HTTPException(status_code=400, detail=f"Invalid JSON: {json_error}") from json_error
 
         controlnet_index = data.get("controlnet_index")
         params = data.get("params", {})
@@ -641,8 +639,8 @@ async def update_preprocessor_params(request: Request, app_instance=Depends(get_
         )
 
     except Exception as e:
-        logging.exception(f"update_preprocessor_params: Exception occurred: {str(e)}")
-        raise handle_api_error(e, "update_preprocessor_params")
+        logging.exception(f"update_preprocessor_params: Exception occurred: {e!s}")
+        raise handle_api_error(e, "update_preprocessor_params") from e
 
 
 @router.get("/preprocessors/current-params/{controlnet_index}")
@@ -702,4 +700,4 @@ async def get_current_preprocessor_params(controlnet_index: int, app_instance=De
         )
 
     except Exception as e:
-        raise handle_api_error(e, "get_current_preprocessor_params")
+        raise handle_api_error(e, "get_current_preprocessor_params") from e

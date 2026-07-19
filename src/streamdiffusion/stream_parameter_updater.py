@@ -13,7 +13,6 @@ from .param_schema import (
 )
 from .preprocessing.orchestrator_user import OrchestratorUser
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -1529,7 +1528,7 @@ class StreamParameterUpdater(OrchestratorUser):
                         else:
                             self.stream.ipadapter.set_scale(desired_scale)
                         # Update our tracking attribute
-                        setattr(self.stream.ipadapter, "scale", desired_scale)
+                        self.stream.ipadapter.scale = desired_scale
                     except Exception:
                         # Do not add fallback mechanisms
                         raise
@@ -1539,7 +1538,7 @@ class StreamParameterUpdater(OrchestratorUser):
                         # Tell diffusers_ipadapter to set the scale
                         self.stream.ipadapter.set_scale(desired_scale)
                         # Update our tracking attribute
-                        setattr(self.stream.ipadapter, "scale", desired_scale)
+                        self.stream.ipadapter.scale = desired_scale
 
         # Update enabled state if provided
         if "enabled" in desired_config and desired_config["enabled"] is not None:
@@ -1551,14 +1550,14 @@ class StreamParameterUpdater(OrchestratorUser):
                     logger.info(
                         f"_update_ipadapter_config: Updating enabled state: {current_enabled} → {enabled_state}"
                     )
-                    setattr(self.stream.ipadapter, "enabled", enabled_state)
+                    self.stream.ipadapter.enabled = enabled_state
 
         # Update weight type if provided (affects per-layer distribution and/or per-step factor)
         if "weight_type" in desired_config and desired_config["weight_type"] is not None:
             weight_type = desired_config["weight_type"]
             # Update IPAdapter instance
             if hasattr(self.stream, "ipadapter"):
-                setattr(self.stream.ipadapter, "weight_type", weight_type)
+                self.stream.ipadapter.weight_type = weight_type
 
                 # For PyTorch UNet, immediately apply a per-layer scale vector so layers reflect selection types
                 try:
@@ -1581,7 +1580,7 @@ class StreamParameterUpdater(OrchestratorUser):
                         else:
                             self.stream.ipadapter.set_scale(base_weight)
                         # Keep our tracking attribute in sync
-                        setattr(self.stream.ipadapter, "scale", base_weight)
+                        self.stream.ipadapter.scale = base_weight
                 except Exception:
                     # Do not add fallback mechanisms
                     raise
@@ -1673,7 +1672,7 @@ class StreamParameterUpdater(OrchestratorUser):
         config = []
         for i, processor in enumerate(processors):
             proc_config = {
-                "type": getattr(processor, "__class__").__name__,
+                "type": processor.__class__.__name__,
                 "order": getattr(processor, "order", i),
                 "enabled": getattr(processor, "enabled", True),
             }
@@ -1783,8 +1782,8 @@ class StreamParameterUpdater(OrchestratorUser):
                         )
 
                         # Copy attributes from old processor
-                        setattr(new_processor, "order", getattr(existing_processor, "order", i))
-                        setattr(new_processor, "enabled", enabled)
+                        new_processor.order = getattr(existing_processor, "order", i)
+                        new_processor.enabled = enabled
 
                         # Set parameters
                         if hasattr(new_processor, "params"):
@@ -1797,7 +1796,7 @@ class StreamParameterUpdater(OrchestratorUser):
                 else:
                     # Same type, just update attributes
                     logger.info(f"_update_hook_config: Same type, updating attributes for processor {i}")
-                    setattr(existing_processor, "enabled", enabled)
+                    existing_processor.enabled = enabled
 
                     # Update parameters
                     if hasattr(existing_processor, "params"):

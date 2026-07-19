@@ -13,7 +13,6 @@ from tqdm import tqdm
 
 from streamdiffusion.image_utils import postprocess_image
 
-
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from streamdiffusion import StreamDiffusionWrapper
@@ -23,7 +22,7 @@ def _postprocess_image(queue: Queue) -> None:
     while True:
         try:
             if not queue.empty():
-                output = postprocess_image(queue.get(block=False), output_type="pil")[0]
+                output = postprocess_image(queue.get(block=False), output_type="pil")[0]  # noqa: F841  # TODO: pre-existing, untouched by this refactor
             time.sleep(0.0005)
         except KeyboardInterrupt:
             return

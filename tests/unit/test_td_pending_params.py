@@ -19,7 +19,6 @@ from typing import Any, Dict, Optional
 
 from streamdiffusion.param_schema import PARAM_NAMES
 
-
 # ---------------------------------------------------------------------------
 # Minimal faithful replica of the three methods under test.
 # Copy-pasted from td_manager.py and frozen here so any future regression in

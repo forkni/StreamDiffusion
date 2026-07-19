@@ -43,7 +43,6 @@ import subprocess
 import sys
 import time
 
-
 # ── CLI args ───────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="StreamDiffusion Nsight Compute launcher")
 parser.add_argument(

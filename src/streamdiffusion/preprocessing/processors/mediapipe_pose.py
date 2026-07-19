@@ -7,7 +7,6 @@ from PIL import Image
 
 from .base import BasePreprocessor
 
-
 try:
     import mediapipe as mp
 
@@ -293,7 +292,7 @@ class MediaPipePosePreprocessor(BasePreprocessor):
                     print("MediaPipePosePreprocessor.detector: GPU delegate available")
                 except Exception as gpu_error:
                     print(f"MediaPipePosePreprocessor.detector: GPU delegate failed ({gpu_error}), using CPU")
-                    base_options = mp.tasks.BaseOptions(delegate=mp.tasks.BaseOptions.Delegate.CPU)
+                    base_options = mp.tasks.BaseOptions(delegate=mp.tasks.BaseOptions.Delegate.CPU)  # noqa: F841  # TODO: pre-existing, untouched by this refactor
 
                 # Create detector with optimized settings
                 print(
@@ -398,7 +397,7 @@ class MediaPipePosePreprocessor(BasePreprocessor):
 
         # OPTIMIZATION: Vectorized mapping using advanced indexing
         # Only map valid indices that exist in landmarks_data
-        valid_mask = MEDIAPIPE_INDICES < len(landmarks_data)
+        valid_mask = len(landmarks_data) > MEDIAPIPE_INDICES
         valid_mp_indices = MEDIAPIPE_INDICES[valid_mask]
         valid_op_indices = OPENPOSE_INDICES[valid_mask]
 
@@ -498,7 +497,7 @@ class MediaPipePosePreprocessor(BasePreprocessor):
             return image
 
         h, w = image.shape[:2]
-        confidence_threshold = self.params.get("confidence_threshold", 0.3)
+        confidence_threshold = self.params.get("confidence_threshold", 0.3)  # noqa: F841  # TODO: pre-existing, untouched by this refactor
 
         # Standard hand connections (21 landmarks per hand)
         hand_connections = [

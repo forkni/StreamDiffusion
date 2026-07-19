@@ -19,7 +19,6 @@ from .category_params import EDGE_SMOOTHNESS_PARAM, apply_edge_smoothness
 from .hed_tensorrt import HEDTensorrtPreprocessor
 from .trt_base import _first_output
 
-
 logger = logging.getLogger(__name__)
 
 

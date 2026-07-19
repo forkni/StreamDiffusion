@@ -10,7 +10,6 @@ from fastapi.responses import JSONResponse
 from .common.api_utils import create_success_response, handle_api_error, handle_api_request
 from .common.dependencies import get_app_instance
 
-
 router = APIRouter(prefix="/api", tags=["parameters"])
 
 
@@ -56,7 +55,7 @@ async def update_params(request: Request, app_instance=Depends(get_app_instance)
                     logging.info(f"update_params: {message}")
                     return JSONResponse({"status": "success", "message": message})
                 except ValueError:
-                    raise HTTPException(status_code=400, detail="Invalid resolution format")
+                    raise HTTPException(status_code=400, detail="Invalid resolution format") from None
             else:
                 raise HTTPException(
                     status_code=400, detail="Resolution must be {width: int, height: int} or 'widthxheight' string"
@@ -103,7 +102,7 @@ async def update_params(request: Request, app_instance=Depends(get_app_instance)
 
     except Exception as e:
         logging.exception(f"update_params: Failed to update parameters: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update parameters: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update parameters: {e!s}") from e
 
 
 async def _update_single_parameter(
@@ -126,7 +125,7 @@ async def _update_single_parameter(
         return create_success_response(f"Updated {parameter_name} to {value}", **{parameter_name: value})
 
     except Exception as e:
-        raise handle_api_error(e, operation_name)
+        raise handle_api_error(e, operation_name) from e
 
 
 @router.post("/update-guidance-scale")
@@ -231,7 +230,7 @@ async def update_blending(request: Request, app_instance=Depends(get_app_instanc
         return create_success_response(f"Updated {' and '.join(updated_types)} blending", updated_types=updated_types)
 
     except Exception as e:
-        raise handle_api_error(e, "update_blending")
+        raise handle_api_error(e, "update_blending") from e
 
 
 @router.post("/blending/update-prompt-weight")
@@ -257,7 +256,7 @@ async def update_prompt_weight(request: Request, app_instance=Depends(get_app_in
         return create_success_response(f"Updated prompt weight {index} to {weight}")
 
     except Exception as e:
-        raise handle_api_error(e, "update_prompt_weight")
+        raise handle_api_error(e, "update_prompt_weight") from e
 
 
 @router.post("/blending/update-seed-weight")
@@ -283,4 +282,4 @@ async def update_seed_weight(request: Request, app_instance=Depends(get_app_inst
         return create_success_response(f"Updated seed weight {index} to {weight}")
 
     except Exception as e:
-        raise handle_api_error(e, "update_seed_weight")
+        raise handle_api_error(e, "update_seed_weight") from e

@@ -9,7 +9,6 @@ from PIL import Image
 
 from .base_orchestrator import BaseOrchestrator
 
-
 logger = logging.getLogger(__name__)
 
 # Type alias for control image input

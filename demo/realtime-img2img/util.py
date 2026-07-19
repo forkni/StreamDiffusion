@@ -1,18 +1,17 @@
+import io
 from importlib import import_module
 from types import ModuleType
-from typing import Dict, Any
-from pydantic import BaseModel as PydanticBaseModel, Field
-from PIL import Image
-import io
+
 import torch
-from torchvision.io import encode_jpeg, decode_jpeg
+from PIL import Image
+from torchvision.io import decode_jpeg, encode_jpeg
 
 
 def get_pipeline_class(pipeline_name: str) -> ModuleType:
     try:
         module = import_module(f"pipelines.{pipeline_name}")
     except ModuleNotFoundError:
-        raise ValueError(f"Pipeline {pipeline_name} module not found")
+        raise ValueError(f"Pipeline {pipeline_name} module not found") from None
 
     pipeline_class = getattr(module, "Pipeline", None)
 
@@ -55,7 +54,7 @@ def bytes_to_pt(image_bytes: bytes) -> torch.Tensor:
 
     # Normalise to [0, 1] on the decode device (fused kernel on GPU).
     image_tensor = image_tensor.float() / 255.0
-    
+
     return image_tensor
 
 
@@ -75,24 +74,24 @@ def pil_to_frame(image: Image.Image) -> bytes:
 def pt_to_frame(tensor: torch.Tensor) -> bytes:
     """
     Convert PyTorch tensor directly to JPEG frame bytes using torchvision
-    
+
     Args:
         tensor: PyTorch tensor with shape (C, H, W) or (1, C, H, W), values in [0, 1]
-        
+
     Returns:
         bytes: JPEG frame data for streaming
     """
     # Handle batch dimension - take first image if batched
     if tensor.dim() == 4:
         tensor = tensor[0]
-    
+
     # Convert to uint8 format (0-255) and ensure correct shape (C, H, W)
     tensor_uint8 = (tensor * 255).clamp(0, 255).to(torch.uint8)
-    
+
     # Encode directly to JPEG bytes using torchvision
     jpeg_bytes = encode_jpeg(tensor_uint8, quality=90)
     frame_data = jpeg_bytes.cpu().numpy().tobytes()
-    
+
     return (
         b"--frame\r\n"
         + b"Content-Type: image/jpeg\r\n"

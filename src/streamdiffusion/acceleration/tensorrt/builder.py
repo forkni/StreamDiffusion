@@ -18,7 +18,6 @@ from .utilities import (
     optimize_onnx,
 )
 
-
 _build_logger = logging.getLogger(__name__)
 
 

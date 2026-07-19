@@ -64,14 +64,12 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-
 if TYPE_CHECKING:
-    import PIL.Image  # noqa: F401 — used in type annotations only
+    import PIL.Image
 
 import numpy as np
 import torch
 from tqdm import tqdm
-
 
 # ── repo root on sys.path so streamdiffusion is importable without install ─────
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -80,7 +78,6 @@ if str(_REPO_ROOT) not in sys.path:
 
 from streamdiffusion.tools.gpu_profiler import configure as _prof_configure  # noqa: E402
 from streamdiffusion.tools.gpu_profiler import profiler  # noqa: E402
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers

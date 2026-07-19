@@ -12,7 +12,6 @@ from torchvision.transforms import InterpolationMode
 
 from ..utilities import Engine
 
-
 # Set up logger for this module
 logger = logging.getLogger(__name__)
 

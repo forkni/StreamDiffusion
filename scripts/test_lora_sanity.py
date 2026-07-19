@@ -21,7 +21,6 @@ import logging
 import sys
 from pathlib import Path
 
-
 # ---------------------------------------------------------------------------
 # Repo root on sys.path so `from streamdiffusion` works without install
 # ---------------------------------------------------------------------------
@@ -29,10 +28,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT / "src"))
 
-from PIL import Image  # noqa: E402
+from PIL import Image
 
-from streamdiffusion import StreamDiffusionWrapper  # noqa: E402
-
+from streamdiffusion import StreamDiffusionWrapper
 
 logging.basicConfig(
     level=logging.INFO,

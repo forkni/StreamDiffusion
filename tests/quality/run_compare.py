@@ -22,7 +22,6 @@ import sys
 
 import yaml
 
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 logger = logging.getLogger("quality.run_compare")

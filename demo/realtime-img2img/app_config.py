@@ -12,7 +12,7 @@ def load_controlnet_registry():
     """Load ControlNet registry from config file"""
     try:
         registry_path = Path(__file__).parent / "controlnet_registry.yaml"
-        with open(registry_path, "r") as f:
+        with open(registry_path) as f:
             config_data = yaml.safe_load(f)
 
         # Extract the available_controlnets section
@@ -27,7 +27,7 @@ def load_default_settings():
     """Load default settings from YAML config file"""
     try:
         registry_path = Path(__file__).parent / "controlnet_registry.yaml"
-        with open(registry_path, "r") as f:
+        with open(registry_path) as f:
             config_data = yaml.safe_load(f)
 
         return config_data.get("defaults", {})

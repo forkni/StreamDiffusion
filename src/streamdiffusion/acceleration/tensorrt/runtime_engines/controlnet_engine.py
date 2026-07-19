@@ -8,7 +8,6 @@ from polygraphy import cuda
 
 from ..utilities import Engine
 
-
 # Set up logger for this module
 logger = logging.getLogger(__name__)
 

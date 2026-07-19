@@ -34,7 +34,6 @@ from PIL import Image
 from .base import BasePreprocessor
 from .trt_base import TENSORRT_AVAILABLE, SelfBuildingTRTPreprocessor, _first_output
 
-
 logger = logging.getLogger(__name__)
 
 try:

@@ -9,7 +9,6 @@ import requests
 import torch
 from tqdm import tqdm
 
-
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from streamdiffusion import StreamDiffusionWrapper
