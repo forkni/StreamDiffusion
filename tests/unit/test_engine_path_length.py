@@ -18,6 +18,7 @@ logic in ``get_engine_path``.
 Run with: pytest tests/unit/test_engine_path_length.py -v
 """
 
+import inspect
 from pathlib import Path
 
 import pytest
@@ -38,8 +39,11 @@ pytestmark = pytest.mark.skipif(
 # that pushed the UNet engine path over MAX_PATH.
 _CRASH_ENGINE_DIR = r"C:\Users\deswh\Documents\sdtd040\StreamDiffusion\engines\td"
 
-# The exact flag combination from the crash log's UNet directory name.
-_CRASH_UNET_KWARGS = {
+# The exact flag combination from the crash log's UNet directory name. pin_cache_frames /
+# cache_maxframes are a 040-release-only feature — get_engine_path on other branches (e.g.
+# SDTD_032_dev) doesn't accept them yet. Filter against the live signature so this file
+# stays portable across branches without hand-editing it on every cherry-pick.
+_ALL_CRASH_UNET_KWARGS = {
     "engine_type": EngineType.UNET,
     "model_id_or_path": "stabilityai/sd-turbo",
     "max_batch_size": 4,
@@ -56,6 +60,11 @@ _CRASH_UNET_KWARGS = {
     "builder_optimization_level": 4,
     "resolution": (512, 512),
 }
+if IMPORT_OK:
+    _ACCEPTED_PARAMS = set(inspect.signature(EngineManager.get_engine_path).parameters)
+    _CRASH_UNET_KWARGS = {k: v for k, v in _ALL_CRASH_UNET_KWARGS.items() if k in _ACCEPTED_PARAMS}
+else:
+    _CRASH_UNET_KWARGS = _ALL_CRASH_UNET_KWARGS
 
 
 def _make_engine_manager(engine_dir: str) -> EngineManager:
