@@ -365,6 +365,7 @@ class StreamDiffusion:
                 return
             except Exception as e:
                 last_err = e
+                logger.debug(f"load_lora_weights: candidate {weight_name!r} failed: {e}", exc_info=True)
                 continue
 
         if last_err is not None:
@@ -400,9 +401,11 @@ class StreamDiffusion:
         num_inference_steps: int = 50,
         guidance_scale: float = 1.2,
         delta: float = 1.0,
-        generator: Optional[torch.Generator] = torch.Generator(),
+        generator: Optional[torch.Generator] = None,
         seed: int = 2,
     ) -> None:
+        if generator is None:
+            generator = torch.Generator()
         self.generator = generator
         self.generator.manual_seed(seed)
         self.current_seed = seed
@@ -631,11 +634,7 @@ class StreamDiffusion:
         _use_seq_loop = not (self.use_denoising_batch and isinstance(self.scheduler, LCMScheduler))
         if _use_seq_loop and self.sub_timesteps_tensor.dim() >= 1:
             self._sub_timesteps_expanded = (
-                self.sub_timesteps_tensor
-                .view(-1)
-                .unsqueeze(1)
-                .expand(-1, self.frame_bff_size)
-                .contiguous()
+                self.sub_timesteps_tensor.view(-1).unsqueeze(1).expand(-1, self.frame_bff_size).contiguous()
             )  # shape [loop_steps, frame_bff_size]
         else:
             self._sub_timesteps_expanded = None
@@ -726,14 +725,12 @@ class StreamDiffusion:
                 dtype=self.dtype,
                 device=self.device,
             )
-            self._cfg_t_buf = torch.empty(
-                cfg_batch, dtype=self.sub_timesteps_tensor.dtype, device=self.device
-            )
+            self._cfg_t_buf = torch.empty(cfg_batch, dtype=self.sub_timesteps_tensor.dtype, device=self.device)
         else:
             self._cfg_latent_buf = None
             self._cfg_t_buf = None
 
-    def _get_scheduler_scalings(self, timestep):
+    def _get_scheduler_scalings(self, timestep: Union[int, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Get LCM/TCD-specific scaling factors for boundary conditions."""
         if isinstance(self.scheduler, LCMScheduler):
             c_skip, c_out = self.scheduler.get_scalings_for_boundary_condition_discrete(timestep)
@@ -1146,8 +1143,10 @@ class StreamDiffusion:
                     # Resolve scalar timestep tensor on device.
                     # Avoid per-step t.view(1).repeat() allocations by using the
                     # precomputed _sub_timesteps_expanded table from prepare().
-                    t = timestep if isinstance(timestep, torch.Tensor) else torch.tensor(
-                        timestep, device=self.device, dtype=torch.long
+                    t = (
+                        timestep
+                        if isinstance(timestep, torch.Tensor)
+                        else torch.tensor(timestep, device=self.device, dtype=torch.long)
                     )
                     if self._sub_timesteps_expanded is not None:
                         t_expanded = self._sub_timesteps_expanded[idx]  # [frame_bff_size], no alloc
@@ -1188,7 +1187,7 @@ class StreamDiffusion:
             return x_0_pred_out
 
     @torch.inference_mode()
-    def __call__(self, x: Union[torch.Tensor, PIL.Image.Image, np.ndarray] = None) -> torch.Tensor:
+    def __call__(self, x: Optional[Union[torch.Tensor, PIL.Image.Image, np.ndarray]] = None) -> torch.Tensor:
         start = self._timing_start
         end = self._timing_end
         if self.similar_image_filter:
@@ -1241,9 +1240,7 @@ class StreamDiffusion:
                 torch.cuda.empty_cache()
                 raise
             if "expanded size" in _msg and "must match" in _msg:
-                logger.error(
-                    "StreamDiffusion.__call__: tensor size mismatch — attempting scheduler rebuild: %s", _e
-                )
+                logger.error("StreamDiffusion.__call__: tensor size mismatch — attempting scheduler rebuild: %s", _e)
                 try:
                     self._param_updater._update_timestep_calculations()
                     self._refresh_derived_tensors()
@@ -1297,6 +1294,10 @@ class StreamDiffusion:
                 inference_time = start.elapsed_time(end) / 1000
                 self.inference_time_ema = 0.9 * self.inference_time_ema + 0.1 * inference_time
 
+        # NOTE: x_output aliases self._image_decode_buf, a persistent buffer reused every
+        # frame to avoid a per-frame .clone() on this hot path (see buffer init above).
+        # Intentional: callers needing an independent copy must clone it themselves.
+        # StreamDiffusionWrapper.postprocess_image() clones at the public API boundary.
         return x_output
 
     # =========================================================================
@@ -1389,6 +1390,10 @@ class StreamDiffusion:
         # IMAGE POSTPROCESSING HOOKS: After VAE decoding, before final output
         x_output = self._apply_image_postprocessing_hooks(x_output)
 
+        # NOTE: x_output aliases self._image_decode_buf, a persistent buffer reused every
+        # call to avoid a per-frame .clone() (see buffer init above). Intentional: callers
+        # needing an independent copy must clone it themselves.
+        # StreamDiffusionWrapper.postprocess_image() clones at the public API boundary.
         return x_output
 
     @torch.inference_mode()

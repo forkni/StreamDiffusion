@@ -431,6 +431,26 @@ class IPAdapterModule(OrchestratorUser):
         """
         _last_enabled_state = None  # Track previous enabled state to avoid redundant updates
 
+        # Resolve the optional diffusers_ipadapter helpers once, at hook-build time,
+        # instead of importing them on every frame inside the per-step hook below.
+        build_time_weight_factor = None
+        build_layer_weights = None
+        try:
+            from diffusers_ipadapter.ip_adapter.attention_processor import (
+                build_layer_weights as _build_layer_weights,
+            )
+            from diffusers_ipadapter.ip_adapter.attention_processor import (
+                build_time_weight_factor as _build_time_weight_factor,
+            )
+
+            build_time_weight_factor = _build_time_weight_factor
+            build_layer_weights = _build_layer_weights
+        except Exception as import_error:
+            logger.debug(
+                f"IPAdapterModule.build_unet_hook: diffusers_ipadapter helpers unavailable: {import_error}",
+                exc_info=True,
+            )
+
         def _unet_hook(ctx: StepCtx) -> UnetKwargsDelta:
             # If no IP-Adapter installed, do nothing
             if not hasattr(stream, "ipadapter") or stream.ipadapter is None:
@@ -442,7 +462,8 @@ class IPAdapterModule(OrchestratorUser):
             # Read base weight and weight type from IPAdapter instance
             try:
                 base_weight = float(getattr(stream.ipadapter, "scale", 1.0)) if enabled else 0.0
-            except Exception:
+            except Exception as scale_error:
+                logger.debug(f"IPAdapterModule: failed to read ipadapter.scale: {scale_error}", exc_info=True)
                 base_weight = 0.0 if not enabled else 1.0
             weight_type = getattr(stream.ipadapter, "weight_type", None)
 
@@ -453,41 +474,38 @@ class IPAdapterModule(OrchestratorUser):
                     total_steps = int(stream.denoising_steps_num)
                 elif hasattr(stream, "t_list") and stream.t_list is not None:
                     total_steps = len(stream.t_list)
-            except Exception:
+            except Exception as steps_error:
+                logger.debug(f"IPAdapterModule: failed to determine total_steps: {steps_error}", exc_info=True)
                 total_steps = None
 
             time_factor = 1.0
-            if total_steps is not None and ctx.step_index is not None:
+            if total_steps is not None and ctx.step_index is not None and build_time_weight_factor is not None:
                 try:
-                    from diffusers_ipadapter.ip_adapter.attention_processor import build_time_weight_factor
-
                     time_factor = float(build_time_weight_factor(weight_type, int(ctx.step_index), int(total_steps)))
-                except Exception:
+                except Exception as scale_factor_error:
                     # Do not add fallback mechanisms
-                    pass
+                    logger.debug(
+                        f"IPAdapterModule: build_time_weight_factor failed: {scale_factor_error}", exc_info=True
+                    )
 
             # TensorRT engine path: supply ipadapter_scale vector via extra kwargs
             try:
                 is_trt_unet = (
                     hasattr(stream, "unet") and hasattr(stream.unet, "engine") and hasattr(stream.unet, "stream")
                 )
-            except Exception:
+            except Exception as trt_check_error:
+                logger.debug(f"IPAdapterModule: TensorRT UNet detection failed: {trt_check_error}", exc_info=True)
                 is_trt_unet = False
 
             if is_trt_unet and getattr(stream.unet, "use_ipadapter", False):
-                try:
-                    from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights
-                except Exception:
-                    # If helper unavailable, do not construct weights here
-                    build_layer_weights = None  # type: ignore
-
                 num_ip_layers = getattr(stream.unet, "num_ip_layers", None)
                 if isinstance(num_ip_layers, int) and num_ip_layers > 0:
                     weights_tensor = None
                     try:
                         if build_layer_weights is not None:
                             weights_tensor = build_layer_weights(num_ip_layers, float(base_weight), weight_type)
-                    except Exception:
+                    except Exception as weights_error:
+                        logger.debug(f"IPAdapterModule: build_layer_weights failed: {weights_error}", exc_info=True)
                         weights_tensor = None
                     if weights_tensor is None:
                         weights_tensor = torch.full(
@@ -496,8 +514,11 @@ class IPAdapterModule(OrchestratorUser):
                     # Apply per-step time factor
                     try:
                         weights_tensor = weights_tensor * float(time_factor)
-                    except Exception:
-                        pass
+                    except Exception as time_scale_error:
+                        logger.debug(
+                            f"IPAdapterModule: applying time_factor to weights_tensor failed: {time_scale_error}",
+                            exc_info=True,
+                        )
                     return UnetKwargsDelta(extra_unet_kwargs={"ipadapter_scale": weights_tensor})
 
             # PyTorch UNet path: modulate installed processor scales by time factor and enabled state
@@ -513,8 +534,11 @@ class IPAdapterModule(OrchestratorUser):
                             # Apply both enabled state and time factor
                             final_scale = float(base_val) * float(time_factor) if enabled else 0.0
                             proc.scale = final_scale
-            except Exception:
-                pass
+            except Exception as processor_scale_error:
+                logger.debug(
+                    f"IPAdapterModule: PyTorch UNet processor scale update failed: {processor_scale_error}",
+                    exc_info=True,
+                )
 
             return UnetKwargsDelta()
 
