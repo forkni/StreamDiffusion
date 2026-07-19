@@ -46,6 +46,15 @@ class Optimizer:
                 self.graph.outputs[i].name = name
 
     def fold_constants(self, return_onnx=False):
+        if len(self.graph.nodes) == 0:
+            # Catches a corrupt/truncated source ONNX (e.g. left behind by an interrupted
+            # export). CLIP's optimize() override calls fold_constants() directly without
+            # going through BaseModel.optimize(), so the guard has to live here -- the one
+            # call site both paths share -- rather than in optimize() itself.
+            raise RuntimeError(
+                "Optimizer.fold_constants: input ONNX graph has 0 nodes -- the source ONNX is "
+                "empty or corrupt. Delete the cached .onnx file for this model and rebuild."
+            )
         onnx_graph = fold_constants(gs.export_onnx(self.graph), allow_onnxruntime_shape_inference=True)
         self.graph = gs.import_onnx(onnx_graph)
         if return_onnx:

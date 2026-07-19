@@ -2,6 +2,7 @@ import gc
 import os
 from typing import *
 
+import onnx
 import torch
 
 from .models import BaseModel
@@ -14,6 +15,29 @@ from .utilities import (
 
 def create_onnx_path(name, onnx_dir, opt=True):
     return os.path.join(onnx_dir, name + (".opt" if opt else "") + ".onnx")
+
+
+def _onnx_cache_valid(path: str) -> bool:
+    """Check a cached source ONNX is usable before reusing it, skipping export.
+
+    A prior run killed mid-export (OOM, crash, manual kill) can leave a
+    syntactically-valid-but-empty protobuf at onnx_path. os.path.exists() alone
+    can't tell that apart from a real export, and a 0-node / opset-less graph
+    makes polygraphy's constant folding blow up downstream with an opaque
+    'NoneType' object has no attribute 'graph' (ORT symbolic shape inference
+    refuses opset < 7 and returns None). Load structure-only (no external
+    weight data) and reject anything that looks truncated.
+    """
+    try:
+        if os.path.getsize(path) == 0:
+            return False
+        model = onnx.load(path, load_external_data=False)
+        if len(model.graph.node) == 0:
+            return False
+        opset = max((o.version for o in model.opset_import), default=0)
+        return opset >= 7
+    except Exception:
+        return False
 
 
 class EngineBuilder:
@@ -47,9 +71,15 @@ class EngineBuilder:
         force_onnx_export: bool = False,
         force_onnx_optimize: bool = False,
     ):
-        if not force_onnx_export and os.path.exists(onnx_path):
+        if not force_onnx_export and os.path.exists(onnx_path) and _onnx_cache_valid(onnx_path):
             print(f"Found cached model: {onnx_path}")
         else:
+            if not force_onnx_export and os.path.exists(onnx_path):
+                print(
+                    f"Cached ONNX at {onnx_path} is empty/corrupt (likely from an "
+                    f"interrupted prior export) -- discarding and re-exporting."
+                )
+                os.remove(onnx_path)
             print(f"Exporting model: {onnx_path}")
             export_onnx(
                 self.network,
