@@ -11,9 +11,9 @@ maintenance trap (the "RE-VENDORING TRAP" documented in `VENDORED_VERSION.txt`: 
 relative-import patches re-applied on every re-vendor) and the dependency seam was
 dishonest — `wrapper.py` hard-imported `cuda_link` while `setup.py` never declared it.
 
-We now **depend solely on the pip-installed `cuda-link`** (declared in `setup.py` as
-`cuda-link @ git+https://github.com/forkni/cuda-link@v1.12.0`, exposed via the `cuda_ipc`
-optional extra). The TouchDesigner side consumes the same installed package through
+We now **depend solely on the pip-installed `cuda-link`** (declared in `setup.py` as a direct
+wheel-URL pin — `cuda-link @ https://github.com/forkni/cuda-link/releases/download/v1.12.1/cuda_link-1.12.1-cp311-cp311-win_amd64.whl`
+— exposed via the `cuda_ipc` optional extra). The TouchDesigner side consumes the same installed package through
 `CUDALinkBootstrap`'s **library mode** (`CUDALINK_LIB_PATH` injects the venv onto TD's
 `sys.path` and aliases the 14 bare module names used by TD DATs), so the TD DAT mirror
 inside the repo is no longer needed either.
@@ -34,9 +34,28 @@ inside the repo is no longer needed either.
   with cuda-link). See `_patches/__init__.py` for the import-time side effect.
 - IPC is an **optional feature**: `pip install -e .[cuda_ipc]`. The `wrapper.py` imports
   are lazy/in-method so the core package installs and runs without cuda-link.
-- The `github.com/forkni/cuda-link` remote **must carry the referenced tag** or clean installs
-  fail. Current pin in `setup.py`: **`v1.12.0`** (tagged 2026-07-07; published release
-  `v1.12.0` on the cuda-link remote — https://github.com/forkni/cuda-link/releases/tag/v1.12.0).
+- The `github.com/forkni/cuda-link` release **must publish the exact wheel asset** the pin names
+  or clean installs fail. Current pin in `setup.py`: **`v1.12.1`**'s
+  `cuda_link-1.12.1-cp311-cp311-win_amd64.whl` (tagged 2026-07-12 —
+  https://github.com/forkni/cuda-link/releases/tag/v1.12.1).
+- **Pinned to the wheel URL, not the VCS tag.** An earlier draft of this pin used
+  `cuda-link @ git+https://github.com/forkni/cuda-link@v1.12.1`, which looks equivalent but
+  isn't: `cuda-link` builds via `scikit_build_core.build` (compiles `_native_waiter.cpp`), so a
+  VCS pin makes `pip install` clone the repo and build from source — requiring MSVC on Windows
+  — even though a prebuilt wheel is published for the same tag. Pinning straight to the release
+  wheel asset makes `pip install .[cuda_ipc]` a pure wheel install, no compiler required. This
+  is safe to hard-pin to `cp311-win_amd64` specifically (rather than resolving a wheel per the
+  installer's tag-matching logic) because SD's actual Python constraint is **3.11**, not the
+  3.10 the README/CI currently document — TouchDesigner embeds cp311, and cuda-link's TD-side
+  consumption via `CUDALinkBootstrap` library mode requires the installed package to match TD's
+  interpreter. The stale 3.10 references are a separate, pre-existing doc/CI inaccuracy
+  (`README.md:91`'s `conda create ... python=3.10`, `README.md:196`'s "demo expects Python
+  3.10", and `.github/workflows/release.yml:17`'s `python-version: '3.10'`).
+  **Known gap from this hard-pin:** `setup.py:134`'s `python_requires=">=3.10.0"` still nominally
+  permits a 3.10 install, but a 3.10 interpreter cannot install a `cp311`-tagged wheel — pip
+  will refuse it. Tightening `python_requires` to `>=3.11.0` is the correct follow-up, but is
+  deliberately deferred: `.github/workflows/release.yml` still builds on Python 3.10, so bumping
+  `python_requires` here would need a coordinated CI change, not a silent `setup.py` edit.
 - **1.10.x history and the CUDA 719 incident (2026-06-10):** cuda-link 1.10.0 introduced
   async-by-default `export()` (no per-frame `cudaStreamSynchronize`) and opt-in
   `CUDALINK_D2H_PIPELINED` for overlapped D2H copy. However, **1.10.0 had a producer-side
@@ -62,8 +81,12 @@ inside the repo is no longer needed either.
   consumer's CPU-side event poll with `cudaStreamWaitEvent` on the torch path — auto-latches only
   when real sleep-blocking is detected (~20% of frames at 30 fps; correctly stays in cpu-spin at
   60 fps). Enabled by default in `td_manager.py` `start_streaming()` via `os.environ.setdefault`.
-  `CUDALINK_DOORBELL=1` (Win32 named-event kernel wake) is available but intentionally left dormant
-  for SD's topology; enable only if a `wait_for_doorbell()` loop is added to `_streaming_loop`.
+  `CUDALINK_DOORBELL=1` (Win32 named-event kernel wake) is now persisted by the installer's
+  `phase4c_cuda_link_env` (see the 1.12.1 note below) — SD's topology is bidirectional (TD Sender
+  and SD Exporter are each a producer on their own IPC leg), and `Importer.open()` in
+  `td_manager.py` opens the doorbell speculatively under the default `wait_backend="auto"`
+  regardless, so no `wait_for_doorbell()` loop needs to be added to `_streaming_loop` for the
+  consumer side to benefit.
 - **1.12.0 migration (2026-07-07 pin bump; no consumer API change — all 1.11.0 code works
   unmodified):**
   - **Prebuilt wheels; no MSVC required on install.** Per
@@ -83,8 +106,12 @@ inside the repo is no longer needed either.
   - **Opt-in native wait backend** (`ImportPolicy.wait_backend`: `"auto"` default | `"python"` |
     `"native"`; env `CUDALINK_WAIT_BACKEND`) replaces the pure-Python spin/sleep poll in
     `Importer._wait_for_slot` with a native `cudaEventQuery` + doorbell-blocking call.
-    **Consumer/importer-side only** — SD is the producer/exporter side, so this does not apply
-    here; no env var needed on this repo's side.
+    Consumer/importer-side config — but SD is *also* an importer/consumer, not solely the
+    producer/exporter side: `td_manager.py`'s `Importer.open(ImportSpec(...))` calls (input +
+    ControlNet channels) pass no policy, so `ImportPolicy.from_env()` applies to the SD process
+    too. `CUDALINK_WAIT_BACKEND` is left unset (its `"auto"` default already resolves identically
+    to `"native"`), but the doorbell/native fast path it enables is gated by the *producer's*
+    `CUDALINK_DOORBELL` — see the 1.12.1 note below for why that must be installer-persisted.
   - **Torn-frame race fix in the native waiter's block phase** (`native_waiter.cpp`): the block
     phase now treats `cudaEventQuery` as the only valid "ready" signal instead of accepting a
     `write_idx` advance as a proxy. Per the cuda-link 1.12.0 release notes this bug was **"not
@@ -92,9 +119,34 @@ inside the repo is no longer needed either.
     before publish); reachable via the Python `Exporter`'s async default under GPU load."** SD's
     exporter already forces blocking export (see the "force blocking IPC export" fix above), so
     this fix is defense-in-depth on the consumer side, not a gap SD was exposed to.
-- The `CUDALINK_LIB_PATH` env var must be set in the TD launch environment to point at the
-  venv site-packages path; without it, `CUDALinkBootstrap` falls back to classic Text-DAT
-  module discovery (still works, but requires the mirror DATs to be present in the COMP).
+- **1.12.1 migration (2026-07-12 pin bump; bugfix-only, no consumer API change):** fixes two
+  reference-count leaks that only surface on repeated failure/retry paths, not on the happy
+  path — **`nvml_observer.py`**: a failed `start()` after `acquire()` used to leave `nvmlInit()`
+  unpaired with `nvmlShutdown()`, compounding across retries; and **`TDReceiverEngine
+  .initialize_receiver()`**: a raise after the validation guards but before
+  `connection_committed` used to leak the locally-opened `shm_handle` on every failed attempt
+  and backoff retry. Neither leak is reachable via SD's normal (non-retrying,
+  non-NVML-observing) exporter/importer paths; upgrade is precautionary hardening.
+  - **Installer `phase4c` now also persists `CUDALINK_DOORBELL=1`** (previously only
+    `CUDALINK_LIB_PATH`). The doorbell/native-wait fast path only engages when the *producer* on
+    an IPC leg has `CUDALINK_DOORBELL=1` (`exporter.py` only creates the named Win32 event under
+    that policy); SD's topology is bidirectional, so TD's Sender is a producer too, and it runs in
+    TD's own bundled-Python **process** — a runtime `os.environ.setdefault` (the pattern used for
+    `CUDALINK_TORCH_GPU_WAIT_ADAPTIVE`) can't reach a separate process, so this var must be
+    persisted via `setx`, same as `CUDALINK_LIB_PATH`. Without it, the doorbell fast path silently
+    degrades to poll-sleep on a fresh install — this gap was found via a clean-slate
+    reproducibility test (removing `cuda_link` + all cuda-link env vars, then re-running
+    `phase4b`/`phase4c` and confirming the vars they declare are sufficient on their own).
+    `CUDALINK_WAIT_BACKEND` is intentionally left unset — its default `"auto"` already selects the
+    native path.
+- The `CUDALINK_LIB_PATH` env var enables `CUDALinkBootstrap`'s library mode (`sys.path`
+  injection of the installed `cuda_link` package + the 14 bare-name DAT aliases); without it,
+  `CUDALinkBootstrap` falls back to classic Text-DAT module discovery (still works, but requires
+  the mirror DATs to be present in the COMP). As of the installer's `phase4c_cuda_link_env`
+  step, `CUDALINK_LIB_PATH` and `CUDALINK_DOORBELL` are both set automatically
+  (`setx CUDALINK_LIB_PATH <venv>\Lib\site-packages`, `setx CUDALINK_DOORBELL 1`) at the end
+  of a fresh install — no manual step required. TouchDesigner must be (re)started after
+  installation for the persisted variables to take effect.
 - Do **not** re-suggest re-vendoring in future architecture reviews — this is a deliberate
   reversal of the previous approach, made after confirming that the mirror trees had zero
   runtime consumers in the Python import graph.

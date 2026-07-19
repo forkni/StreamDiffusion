@@ -93,6 +93,12 @@ def _smoke_self_build(name: str, cls, tmpdir: Path, *, build_fp8: bool) -> None:
     logger.info(f"{PASS} [{name}] process_tensor 512→{tuple(out512.shape)}")
 
     # --- 4. process_tensor at 384 (dynamic reconcile — the key unexercised branch) ---
+    # process_tensor pins detect/output resolution from params (defaulting to 512), so a raw
+    # 384x384 tensor alone never reaches the engine at 384 — both call sites below force it via
+    # detect_resolution/image_resolution, which is what actually drives shapes_match=False and
+    # exercises TensorRTEngine.infer's reconcile branch (trt_base.py:179-222).
+    proc.params["detect_resolution"] = 384
+    proc.params["image_resolution"] = 384
     t384 = torch.rand(1, 3, 384, 384, device="cuda", dtype=torch.float16)
     out384 = proc.process_tensor(t384)
     _assert(
@@ -101,14 +107,25 @@ def _smoke_self_build(name: str, cls, tmpdir: Path, *, build_fp8: bool) -> None:
     )
     logger.info(f"{PASS} [{name}] process_tensor 384→{tuple(out384.shape)} (dynamic reconcile OK)")
 
-    # --- 5. dtype mismatch guard: float32 into a float16 engine must raise ValueError ---
-    t_f32 = torch.rand(1, 3, 512, 512, device="cuda", dtype=torch.float32)
+    # --- 5. dtype mismatch guard: engine.infer() must reject a wrong-dtype input tensor ---
+    # process_tensor() defensively casts to the engine's expected dtype inside
+    # _process_tensor_core (trt_base.py:557-559) before ever calling infer(), so a dtype
+    # mismatch can never survive that path — going through process_tensor() here would (like
+    # the 384 case above) assert something the code path can't produce. Call
+    # TensorRTEngine.infer() directly instead, the same way
+    # tests/unit/test_trt_engine_guards.py's dtype-mismatch tests do.
+    # Also: these preprocessor engines bind "input" as float32 even though they're built
+    # "FP16" (FP16 there means internal compute tactics, not the ONNX-declared I/O dtype) — so
+    # query the engine's actual expected dtype instead of assuming float16.
+    expected_dtype = proc.engine.tensors["input"].dtype
+    wrong_dtype = torch.float16 if expected_dtype != torch.float16 else torch.float32
+    t_wrong_dtype = torch.rand(1, 3, 512, 512, device="cuda", dtype=wrong_dtype)
     try:
-        proc.process_tensor(t_f32)
-        raise AssertionError(f"{name}: float32 input did NOT raise ValueError — dtype guard missing")
+        proc.engine.infer({"input": t_wrong_dtype})
+        raise AssertionError(f"{name}: {wrong_dtype} input did NOT raise ValueError — dtype guard missing")
     except ValueError as exc:
         _assert("dtype mismatch" in str(exc), f"{name}: ValueError does not say 'dtype mismatch': {exc}")
-        logger.info(f"{PASS} [{name}] float32 input raised ValueError('dtype mismatch') as expected")
+        logger.info(f"{PASS} [{name}] {wrong_dtype} input raised ValueError('dtype mismatch') as expected")
 
 
 def run_hed_scribble(tmpdir: Path) -> None:
@@ -191,11 +208,10 @@ def main() -> None:
         sys.exit(1)
 
     logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
-    logger.info("TensorRT: ", end="")
     try:
         import tensorrt as trt  # noqa: F401
 
-        logger.info(f"{trt.__version__}")
+        logger.info(f"TensorRT: {trt.__version__}")
     except ImportError:
         print(f"{FAIL} TensorRT not installed")
         sys.exit(1)
