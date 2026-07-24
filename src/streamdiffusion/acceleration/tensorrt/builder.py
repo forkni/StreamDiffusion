@@ -270,6 +270,7 @@ class EngineBuilder:
                 )
                 os.remove(onnx_path)
             print(f"Exporting model: {onnx_path}")
+            _build_logger.info(f"Exporting model: {onnx_path}")
             t0 = time.perf_counter()
             _export_kwargs = {
                 "onnx_path": onnx_path,
@@ -294,6 +295,7 @@ class EngineBuilder:
             stats["stages"]["onnx_optimize"] = {"status": "cached"}
         else:
             print(f"Generating optimizing model: {onnx_opt_path}")
+            _build_logger.info(f"Generating optimizing model: {onnx_opt_path}")
             t0 = time.perf_counter()
             optimize_onnx(
                 onnx_path=onnx_path,
@@ -415,6 +417,7 @@ class EngineBuilder:
             # --- TRT Engine Build ---
             if not force_engine_build and os.path.exists(engine_path):
                 print(f"Found cached engine: {engine_path}")
+                _build_logger.info(f"Found cached engine: {engine_path}")
                 stats["stages"]["trt_build"] = {"status": "cached"}
             else:
                 t0 = time.perf_counter()
