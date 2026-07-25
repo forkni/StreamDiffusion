@@ -46,6 +46,11 @@ PAIRS: list[tuple[Path, Path, Literal["byte_identical"]]] = [
         _TD_MIRROR_ROOT / "streamdiffusionTD__Text__td_main__td.py",
         "byte_identical",
     ),
+    (
+        REPO_ROOT / "streamdiffusionTD" / "syphon_utils.py",
+        _TD_MIRROR_ROOT / "streamdiffusionTD__Text__syphon_utils__td.py",
+        "byte_identical",
+    ),
 ]
 
 
