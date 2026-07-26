@@ -4,10 +4,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
-import requests
 import torch
 from diffusers import AutoencoderTiny, AutoPipelineForText2Image, StableDiffusionPipeline, StableDiffusionXLPipeline
-from huggingface_hub.errors import HfHubHTTPError, LocalEntryNotFoundError
 from PIL import Image
 
 from .image_utils import postprocess_image
@@ -17,6 +15,7 @@ from .pipeline import StreamDiffusion
 from .tools.gpu_profiler import configure as _configure_profiler
 from .tools.gpu_profiler import profiler
 from .utils.diagnostics import write_error_report as _write_error_report_util
+from .utils.hf_download import NETWORK_HINT, is_network_error
 
 logger = logging.getLogger(__name__)
 
@@ -1723,25 +1722,17 @@ class StreamDiffusionWrapper:
 
         if pipe is None:
             # Prefer a network-class error when picking which one to surface: a HF download
-            # timeout/connection failure is the actual cause far more often than the
+            # timeout/connection/Xet-transfer failure is the actual cause far more often than the
             # structurally-guaranteed from_single_file failures on a bare repo id (see the
             # loading_methods construction above), and burying it behind those is exactly what
             # produced the misleading "Invalid pretrained_model_name_or_path" report.
-            network_error_types = (requests.exceptions.RequestException, HfHubHTTPError, LocalEntryNotFoundError)
             chosen_name, chosen_error = load_errors[0]
             for name, err in load_errors:
-                if isinstance(err, network_error_types):
+                if is_network_error(err):
                     chosen_name, chosen_error = name, err
                     break
 
-            hint = ""
-            if isinstance(chosen_error, network_error_types):
-                hint = (
-                    " Hint: this looks like a HuggingFace download failure (timeout/connection), not an "
-                    "invalid model id. The download resumes from where it stopped, so re-launching is "
-                    "usually enough. Consider `pip install hf_xet` and raising HF_HUB_DOWNLOAD_TIMEOUT if "
-                    "this keeps happening on a slow connection."
-                )
+            hint = NETWORK_HINT if is_network_error(chosen_error) else ""
             attempts_summary = "; ".join(f"{name}: {err}" for name, err in load_errors)
             error_msg = (
                 f"_load_model: All loading methods failed for model '{model_id_or_path}'. "
