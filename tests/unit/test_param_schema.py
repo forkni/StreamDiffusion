@@ -20,6 +20,7 @@ from streamdiffusion.param_schema import (
     DEFAULTS,
     PARAM_NAMES,
     UPDATER_PARAM_NAMES,
+    clamp_delta,
     floor_num_inference_steps,
     rescale_t_index_list,
 )
@@ -125,6 +126,23 @@ class TestFloorNumInferenceSteps:
 
     def test_boundary_one_above_max_t_index_is_fine(self):
         assert floor_num_inference_steps(46, 45) == 46
+
+
+class TestClampDelta:
+    def test_in_range_unchanged(self):
+        assert clamp_delta(0.5) == (0.5, False)
+
+    def test_negative_clamped_to_zero(self):
+        assert clamp_delta(-0.1) == (0.0, True)
+
+    def test_above_one_clamped_to_one(self):
+        assert clamp_delta(1.5) == (1.0, True)
+
+    def test_boundary_zero_not_clamped(self):
+        assert clamp_delta(0.0) == (0.0, False)
+
+    def test_boundary_one_not_clamped(self):
+        assert clamp_delta(1.0) == (1.0, False)
 
 
 class TestRescaleTIndexList:

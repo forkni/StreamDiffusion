@@ -120,6 +120,20 @@ def floor_num_inference_steps(num_inference_steps: int, max_t_index: int) -> int
     return max(num_inference_steps, max_t_index + 1)
 
 
+def clamp_delta(delta: float) -> Tuple[float, bool]:
+    """Clamp ``delta`` to the valid R-CFG range [0.0, 1.0]; returns
+    ``(clamped, was_clamped)``.
+
+    Per the StreamDiffusion paper (2312.12491 Eq. 6), delta is a magnitude
+    moderation coefficient that softens the Self-Negative virtual residual —
+    its meaningful range is (0, 1] (the paper's ablations use 1.0 and 0.5).
+    Values > 1 over-weight the residual's approximation error; negative values
+    have no supported meaning. Callers own their warning text.
+    """
+    clamped = min(max(delta, 0.0), 1.0)
+    return clamped, clamped != delta
+
+
 def rescale_t_index_list(old_t_list: List[int], old_num_steps: int, new_num_steps: int) -> List[int]:
     """Proportionally rescale t_index values from an old step-count space to a
     new one, clamped to the new space's valid range.

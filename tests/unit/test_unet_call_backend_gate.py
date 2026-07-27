@@ -112,6 +112,7 @@ def _make_pipeline(unet, *, prompt_tokens: int = 4) -> StreamDiffusion:
 
     sd.guidance_scale = 1.0  # skip CFG latent-doubling branch entirely
     sd.cfg_type = "none"
+    sd.denoising_steps_num = 1  # read by the RCFG recurrence gate in unet_step
 
     sd.prompt_embeds = torch.randn(1, prompt_tokens, 8)
     sd.kvo_cache: List[torch.Tensor] = []

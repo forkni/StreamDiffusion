@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from .param_schema import (
     PromptInterpolationMethod,
     SeedInterpolationMethod,
+    clamp_delta,
     floor_num_inference_steps,
     rescale_t_index_list,
 )
@@ -72,6 +73,9 @@ class StreamParameterUpdater(OrchestratorUser):
         # Warn-once set: emit one logger.warning per unique unknown method string so
         # that per-frame weight-drag calls don't flood the log.
         self._warned_unknown_interp_methods: set = set()
+        # Warn-once flag for out-of-range delta pushes (this path takes live OSC
+        # values per frame — clamp silently after the first warning).
+        self._warned_delta_out_of_range: bool = False
 
     def get_cache_info(self) -> Dict:
         """Get cache statistics for monitoring performance."""
@@ -376,7 +380,14 @@ class StreamParameterUpdater(OrchestratorUser):
                 self.stream.guidance_scale = guidance_scale
 
             if delta is not None:
-                self.stream.delta = delta
+                clamped_delta, was_clamped = clamp_delta(delta)
+                if was_clamped and not self._warned_delta_out_of_range:
+                    logger.warning(
+                        f"update_stream_params: delta={delta} outside the valid R-CFG range "
+                        f"[0.0, 1.0]; clamped to {clamped_delta} (warning shown once)"
+                    )
+                    self._warned_delta_out_of_range = True
+                self.stream.delta = clamped_delta
 
             if seed is not None:
                 self._update_seed(seed)
@@ -883,8 +894,10 @@ class StreamParameterUpdater(OrchestratorUser):
             generator=self.stream.generator,
         ).to(device=self.stream.device, dtype=self.stream.dtype)
 
-        # Reset stock_noise to match the new init_noise
-        self.stream.stock_noise = torch.zeros_like(self.stream.init_noise)
+        # Reset stock_noise to match the new init_noise (same semantics as prepare():
+        # a zeros reset makes the RCFG uncond term start from nothing instead of a
+        # coherent residual, visible as a guidance glitch right after a seed change)
+        self.stream.stock_noise = self.stream.init_noise.clone()
 
         # Keep pre-computed rotation in sync with new init_noise
         if self.stream._init_noise_rotated is not None:
@@ -972,6 +985,9 @@ class StreamParameterUpdater(OrchestratorUser):
             dim=0,
         )
 
+        # F3: At denoising_steps_num == 1 predict_x0_batch reseeds stock_noise from
+        # init_noise every frame (pipeline.py, elif after the ping-pong block) — do not
+        # reintroduce logic here that assumes stock_noise persists across frames at n==1.
         # F2: Keep pre-computed shifted tensors in sync with the new alpha/beta values.
         # _alpha_next / _beta_next / _init_noise_rotated are built only in prepare()
         # (pipeline.py:595-605) and the error-fallback _refresh_derived_tensors().
@@ -1071,7 +1087,8 @@ class StreamParameterUpdater(OrchestratorUser):
             generator=self.stream.generator,
         ).to(device=self.stream.device, dtype=self.stream.dtype)
 
-        self.stream.stock_noise = torch.zeros_like(self.stream.init_noise)
+        # Clone (not zeros) to match prepare()'s stock_noise semantics
+        self.stream.stock_noise = self.stream.init_noise.clone()
         self.stream.prompt_embeds = self.stream.prompt_embeds[0].repeat(self.stream.batch_size, 1, 1)
 
         # Resize kvo_cache tensors if batch size changed
