@@ -9,6 +9,7 @@ from .param_schema import (
     PromptInterpolationMethod,
     SeedInterpolationMethod,
     clamp_delta,
+    delta_noise_cancellation_ceiling,
     floor_num_inference_steps,
     rescale_t_index_list,
 )
@@ -76,6 +77,10 @@ class StreamParameterUpdater(OrchestratorUser):
         # Warn-once flag for out-of-range delta pushes (this path takes live OSC
         # values per frame — clamp silently after the first warning).
         self._warned_delta_out_of_range: bool = False
+        # Warn-once flag for delta above the gamma/(gamma-1) noise-cancellation
+        # ceiling. A set-time check only — a later live guidance change can move
+        # the ceiling without re-triggering it.
+        self._warned_delta_above_ceiling: bool = False
 
     def get_cache_info(self) -> Dict:
         """Get cache statistics for monitoring performance."""
@@ -384,10 +389,22 @@ class StreamParameterUpdater(OrchestratorUser):
                 if was_clamped and not self._warned_delta_out_of_range:
                     logger.warning(
                         f"update_stream_params: delta={delta} outside the valid R-CFG range "
-                        f"[0.0, 1.0]; clamped to {clamped_delta} (warning shown once)"
+                        f"[1.0, 5.0]; clamped to {clamped_delta} (warning shown once)"
                     )
                     self._warned_delta_out_of_range = True
                 self.stream.delta = clamped_delta
+
+            # Ceiling check after both blocks: a guidance-only raise lowers the
+            # ceiling and can newly push the current delta past it.
+            if (guidance_scale is not None or delta is not None) and not self._warned_delta_above_ceiling:
+                _ceiling = delta_noise_cancellation_ceiling(self.stream.guidance_scale)
+                if self.stream.delta > _ceiling:
+                    logger.warning(
+                        f"update_stream_params: delta={self.stream.delta} exceeds the noise-cancellation "
+                        f"ceiling gamma/(gamma-1)={_ceiling:.2f} at guidance_scale="
+                        f"{self.stream.guidance_scale} — output will re-inject noise (warning shown once)"
+                    )
+                    self._warned_delta_above_ceiling = True
 
             if seed is not None:
                 self._update_seed(seed)
