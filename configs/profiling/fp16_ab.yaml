@@ -1,9 +1,13 @@
-# Profile B — FP8v3 production identity (V2V cached_attn + FI + ControlNet).
-# FIXED 2026-07-29: previous version (no cached_attn/FI/CN, t_index [16], optlvl absent)
-# resolved to a nonexistent engine (h685d6b0fd4fa) — the on-disk fp8 engine was ALWAYS the
-# V2V+CN build. Now identical in engine identity to configs/profiling/fp8_fi_on.yaml,
-# which is the preferred config for new profiling runs.
-# Engine: sdxl-turbo--fp8v3--h18b4bb48d936--res-512x512  (rebuilt 2026-07-29, batch 2)
+# Profiling arm B — FP16 baseline for the FP8-vs-FP16 A/B (differs from fp8_fi_on.yaml
+# ONLY on fp8:false and the per-CN fp8 override below).
+# Engine: sdxl-turbo--h4caa2410d251--res-512x512  (built 2026-07-29, batch 2)
+# Canonical: stabilityai/sdxl-turbo--tiny_vae-True--min_batch-1--max_batch-4
+#            --use_cached_attn-True--fi-True--controlnet--sbatch1--batch-2--cachef4
+#            --optlvl4--mode-img2img--trt10.16.1.11--cc89--res-512x512
+# NOTE: the older fp16 engine hee14d1f99dde (2026-07-27) is NOT comparable — brute-forced
+# identity shows batch-1, no cachef, optlvl2 (single-step t_index, unpinned cache).
+# use_feature_injection MUST stay explicit true: the hash encodes the raw flag (--fi-True)
+# and config.py defaults an absent key to true only by accident of the loader.
 # IMPORTANT: build_engines_if_missing=false — fail if engine not present rather than rebuild
 
 model_id: "stabilityai/sdxl-turbo"
@@ -36,7 +40,7 @@ skip_diffusion: false
 compile_engines_only: false
 build_engines_if_missing: false
 static_shapes: true
-fp8: true
+fp8: false
 fp8_allow_fp16_fallback: false
 builder_optimization_level: 4
 pin_cache_frames: true
@@ -66,5 +70,11 @@ controlnets:
     conditioning_scale: 0.0
     preprocessor: "passthrough"
     enabled: true
+    # Per-CN override (wrapper.py:2771): reuse the existing fp8 CN engine
+    # (controlnet_xinsir_...--optlvl4--fp8) instead of building a missing fp16-optlvl4 one.
+    # CN engines are NOT covered by build_engines_if_missing — a missing CN engine builds
+    # unconditionally mid-run. Same CN binary as the fp8 arms; CN is runtime-inactive
+    # (conditioning_scale 0.0) so the UNet fp8-vs-fp16 axis stays isolated.
+    fp8: true
 
 use_ipadapter: false

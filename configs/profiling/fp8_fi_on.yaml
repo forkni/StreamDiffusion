@@ -1,9 +1,10 @@
-# Profile B — FP8v3 production identity (V2V cached_attn + FI + ControlNet).
-# FIXED 2026-07-29: previous version (no cached_attn/FI/CN, t_index [16], optlvl absent)
-# resolved to a nonexistent engine (h685d6b0fd4fa) — the on-disk fp8 engine was ALWAYS the
-# V2V+CN build. Now identical in engine identity to configs/profiling/fp8_fi_on.yaml,
-# which is the preferred config for new profiling runs.
-# Engine: sdxl-turbo--fp8v3--h18b4bb48d936--res-512x512  (rebuilt 2026-07-29, batch 2)
+# Profiling arm A — FP8v3 + StreamV2V feature injection ON + ControlNet (runtime-inactive)
+# Engine: sdxl-turbo--fp8v3--h18b4bb48d936--res-512x512  (built 2026-07-29, batch 2)
+# Canonical: stabilityai/sdxl-turbo--tiny_vae-True--min_batch-1--max_batch-4
+#            --use_cached_attn-True--fi-True--controlnet--fp8v3--sbatch1--batch-2--cachef4
+#            --optlvl4--mode-img2img--trt10.16.1.11--cc89--res-512x512
+# Pinned snapshot of StreamDiffusionTD/td_config.yaml runtime params (2026-07-29) — do NOT
+# profile td_config.yaml directly, it is a moving target.
 # IMPORTANT: build_engines_if_missing=false — fail if engine not present rather than rebuild
 
 model_id: "stabilityai/sdxl-turbo"
