@@ -41,10 +41,10 @@ logic lives at `pipeline.py:67` itself.
 |---|---|---|
 | 1. Maximize occupancy | **Delegated to TRT; now measured.** Per-arch build profiles set `builder_optimization_level`, `max_num_tactics`, `avg_timing_iterations`, tactic sources; `max_aux_streams` deliberately left to TRT's heuristic (never assigned, confirmed 3×). **Measured (§3):** the dominant UNet kernel family is capped at 2 blocks/SM by shared-memory usage, `warps_active%` 7–14%. This is the real, measured bottleneck. | `acceleration/tensorrt/utilities.py:150-270,279-419,153,188-190,345-348`; `logs/ncu_config_sdtd_profile_cfg_eq7oz4t3_detailed_20260729_025807.ncu-rep` |
 | 2. Coalesced global access | **Mostly delegated; measured not-applicable on the hot path.** Python-level analog (layout/contiguity) is handled at TRT bind boundaries. DRAM throughput never exceeds 64% of peak even at its busiest measured instance (§3) — not saturated, so this is not the binding constraint here. **Gap, quantified (§3, A3a):** the BGRA pack does 3 separate strided 1-byte-per-4 writes, duplicated across two near-identical functions; measured ceiling ≈11 µs/frame. **Gap, unquantified:** no `channels_last` anywhere for the PyTorch VAE/preprocessing convs. | `wrapper.py:1131-1133`, `wrapper.py:1191-1193`; `channels_last`/`memory_format`: zero hits, grep + semantic |
-| 3. Minimize control divergence | **N/A at Python level** (no warp control). The host-level analog — a data-dependent branch forcing a GPU sync — is already solved: 1-frame-delayed pinned readback in the similar-image filter; `torch.where` gating instead of a branch in `get_nn_feats`; `fi_strength`/`fi_threshold` kept as tensors (no `.item()`) so the CUDA graph stays static. | `image_filter.py:28-60`; `attention_processors.py:34-35,206-216` |
-| 4. Tiling / on-chip reuse | **Delegated to TRT + SDPA flash attention**, plus a real, repo-owned L2-persistence carve-out (Ampere-gated `cudaLimitPersistingL2CacheSize` + one `cudaAccessPolicyWindow` — CUDA permits only one per stream, this is not "per-tensor windows" — pinning the single largest hot attention weight) and circular KV/O caches. **Gap, measured and inverted (§3, A3b):** `get_nn_feats` materializes the full `[B,N,M]` cosine matrix then reduces — the canonical untiled reduction the transcript warns about — but a naive Python-loop "tiled" rewrite measured **1.5×–6.7× slower**, not faster (see §3). | `tools/cuda_l2_cache.py:92,181-198,64-79,257-261`; `attention_processors.py:9-35`; `pipeline.py:1157-1180` |
-| 5. Privatization (avoid atomics) | **Nothing to privatize.** Zero GPU atomics repo-wide (no `scatter_add`/`index_put`/`index_add`/`atomicAdd`/histogram). Every "atomic" grep hit is unrelated: atomic *file* writes for engine caching, and a threading lock — not GPU atomics. The spirit of privatization appears as ping-pong double buffers (only in the `denoising_steps_num > 1` branch) and per-worker private buffers. | `pipeline.py:629-634,1217-1224`; `base_orchestrator.py:39-49`; false positives: `utilities.py:455-474`, `fp8_quantize.py:240`, `stream_parameter_updater.py:48` |
-| 6. Streams / host-device overlap | **Strongly implemented.** Pinned staging both directions with `non_blocking=True`; dedicated streams with `Event`-based cross-stream barriers and `record_stream` allocator hygiene; background stream + thread-pool 1-frame pipelining for pre/post-processing; CUDA-graph capture with fallback; zero-copy CUDA-IPC path to TouchDesigner. **Deliberate exception, found while verifying (§3):** the IPC output boundary is forced to *blocking* export — `_lazy_init_ipc_exporter` overrides `ExportPolicy` to `export_sync=True` unless `CUDALINK_EXPORT_SYNC=0` is set, because the pack buffer is persistent/reused every frame and async export would race the next frame's overwrite (ADR-0001). | `pipeline.py:423-427,1317-1321`; `processors/trt_base.py:89-279`; `processors/ipadapter_embedding.py:34-69`; `wrapper.py:1024-1089,1110-1114,1144-1151`; `docs/adr/0001-cuda-link-as-external-dependency.md` |
+| 3. Minimize control divergence | **N/A at Python level** (no warp control). The host-level analog — a data-dependent branch forcing a GPU sync — is already solved: 1-frame-delayed pinned readback in the similar-image filter; `torch.where` gating instead of a branch in `get_nn_feats`; `fi_strength`/`fi_threshold` kept as tensors (no `.item()`) so the CUDA graph stays static. | `image_filter.py:28-60`; `acceleration/tensorrt/models/attention_processors.py:34-35,206-216` |
+| 4. Tiling / on-chip reuse | **Delegated to TRT + SDPA flash attention**, plus a real, repo-owned L2-persistence carve-out (Ampere-gated `cudaLimitPersistingL2CacheSize` + one `cudaAccessPolicyWindow` — CUDA permits only one per stream, this is not "per-tensor windows" — pinning the single largest hot attention weight) and circular KV/O caches. **Gap, measured and inverted (§3, A3b):** `get_nn_feats` materializes the full `[B,N,M]` cosine matrix then reduces — the canonical untiled reduction the transcript warns about — but a naive Python-loop "tiled" rewrite measured **1.5×–6.7× slower**, not faster (see §3). | `tools/cuda_l2_cache.py:316-319,352-370` (carve-out + access-policy window; cites corrected 2026-07-29); `acceleration/tensorrt/models/attention_processors.py:9-35`; `pipeline.py:1157-1180` |
+| 5. Privatization (avoid atomics) | **Nothing to privatize.** Zero GPU atomics repo-wide (no `scatter_add`/`index_put`/`index_add`/`atomicAdd`/histogram). Every "atomic" grep hit is unrelated: atomic *file* writes for engine caching, and a threading lock — not GPU atomics. The spirit of privatization appears as ping-pong double buffers (allocation at `pipeline.py:629-634` is *unconditional*; only the swap at `pipeline.py:1217-1224` runs inside the `denoising_steps_num > 1` branch — corrected 2026-07-29) and per-worker private buffers. | `pipeline.py:629-634,1217-1224`; `base_orchestrator.py:39-49`; false positives: `utilities.py:455-474`, `fp8_quantize.py:240`, `stream_parameter_updater.py:48` |
+| 6. Streams / host-device overlap | **Strongly implemented.** Pinned host staging on both H2D and D2H boundaries (input staging `pipeline.py:423-427`; `_output_pin_buf` readback) with `non_blocking=True` — the IPC *pack* buffer itself is device-resident (a D2D write target), not pinned host memory as an earlier draft implied (corrected 2026-07-29); dedicated streams with `Event`-based cross-stream barriers and `record_stream` allocator hygiene; background stream + thread-pool 1-frame pipelining for pre/post-processing; CUDA-graph capture with fallback; zero-copy CUDA-IPC path to TouchDesigner. **Deliberate exception, found while verifying (§3):** the IPC output boundary is forced to *blocking* export — `_lazy_init_ipc_exporter` overrides `ExportPolicy` to `export_sync=True` unless `CUDALINK_EXPORT_SYNC=0` is set, because the pack buffer is persistent/reused every frame and async export would race the next frame's overwrite (ADR-0001). | `pipeline.py:423-427,1317-1321`; `processors/trt_base.py:89-279`; `processors/ipadapter_embedding.py:34-69`; `wrapper.py:1024-1089,1110-1114,1144-1151`; `docs/adr/0001-cuda-link-as-external-dependency.md` |
 | 7. Kernel-launch overhead | **Implemented.** CUDA graphs, pre-allocated buffers, `set_tensor_address` rebinding guarded on the graph fast path. (Buffer allocation itself lives in `allocate_buffers`/`_can_reuse_buffers`, outside the cited doc range — that range documents the pattern.) | `acceleration/tensorrt/utilities.py:1244-1295` |
 | 8. CUDA-aware MPI / multi-node | **Absent by design.** No `torch.distributed`, NCCL, or multi-GPU anywhere (grep + semantic search, zero hits). Single-GPU real-time application — correctly out of scope; see §4. | repo-wide search: no hits |
 | 9. Constant memory broadcast | **N/A** (no hand-written kernels to place data into `__constant__`). Nearest analog — L2 persistence for hot weights — is implemented (see row 4). | `tools/cuda_l2_cache.py` |
@@ -63,14 +63,14 @@ in §6.
 
 | Kernel variant (grid) | shmem limit | warps_active% | SM thpt% | DRAM thpt% | L1TEX thpt% | LTS thpt% | LTS hit% |
 |---|---|---|---|---|---|---|---|
-| 128x2 tile, `(24,3,1)` — 6/10 launches | 2 blocks | 7.5–8.4 | 6.5–6.9 | 24.2–25.8 | 27.0–29.6 | 21.8–23.3 | ~80.5 |
+| 128x2 tile, `(24,3,1)` — 5/10 launches | 2 blocks | 7.5–8.4 | 6.5–6.9 | 24.2–25.8 | 27.0–29.6 | 21.8–23.3 | ~80.5 |
 | 128x2 tile, `(24,3,3)` | 2 blocks | 13.8–13.9 | 16.5–16.9 | 61.9–63.5 | 37.5–38.1 | 55.8–57.1 | ~80.1 |
 | 64x1 tile, `(24,12,1)` | 10 blocks | 18.0–18.2 | 13.8–14.1 | 54.0–55.1 | 31.6–32.0 | 46.0–46.8 | ~80.5–80.8 |
 | `fmha_cutlassF_f16` attention | 5 blocks | 8.2 | 2.7 | 5.1 | 16.4 | 3.4 | ~81.0 |
 
 `gpu__compute_memory_throughput` equals `gpu__dram_throughput` exactly on every row — DRAM is
 the binding memory pipe for this kernel family, not L1TEX/LTS — but it tops out at 64% even
-at the busiest instance and sits at 24–26% for the majority (6/10) of launches. **Not
+at the busiest instance and sits at 24–26% for the `(24,3,1)` instances (5/10 launches). **Not
 saturated.** The measured limiter is occupancy: the dominant 128x2 tile is capped at **2
 blocks/SM by shared-memory usage** (`launch__occupancy_limit_shared_mem=2` vs. hardware max
 24), which caps `warps_active%` at 7–14% regardless of memory traffic. SM throughput and warp
@@ -84,6 +84,23 @@ pipeline's hot path — there's no bandwidth wall to relieve. The real, measured
 items 1/4 (occupancy via TensorRT's shared-memory tile-size choice), which is TRT tactic
 selection, not Python-level code this repo controls. This upgrades the earlier `basic`-set
 occupancy finding from inference to direct confirmation.
+
+**Amendment (2026-07-29, follow-up pass — A1 register-limiter verdict):** the original
+capture exported only the shared-mem/block limiters, so it could not distinguish
+"shared-mem-capped defect" from "correctly-tuned register-tiled CUTLASS tile" (PMPP 5e §15.7
+treats low occupancy as the *intended* operating point for register tiling, ~255
+regs/thread). Re-exporting the same rep offline
+(`ncu --import <rep> --page raw --csv --metrics launch__occupancy_limit_registers,launch__occupancy_limit_warps,launch__registers_per_thread,sm__maximum_warps_per_active_cycle_pct`,
+saved to `logs/a1_limiters_export_20260729.csv`) resolves it: **this section's conclusion
+stands.** The dominant 128x2 GEMM is genuinely shared-memory-limited (2 blocks/SM by smem
+vs. 6 by registers; 80 regs/thread) and no captured kernel approaches the 255-register
+profile (64/80/128 regs/thread) — the §15.7 register-tiled interpretation does not apply.
+Two secondary corrections: (a) the 64x1 tile and `fmha` kernels are actually
+*register*-limited (8 vs. 10 and 4 vs. 5 blocks respectively — the table's "shmem limit"
+column is not the binding limiter for those two rows), with much looser ceilings (67%/33%
+max theoretical warps vs. the dominant kernel's 16.7%); (b) the `(24,3,1)` launch count is
+5/10, not 6/10 as originally stated (fixed above). Full evidence:
+`docs/profiling/fp8_fi_gates_2026-07-29.md`.
 
 ### 3.2 BGRA pack — real but negligible (item 2)
 
@@ -120,7 +137,7 @@ export, and a faster pack kernel alone would not unlock overlap at this boundary
 
 ### 3.3 `get_nn_feats` — real gap, negative naive fix (item 4)
 
-`attention_processors.py:9-35` (reduction at lines 28–35) materializes the full `[B, N, M]`
+`acceleration/tensorrt/models/attention_processors.py:9-35` (reduction at lines 28–35) materializes the full `[B, N, M]`
 cosine similarity matrix via `bmm`, then reduces with `.max(dim=-1)` — the canonical untiled
 reduction the transcript warns about, and it **does run in production**: contrary to an
 earlier draft of this investigation's assumption, feature injection is not simply "off by
@@ -316,3 +333,24 @@ drifted off the FP8 baseline the earlier audit measured, is a genuine open quest
 report surfaces rather than assumes. If FP8 is still the intended target, the config drift
 (and the missing rebuild provenance for the fp8 engine that IS on disk) should be resolved
 before the next fp8 measurement is attempted.
+
+**Amendment (2026-07-29, follow-up pass): provenance CLOSED.** FP8 is the intended
+production target — the user rebuilt the fp8 engine the same day (with V2V cached-attn,
+feature injection, and ControlNet enabled) and it landed in the **identical** hash dir
+`sdxl-turbo--fp8v3--h18b4bb48d936--res-512x512` (build_log.jsonl: 2026-07-25 2226.69 s and
+2026-07-29 2087 s, same dir). Independently, reconstructing `get_engine_path`'s canonical
+string from `StreamDiffusionTD/td_config.yaml` (fp8 + cached_attn + FI + CN, static batch 2,
+`cachef4`, `optlvl4`) SHA1s to exactly `18b4bb48d936` — td_config.yaml *is* the builder
+config; the on-disk fp8 engine always had V2V+CN. The stale `configs/profiling/
+profiling_fp8v3.yaml` was rewritten in place to that identity, and three pinned arm configs
+were added (`configs/profiling/fp8_fi_on.yaml`, `fp16_ab.yaml`, `fi_ablation_off.yaml`, all
+`build_engines_if_missing: false`) with an offline SHA1 preflight validating every arm
+before any GPU run. Two collateral findings: (a) the fp16 engine measured throughout §3
+(`hee14d1f99dde`) was reconstructed by brute force as **batch-1 / unpinned-cache / optlvl2**
+— NOT comparable to the fp8 engine's batch-2/cachef4/optlvl4 identity, so a true batch-2
+fp16 A/B twin (`h4caa2410d251`) was built 2026-07-29 (616.8 s, 4939 MB) for the FP8-vs-FP16
+comparison in `docs/profiling/fp8_fi_gates_2026-07-29.md`; (b) latent hash-key bug,
+recorded not fixed: the cache key encodes the *raw* `use_feature_injection` flag
+(`wrapper.py:2102`) while the effective value is `use_feature_injection AND use_cached_attn`
+(`models.py:514`) — two configs differing only in that interaction can build identical
+engines under different hashes.

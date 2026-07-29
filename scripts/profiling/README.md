@@ -5,14 +5,18 @@
 ### nsys — GPU timeline (benchmark target, existing cached engine)
 
 Pass `--config` to load the exact same wrapper kwargs as `td_main.py`, guaranteeing a cache
-hit — no engine rebuild. The config at `StreamDiffusionTD/td_config.yaml` is the "Quality / FP16"
-preset (`stabilityai/sdxl-turbo`, 512×512, fp16, img2img).
+hit — no engine rebuild. The config at `StreamDiffusionTD/td_config.yaml` is the deployed
+FP8 preset (`stabilityai/sdxl-turbo`, 512×512, fp8 + cached-attn/V2V + ControlNet, img2img)
+— **and it is a moving target the user edits live**. For reproducible A/B runs use the
+pinned arm configs in `configs/profiling/` (`fp8_fi_on.yaml`, `fp16_ab.yaml`,
+`fi_ablation_off.yaml`), which set `build_engines_if_missing: false` so any engine-identity
+drift fails loudly instead of silently rebuilding.
 
 ```bat
 set NSYS="C:/Program Files/NVIDIA Corporation/Nsight Systems 2025.3.2/target-windows-x64/nsys.exe"
 %NSYS% profile --trace=cuda,nvtx,cublas --cuda-memory-usage=true ^
     -o profiles/sdtd_quality_fp16 --force-overwrite true ^
-    .venv/Scripts/python scripts/profiling/profile_nsys.py --target benchmark ^
+    venv/Scripts/python scripts/profiling/profile_nsys.py --target benchmark ^
         --config StreamDiffusionTD/td_config.yaml
 
 REM Open the report:
@@ -37,23 +41,23 @@ set SDTD_NSYS_WARMUP_FRAMES=20
 set SDTD_NSYS_CAPTURE_FRAMES=500
 %NSYS% profile --trace=cuda,nvtx,cublas --capture-range cudaProfilerApi ^
     -o profiles/sdtd_td_main --force-overwrite true ^
-    .venv/Scripts/python StreamDiffusionTD/td_main.py
+    venv/Scripts/python StreamDiffusionTD/td_main.py
 
 REM Or let the launcher manage it (no nsys wrapping required for deferred stats):
-.venv/Scripts/python scripts/profiling/profile_nsys.py --target td_main --warmup 20 --frames 500
+venv/Scripts/python scripts/profiling/profile_nsys.py --target td_main --warmup 20 --frames 500
 ```
 
 ### ncu — per-kernel metrics
 
 ```bat
 REM Basic metrics (2-3× overhead):
-.venv/Scripts/python scripts/profiling/profile_ncu.py --target benchmark --set basic
+venv/Scripts/python scripts/profiling/profile_ncu.py --target benchmark --set basic
 
 REM Roofline analysis:
-.venv/Scripts/python scripts/profiling/profile_ncu.py --target benchmark --set roofline --launch-count 100
+venv/Scripts/python scripts/profiling/profile_ncu.py --target benchmark --set roofline --launch-count 100
 
 REM See the exact command without running:
-.venv/Scripts/python scripts/profiling/profile_ncu.py --target benchmark --dry-run
+venv/Scripts/python scripts/profiling/profile_ncu.py --target benchmark --dry-run
 ```
 
 ---
@@ -76,7 +80,7 @@ The following `profiler.region()` names appear in nsys NVTX rows and in the JSON
 > **CUDA graph note:** `trt_infer` NVTX markers fire only at graph capture time (first 3 warmup
 > frames), not on each replay. Set `GPU_PROFILER_NVTX=0` for events-only mode (graph-safe);
 > CUDA-event timings in the JSON stats file are always accurate.
-
+>
 > **CUPTI subscriber note:** When running the benchmark target under nsys, `torch.profiler`
 > may print `CUPTI_ERROR_MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED` — this is benign. nsys and
 > torch.profiler both register CUPTI subscribers; CUDA-event timing in `*_stats.json` and
@@ -91,7 +95,7 @@ The following `profiler.region()` names appear in nsys NVTX rows and in the JSON
 | `GPU_PROFILER=1` | Activate profiler (master switch). Auto-read by `configure()` in wrapper `__init__`. |
 | `GPU_PROFILER_NVTX=0` | Disable NVTX ranges (safe with CUDA graphs); CUDA-event timing stays on. |
 | `GPU_PROFILER_EVENTS=0` | Disable CUDA-event timing (NVTX only). |
-| `STREAMDIFFUSION_PROFILE_TRT=1` | Activate existing TRT IProfiler (per-layer times; disables CUDA graphs). |
+| `STREAMDIFFUSION_PROFILE_TRT=1` | Activate existing TRT IProfiler (per-layer times; disables CUDA graphs). `profile_ncu.py` sets it to 1 on the child env automatically unless the variable is already set — an explicit value (including a persistent Windows user-level `0`) is respected, and the effective value is printed at launch. |
 | `SDTD_NSYS_CAPTURE=1` | Enable deferred-capture handshake in `td_manager._streaming_loop`. |
 | `SDTD_NSYS_WARMUP_FRAMES` | Frames before `cudaProfilerStart` (default: 20). |
 | `SDTD_NSYS_CAPTURE_FRAMES` | Frames to capture after warmup (default: 500). |
@@ -101,6 +105,27 @@ The following `profiler.region()` names appear in nsys NVTX rows and in the JSON
 | `SDTD_WIDTH` / `SDTD_HEIGHT` | Override resolution for `profile_nsys.py --target benchmark`. |
 | `NSYS` | Override nsys.exe path (auto-discovered if unset). |
 | `NCU` | Override ncu.exe path (auto-discovered if unset). |
+
+---
+
+## ncu Guardrails (hard-won — read before quoting any ncu number)
+
+- **Sanity-check every rep after capture.** A `.ncu-rep` can exist and open cleanly yet
+  contain zero counter data (e.g. a `--set` name that resolves to no sections). Verify with
+  `ncu --import <rep> --page raw --csv --metrics gpu__time_duration.sum` — blank metric
+  cells on every row means the capture collected nothing. `profile_ncu.py` now runs this
+  check automatically and exits non-zero on an empty rep.
+- **Check metric resolution on export.** When exporting specific `--metrics`, confirm every
+  requested metric appears as a non-blank column; a silently-missing metric usually means a
+  typo or a metric not collected by the rep's section set.
+- **Use ≥10-minute timeouts.** A detailed-set capture of a TRT workload routinely takes
+  several minutes before the first kernel replays; killing the run early produces the
+  empty-rep failure mode above.
+- **Never quote timing from an ncu run.** `profile_ncu.py` sets `CUDA_LAUNCH_BLOCKING=1`
+  (required for per-kernel attribution), which serializes every launch — observed ~8.6×
+  wall-clock inflation on this pipeline. Timing numbers come only from
+  `profiler_logs/*_stats.json` produced by nsys/benchmark runs with no ncu attached; ncu
+  reps are for occupancy/limiter/throughput *ratios* and per-kernel structure.
 
 ---
 
