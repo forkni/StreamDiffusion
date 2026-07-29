@@ -45,6 +45,7 @@ Fallback (single.py, non-production engine):
 """
 
 import argparse
+import csv
 import os
 import shutil
 import subprocess
@@ -206,6 +207,11 @@ ncu_cmd += target_cmd
 proc_env = dict(os.environ)
 proc_env["CUDA_LAUNCH_BLOCKING"] = "1"  # required for accurate per-kernel profiling
 proc_env["GPU_PROFILER"] = "1"
+# TRT CUDA graphs must be off for ncu attach (IProfiler hooks are incompatible
+# with graph replay). Respect an explicit user override (e.g. =0).
+if os.environ.get("STREAMDIFFUSION_PROFILE_TRT") is None:
+    proc_env["STREAMDIFFUSION_PROFILE_TRT"] = "1"
+print(f"[profile_ncu] STREAMDIFFUSION_PROFILE_TRT={proc_env['STREAMDIFFUSION_PROFILE_TRT']} on target env")
 
 print(f"\n[profile_ncu] target:      {args.target}")
 print(f"[profile_ncu] metric set:  {args.metric_set}")
@@ -280,6 +286,29 @@ if not os.path.exists(rep_path):
         file=sys.stderr,
     )
     sys.exit(2)
+
+# Content sanity check: a .ncu-rep can exist and open cleanly yet hold zero
+# counter data (e.g. a --set resolving to no sections collects nothing while
+# still writing a valid-looking report — see the module docstring NOTE).
+# Re-import it and require >=1 kernel row with a non-blank duration value.
+sanity_cmd = [str(_NCU), "--import", rep_path, "--page", "raw", "--csv", "--metrics", "gpu__time_duration.sum"]
+sanity = subprocess.run(sanity_cmd, capture_output=True, text=True, env=proc_env)
+rows = list(csv.reader(sanity.stdout.splitlines()))
+n_data = 0
+if rows and "gpu__time_duration.sum" in rows[0]:
+    col = rows[0].index("gpu__time_duration.sum")
+    # r[0] blank on the units row; blank metric cells mean no counter data
+    n_data = sum(1 for r in rows[1:] if len(r) > col and r[0].strip() and r[col].strip())
+if n_data == 0:
+    print(
+        f"[profile_ncu] ERROR: {rep_name}.ncu-rep contains no kernel counter data "
+        "(gpu__time_duration.sum blank/absent for every row). Check the --set name "
+        "against `ncu --list-sets` and look for '==WARNING== No metrics to collect' "
+        "in the output above.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+print(f"[profile_ncu] Content check: {n_data} kernel rows with non-blank gpu__time_duration.sum")
 
 print(f"[profile_ncu] Report -> {rep_path}")
 print(f"[profile_ncu] Open with: Nsight Compute UI -> File -> Open -> {rep_name}.ncu-rep")
