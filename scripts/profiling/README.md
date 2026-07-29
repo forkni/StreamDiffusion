@@ -13,14 +13,14 @@ pinned arm configs in `configs/profiling/` (`fp8_fi_on.yaml`, `fp16_ab.yaml`,
 drift fails loudly instead of silently rebuilding.
 
 ```bat
-set NSYS="C:/Program Files/NVIDIA Corporation/Nsight Systems 2025.3.2/target-windows-x64/nsys.exe"
+set NSYS="C:/Program Files/NVIDIA Corporation/Nsight Systems 2026.3.1/target-windows-x64/nsys.exe"
 %NSYS% profile --trace=cuda,nvtx,cublas --cuda-memory-usage=true ^
     -o profiles/sdtd_quality_fp16 --force-overwrite true ^
     venv/Scripts/python scripts/profiling/profile_nsys.py --target benchmark ^
         --config StreamDiffusionTD/td_config.yaml
 
 REM Open the report:
-"C:/Program Files/NVIDIA Corporation/Nsight Systems 2025.3.2/host-windows-x64/nsys-ui.exe" profiles/sdtd_quality_fp16.nsys-rep
+"C:/Program Files/NVIDIA Corporation/Nsight Systems 2026.3.1/host-windows-x64/nsys-ui.exe" profiles/sdtd_quality_fp16.nsys-rep
 
 %NSYS% stats --report nvtx_pushpop_trace   profiles/sdtd_quality_fp16.nsys-rep > nvtx_trace.txt
 %NSYS% stats --report cuda_kern_exec_trace profiles/sdtd_quality_fp16.nsys-rep > kernel_trace.txt
@@ -32,7 +32,7 @@ trigger an engine build if no matching cache exists.
 ### nsys — GPU timeline (td_main production path)
 
 ```bat
-set NSYS="C:/Program Files/NVIDIA Corporation/Nsight Systems 2025.3.2/target-windows-x64/nsys.exe"
+set NSYS="C:/Program Files/NVIDIA Corporation/Nsight Systems 2026.3.1/target-windows-x64/nsys.exe"
 
 REM Wrap td_main.py directly; SDTD_NSYS_CAPTURE=1 fires start/stop at precise frame boundaries:
 set GPU_PROFILER=1

@@ -46,6 +46,23 @@ Page numbers below are 1-based PDF indices (PyMuPDF), not printed pages.
 
 ---
 
+## Status (2026-07-29 execution pass)
+
+Results and verdicts live in `docs/profiling/fp8_fi_gates_2026-07-29.md`; commits
+99f1cd5 / 5a546de / c532221.
+
+- **Done:** A1 (report §3.1 stands — smem-limited), A4 (report amended), B1 (`_pack_bgra`
+  helper + test), B4 (ncu guardrails + `profile_ncu.py` sanity check; fp8 drift record),
+  2a (FI ablation: +2.832 ms = +11.3% on `unet_step` p50 → **GO** on 3a), 2d (fp8 vs
+  fp16: fp8 6.2% faster, PSNR 23.65 dB), 3c (**closed** — fp8 stays deployed, see
+  `docs/adr/0003-fp8-engine-adoption.md`).
+- **Dropped:** 2c (see the dated note on the item below — the deployed VAE is TensorRT,
+  so the PyTorch-side A/B has no production consumer).
+- **Open:** 2b (blocking-export gate; needs a from-scratch mock cuda-link consumer —
+  none exists in the repo) and 3b behind it; A2/A3 book extraction; 3a is in design
+  spike (FI deep-dive: per-frame cost reconciliation + Myelin-kernel ncu, then
+  plugin-vs-cache-layout-restructure decision, `docs/plans/fi_fusion_spike_2026-07-29.md`).
+
 ## Workstream A — Research & report correction (docs + logs only, no runtime code)
 
 ### A1. Settle the occupancy contradiction (measurement gate — run first)
@@ -146,6 +163,11 @@ checklist, superseding the podcast's 4th-ed distillation that framed the origina
 - **2c. `channels_last` A/B** on the PyTorch-side VAE only (filler): CUDA-event harness,
   20-warmup/200-timed/sync-bracketed. **Gate:** >5% VAE-portion win → quick win; else drop and
   record (books offer no specific support either way).
+  **Dropped 2026-07-29 without measuring:** in the deployed configuration the VAE runs as
+  TensorRT engines (`AutoencoderKLEngine` installed at `wrapper.py:2611-2625`); the eager
+  PyTorch VAE exists only as the OOM fallback (`wrapper.py:2627-2657`), so a
+  `channels_last` A/B on it has no production consumer. The PMPP layout principle itself
+  is already noted under A2 item 6.
 - **2d. FP8 provenance** (parallel with 2a; per user decision): reconstruct how
   `sdxl-turbo--fp8v3--h18b4bb48d936` was built — `engines/.../build_log.jsonl` (2026-07-25,
   2226.69 s), git history of `configs/profiling/profiling_fp8v3.yaml`, hash inputs. Fix config
