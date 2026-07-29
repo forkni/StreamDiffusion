@@ -52,3 +52,21 @@ deployment.
 - ncu limiter data for the e4m3 kernels (all shared-memory-limited, 2–3 blocks/SM) is
   recorded in the same results doc; the PMPP report's smem-limited occupancy thesis
   extends to the fp8 path unchanged.
+
+## Addendum (2026-07-29): MHA Q/DQ recipe (`fp8_mha_qdq`)
+
+The coverage follow-up named above ran the same day
+(`docs/profiling/fp8_coverage_2026-07-29.md`). A new opt-in flag `fp8_mha_qdq`
+(default `false`; default path byte-identical to production) drops modelopt's
+`disable_mha_qdq` exclusion, quantizing the attention BMMs and — as a verified side
+effect — the whole K/V-cache path (all 70 K and 70 V cache concats enter the fp8
+domain; a separate cache-quantization arm is unnecessary). Engines fork the cache
+tag `--fp8v3` → `--fp8v3-mhaq`.
+
+Measured vs this ADR's fp8 arm on the identical workload: `unet_step` p50
+**27.293 ms vs 27.950 ms (−2.4%)**, PSNR vs fp16 **25.07 dB** (above the 23.65 dB
+accepted baseline), MHA kernels stayed fused on Ada (140, unchanged). Gate G1
+passed → the recipe is **kept**: exposed through the TD component's *Performance*
+TRT profile (`fp8_mha_qdq: true` there only). The deployed production
+`td_config.yaml` is unchanged; adopting mhaq as the deployed default remains a
+recommendation pending soak in live TD use.

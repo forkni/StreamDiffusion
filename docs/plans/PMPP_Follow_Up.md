@@ -62,6 +62,14 @@ Results and verdicts live in `docs/profiling/fp8_fi_gates_2026-07-29.md`; commit
   none exists in the repo) and 3b behind it; A2/A3 book extraction; 3a is in design
   spike (FI deep-dive: per-frame cost reconciliation + Myelin-kernel ncu, then
   plugin-vs-cache-layout-restructure decision, `docs/plans/fi_fusion_spike_2026-07-29.md`).
+- **Update (2026-07-29, later same day):** the fp8-coverage lever named in ADR-0003
+  executed — `fp8_mha_qdq` recipe (MHA Q/DQ + K/V-cache quantization subsumed):
+  `unet_step` p50 27.293 ms (−0.657 ms vs the 3c baseline 27.950), PSNR 25.07 dB
+  vs fp16, gate G1 **KEEP**; exposed via the TD *Performance* TRT profile,
+  production default unchanged. Full record:
+  `docs/profiling/fp8_coverage_2026-07-29.md` + ADR-0003 addendum. Next-largest
+  recorded lever: activation-side quantization of the mixed e4m3×f16 pool
+  (~10.7 ms/frame).
 
 ## Workstream A — Research & report correction (docs + logs only, no runtime code)
 
