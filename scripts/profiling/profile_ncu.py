@@ -5,7 +5,7 @@ Captures per-kernel performance metrics from StreamDiffusion's TRT inference pat
 
 ── Quick start ─────────────────────────────────────────────────────────────────
 Production engine (recommended — reuses td_config.yaml cached engine):
-    venv/Scripts/python scripts/profiling/profile_ncu.py --config StreamDiffusionTD/td_config.yaml --set roofline --kernel-regex "sm89_xmma_gemm_e4m3" --launch-count 50
+    venv/Scripts/python scripts/profiling/profile_ncu.py --config StreamDiffusionTD/td_config.yaml --set roofline --kernel-regex "cutlass|gemm" --launch-count 50
 
 Basic metrics (2-3× overhead), first 50 kernels:
     venv/Scripts/python scripts/profiling/profile_ncu.py --config StreamDiffusionTD/td_config.yaml --set basic
@@ -21,11 +21,19 @@ Fallback (single.py, non-production engine):
   logs/ncu_<target>_<set>_<TS>.csv       — (with --csv) kernel summary table
 
 ── Overhead factors ────────────────────────────────────────────────────────────
-  basic:          2-3×   (arithmetic throughput, memory bandwidth, occupancy)
-  full:          20-50×  (all hardware counters, multi-pass)
-  roofline:       3-5×   (achievable roofline — adds SM throughput counters)
-  memoryworkload: 5-10×  (L1/L2/DRAM access patterns)
-  source:        10-30×  (source-level annotation, needs -lineinfo in compilation)
+  basic:     2-3×   (arithmetic throughput, memory bandwidth, occupancy)
+  roofline:  3-5×   (achievable roofline — adds SM throughput counters)
+  detailed:  5-15×  (adds MemoryWorkloadAnalysis L1/L2/DRAM access patterns, Tile,
+                      SourceCounters — this is the correct set for coalescing/sector data;
+                      there is no separate "memoryworkload" or "source" set in this ncu
+                      version, confirmed via `ncu --list-sets`)
+  full:      20-50× (all hardware counters, multi-pass)
+
+  NOTE: --set memoryworkload and --set source do not exist as named sets in this ncu
+  version (2026.1.1) — passing them makes ncu silently collect zero metrics
+  ("==WARNING== No metrics to collect found in sections.") while still producing a
+  valid-looking .ncu-rep with correctly-targeted kernels but no counter data. Always
+  verify with `ncu --list-sets` when adding a new --set choice.
 
 ── Notes ────────────────────────────────────────────────────────────────────────
   - ncu attaches to the target process; TRT CUDA graphs must be disabled.
@@ -55,13 +63,14 @@ parser.add_argument(
     "--set",
     dest="metric_set",
     default="basic",
-    choices=["basic", "full", "roofline", "memoryworkload", "source"],
+    choices=["basic", "full", "roofline", "detailed", "nvlink", "pmsampling"],
     help="ncu metric preset (default: basic)",
 )
 parser.add_argument(
     "--kernel-regex",
     default="",
-    help="Filter captured kernels by name regex (empty = all kernels)",
+    help="Filter captured kernels by name regex (empty = all kernels). Auto-prefixed with "
+    "'regex:' for ncu unless already prefixed with regex:/base:/demangled:/mangled:.",
 )
 parser.add_argument(
     "--launch-skip",
@@ -186,7 +195,10 @@ ncu_cmd = [
     rep_path,
 ]
 if args.kernel_regex:
-    ncu_cmd += ["--kernel-name", args.kernel_regex]
+    _kn = args.kernel_regex
+    if not _kn.startswith(("regex:", "base:", "demangled:", "mangled:")):
+        _kn = f"regex:{_kn}"
+    ncu_cmd += ["--kernel-name", _kn]
 
 ncu_cmd += target_cmd
 
