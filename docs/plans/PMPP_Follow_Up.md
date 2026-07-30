@@ -49,19 +49,30 @@ Page numbers below are 1-based PDF indices (PyMuPDF), not printed pages.
 ## Status (2026-07-29 execution pass)
 
 Results and verdicts live in `docs/profiling/fp8_fi_gates_2026-07-29.md`; commits
-99f1cd5 / 5a546de / c532221.
+99f1cd5 / 5a546de / c532221 / 425aec4 (3a spike verdict + ADR-0003) / 9719f76
+(fp8_mha_qdq) / 3795f30 (kvo/fi cache-slot latch fix).
 
 - **Done:** A1 (report §3.1 stands — smem-limited), A4 (report amended), B1 (`_pack_bgra`
   helper + test), B4 (ncu guardrails + `profile_ncu.py` sanity check; fp8 drift record),
   2a (FI ablation: +2.832 ms = +11.3% on `unet_step` p50 → **GO** on 3a), 2d (fp8 vs
   fp16: fp8 6.2% faster, PSNR 23.65 dB), 3c (**closed** — fp8 stays deployed, see
-  `docs/adr/0003-fp8-engine-adoption.md`).
+  `docs/adr/0003-fp8-engine-adoption.md`), 3a (**closed no-go** at current economics —
+  the design spike measured a plugin ceiling of ~1.0–1.4 ms, not the 2.8 ms the ablation
+  implied; two revisit triggers recorded in
+  `docs/plans/fi_fusion_spike_2026-07-29.md`; successor lever is the (b′) e4m3
+  K/V-cache precision experiment, ~0.68 ms).
 - **Dropped:** 2c (see the dated note on the item below — the deployed VAE is TensorRT,
   so the PyTorch-side A/B has no production consumer).
-- **Open:** 2b (blocking-export gate; needs a from-scratch mock cuda-link consumer —
-  none exists in the repo) and 3b behind it; A2/A3 book extraction; 3a is in design
-  spike (FI deep-dive: per-frame cost reconciliation + Myelin-kernel ncu, then
-  plugin-vs-cache-layout-restructure decision, `docs/plans/fi_fusion_spike_2026-07-29.md`).
+- **Open backlog (all deliberate — gated or deprioritized):**
+  1. A2 → A3 — PMPP book extraction + gap-closure research doc
+     (`docs/PMPP_gap_closure_research_2026-07-29.md`, docs-only workstream).
+  2. 2b → 3b — mock cuda-link consumer + blocking-export measurement gate (no consumer
+     exists in the repo); only if the gate shows ≥1 ms does 3b (double-buffered
+     `_ipc_pack_buf` + `export_sync=False`) proceed.
+  3. (b′) e4m3 K/V-cache precision experiment — the fusion spike's recommended next
+     gated experiment (targets the 0.68 ms GEMM precision shift).
+  4. Activation-side quantization of the mixed e4m3×f16 GEMM pool (~10.7 ms/frame
+     pool) — next-largest recorded lever per the update below and ADR-0003.
 - **Update (2026-07-29, later same day):** the fp8-coverage lever named in ADR-0003
   executed — `fp8_mha_qdq` recipe (MHA Q/DQ + K/V-cache quantization subsumed):
   `unet_step` p50 27.293 ms (−0.657 ms vs the 3c baseline 27.950), PSNR 25.07 dB
