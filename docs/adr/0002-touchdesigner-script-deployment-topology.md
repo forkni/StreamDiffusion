@@ -10,8 +10,8 @@ repos, each with a distinct role:
 | Repo | Role | Working copy |
 |---|---|---|
 | `dotsimulate/StreamDiffusion` | Python **library** (pip package) | fork `forkni/StreamDiffusion`, editable-installed from `src\` |
-| `dotsimulate/StreamDiffusionTD` | **TD component**: `operator/streamdiffusionTD/*.py` (`td_main` / `td_manager` / `td_osc_handler` / `install_tensorrt`) + `StreamDiffusion` / `dotloader` / `tox_updater` / `sd_installer` submodules | local clone (`dev` branch); no fork yet |
-| `dotsimulate/StreamDiffusion-installer` | Installer, pinned via `dat_version_manifest` (= the `sd_installer` submodule target) | checked out inside the working copy |
+| `dotsimulate/StreamDiffusionTD` | **TD component**: `operator/streamdiffusionTD/*.py` (`td_main` / `td_manager` / `td_osc_handler` / `install_tensorrt`) + `StreamDiffusion` / `dotloader` / `tox_updater` / `sd_installer` submodules | local clone (`dev` branch); fork `forkni/StreamDiffusionTD` |
+| `dotsimulate/StreamDiffusion-installer` | Installer, pinned via `dat_version_manifest` (= the `sd_installer` submodule target) | checked out inside the working copy; fork `forkni/StreamDiffusion-installer` |
 
 Within a single TouchDesigner working copy, the TD component's scripts additionally exist
 in **four runtime layers**, source-of-record at the top:
@@ -30,12 +30,23 @@ in **four runtime layers**, source-of-record at the top:
 4. **`src\streamdiffusion\`** — the Python library half; editable-installed, independent of
    layers 1-3, always current.
 
-**Decision: keep this topology as-is.** The `_skip_code_copy` guard, and the resulting
-ability for the deployed layer to drift from the synced DAT/`Scripts`/`.tox` unit, is
-**intentional design, confirmed by the maintainer** — it exists to let one script element be
-changed independently without forcing a global re-sync (the guard's own history says it was
-added to stop "confusing constant re-sync"). Any future automation must *reconcile
-deliberately*, not remove this independent-edit capability.
+**Decision: keep this topology as-is, on fork-local evidence only.** The `_skip_code_copy`
+guard, and the resulting ability for the deployed layer to drift from the synced
+DAT/`Scripts`/`.tox` unit, is grounded in the guard's own commit history, which says it was
+added to stop "confusing constant re-sync" — that part of the record is solid. Any future
+automation must *reconcile deliberately*, not remove this independent-edit capability.
+
+**Correction (2026-07-29): the "confirmed by the maintainer" claim below was wrong and has
+been withdrawn.** This ADR originally asserted the guard was "intentional design, confirmed
+by the maintainer." Studying upstream history for the fork/PR plan turned up
+`dotsimulate/StreamDiffusion@8f6d6396` (2026-07-18), which deletes this exact document with
+the message: *"remove ADR-0002: TouchDesigner operator script topology doc, belongs in
+private operator repo, contains incorrect maintainer-confirmation claims."* That is the
+maintainer's actual, on-the-record position — the opposite of what this ADR claimed. The
+guard's *behavior* (freezing the four core deployed files once non-empty) is still accurately
+described below from direct code inspection; only the maintainer-confirmation framing is
+withdrawn. This document is retained fork-side because the topology facts remain useful for
+fork-internal tooling decisions — see the status note at the end.
 
 ## Considered Options
 
@@ -98,10 +109,20 @@ deliberately*, not remove this independent-edit capability.
   non-single-source-of-truth designs rather than problems to eliminate.
 - Do **not** re-propose collapsing this topology to one layer in future architecture
   reviews without first checking whether the independent-edit capability is still in active
-  use — this ADR exists precisely because that capability is a confirmed, intentional
-  feature, not an oversight.
+  use — this ADR exists precisely because the guard's own history shows it was a deliberate
+  choice at the time it was added, not an oversight. (It is no longer accurate to call that
+  choice "confirmed by the maintainer" going forward — see the correction above.)
+
+## Status note — fork-internal only
+
+This document does not exist upstream (`dotsimulate/StreamDiffusion` deleted it in
+`8f6d6396`, see References) and must **never** be included in an upstream PR. It stays in
+`forkni/StreamDiffusion` for fork-internal tooling/deployment decisions only.
 
 ## References
 
 - Text DAT (params): <https://derivative.ca/UserGuide/Text_DAT>
 - DAT Class (`par.file`, `.save()`, `.write()`): <https://docs.derivative.ca/DAT_Class>
+- Upstream deletion of this document: `dotsimulate/StreamDiffusion@8f6d6396`
+  (2026-07-18) — "remove ADR-0002: TouchDesigner operator script topology doc, belongs in
+  private operator repo, contains incorrect maintainer-confirmation claims"
