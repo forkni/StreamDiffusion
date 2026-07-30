@@ -22,9 +22,11 @@ Behavior under lock:
 ASCII only -- no Unicode symbols (Windows cp1252 terminal compatibility).
 """
 
+from typing import Any, List, cast
+
 import torch
 
-from streamdiffusion.hooks import StepCtx
+from streamdiffusion.hooks import StepCtx, UnetKwargsDelta
 from streamdiffusion.modules.controlnet_module import ControlNetModule
 
 DOWN_SHAPES = [(1, 4, 8, 8), (1, 4, 4, 4)]
@@ -84,6 +86,20 @@ def _bump_images_version(module: ControlNetModule) -> None:
     module._images_version += 1
 
 
+def _down(delta: UnetKwargsDelta) -> List[torch.Tensor]:
+    """Narrow UnetKwargsDelta's Optional down-residual list for the type checker."""
+    down = delta.down_block_additional_residuals
+    assert down is not None
+    return down
+
+
+def _mid(delta: UnetKwargsDelta) -> torch.Tensor:
+    """Narrow UnetKwargsDelta's Optional mid residual for the type checker."""
+    mid = delta.mid_block_additional_residual
+    assert mid is not None
+    return mid
+
+
 class TestLegacyPathUnchanged:
     """decay == 0.0 must be byte-identical to the pre-decay behavior."""
 
@@ -99,7 +115,7 @@ class TestLegacyPathUnchanged:
             # Newest residual every frame -- the interval never engages on a live feed.
             assert cn.calls == frame
             expected = torch.full(DOWN_SHAPES[0], float(frame))
-            assert torch.allclose(result.down_block_additional_residuals[0], expected)
+            assert torch.allclose(_down(result)[0], expected)
 
         assert module._cn_ema_down is None, "legacy path must never allocate EMA buffers"
         assert module._cn_ema_mid is None
@@ -118,7 +134,7 @@ class TestLegacyPathUnchanged:
         assert result2 is result1, "held residual must be the cached delta, verbatim"
         result3 = hook(_make_ctx())
         assert cn.calls == 2, "schedule frame must recompute"
-        assert torch.allclose(result3.down_block_additional_residuals[0], torch.full(DOWN_SHAPES[0], 2.0))
+        assert torch.allclose(_down(result3)[0], torch.full(DOWN_SHAPES[0], 2.0))
         assert module._cn_ema_down is None
 
 
@@ -143,8 +159,8 @@ class TestDecayAuthoritativeInterval:
             result = hook(_make_ctx())
             assert cn.calls == expected_calls[frame], f"frame {frame + 1}: interval must be authoritative"
             expected = torch.full(DOWN_SHAPES[0], expected_values[frame])
-            assert torch.allclose(result.down_block_additional_residuals[0], expected), f"frame {frame + 1}"
-            assert torch.allclose(result.mid_block_additional_residual, torch.full(MID_SHAPE, expected_values[frame]))
+            assert torch.allclose(_down(result)[0], expected), f"frame {frame + 1}"
+            assert torch.allclose(_mid(result), torch.full(MID_SHAPE, expected_values[frame]))
 
     def test_interval_one_pure_smoothing(self):
         """interval=1 + decay>0: CN runs every frame, EMA still applied."""
@@ -158,9 +174,7 @@ class TestDecayAuthoritativeInterval:
             _bump_images_version(module)
             result = hook(_make_ctx())
             assert cn.calls == frame, "interval=1 must still run CN every frame"
-            assert torch.allclose(
-                result.down_block_additional_residuals[0], torch.full(DOWN_SHAPES[0], expected_value)
-            )
+            assert torch.allclose(_down(result)[0], torch.full(DOWN_SHAPES[0], expected_value))
 
 
 class TestEmaBufferOwnership:
@@ -177,14 +191,15 @@ class TestEmaBufferOwnership:
             result = hook(_make_ctx())
             ptrs.append(
                 (
-                    tuple(t.data_ptr() for t in result.down_block_additional_residuals),
-                    result.mid_block_additional_residual.data_ptr(),
+                    tuple(t.data_ptr() for t in _down(result)),
+                    _mid(result).data_ptr(),
                 )
             )
 
         assert all(p == ptrs[0] for p in ptrs), "EMA buffers must be pointer-stable across frames"
-        assert result.down_block_additional_residuals[0] is module._cn_ema_down[0]
-        assert result.mid_block_additional_residual is module._cn_ema_mid
+        assert module._cn_ema_down is not None
+        assert _down(result)[0] is module._cn_ema_down[0]
+        assert _mid(result) is module._cn_ema_mid
 
         # Module-owned: never alias what the fake engine returned.
         fake_ptrs = set()
@@ -211,13 +226,15 @@ class TestEmaBufferOwnership:
         result = hook(_make_ctx())
 
         # Frame 1: both CNs return 1.0 -> merged target 2.0, EMA copy-inits to it.
-        assert torch.allclose(result.down_block_additional_residuals[0], torch.full(DOWN_SHAPES[0], 2.0))
+        assert torch.allclose(_down(result)[0], torch.full(DOWN_SHAPES[0], 2.0))
         # Applied tensors are the EMA buffers, distinct from the merge buffers
         # (the merge buffers are the EMA *target* on the multi-CN path).
-        assert result.down_block_additional_residuals[0] is module._cn_ema_down[0]
+        assert module._cn_ema_down is not None
+        assert _down(result)[0] is module._cn_ema_down[0]
         assert module._cn_merged_down is not None
-        assert result.down_block_additional_residuals[0].data_ptr() != module._cn_merged_down[0].data_ptr()
-        assert result.mid_block_additional_residual.data_ptr() != module._cn_merged_mid.data_ptr()
+        assert module._cn_merged_mid is not None
+        assert _down(result)[0].data_ptr() != module._cn_merged_down[0].data_ptr()
+        assert _mid(result).data_ptr() != module._cn_merged_mid.data_ptr()
 
 
 class TestForcedRecompute:
@@ -242,7 +259,7 @@ class TestForcedRecompute:
 
         assert cn.calls == 2, "scale change must force an off-schedule recompute"
         # EMA smooths toward the new target (2.0), no snap: lerp(1.0, 2.0, 0.5) = 1.5.
-        assert torch.allclose(result.down_block_additional_residuals[0], torch.full(DOWN_SHAPES[0], 1.5))
+        assert torch.allclose(_down(result)[0], torch.full(DOWN_SHAPES[0], 1.5))
 
     def test_enable_toggle_mid_hold_recomputes(self):
         """V-D1 regression lock: update_controlnet_enabled changes neither
@@ -283,7 +300,8 @@ class TestForcedRecompute:
         assert cn_old.calls == 1
 
         cn_new = _RampingCN()
-        module.controlnets[0] = cn_new  # same index, same scale list
+        assert module.controlnets is not None
+        module.controlnets[0] = cast(Any, cn_new)  # same index, same scale list
         _bump_images_version(module)
         hook(_make_ctx())  # frame 3: off-schedule
 
@@ -348,7 +366,7 @@ class TestSetterAndReset:
 
         _bump_images_version(module)
         result1 = hook(_make_ctx())
-        ptr1 = result1.down_block_additional_residuals[0].data_ptr()
+        ptr1 = _down(result1)[0].data_ptr()
 
         # Simulate a batch/resolution change: new residual shapes from the engine.
         new_down_shapes = [(2, 4, 8, 8), (2, 4, 4, 4)]
@@ -359,11 +377,11 @@ class TestSetterAndReset:
         _bump_images_version(module)
         result2 = hook(_make_ctx())
 
-        assert result2.down_block_additional_residuals[0].shape == new_down_shapes[0]
-        assert result2.down_block_additional_residuals[0].data_ptr() != ptr1, "shape change must reallocate"
+        assert _down(result2)[0].shape == new_down_shapes[0]
+        assert _down(result2)[0].data_ptr() != ptr1, "shape change must reallocate"
         # Re-init is a copy from the new target (2.0), not a lerp from the old EMA (1.5).
-        assert torch.allclose(result2.down_block_additional_residuals[0], torch.full(new_down_shapes[0], 2.0))
-        assert torch.allclose(result2.mid_block_additional_residual, torch.full(new_mid_shape, 2.0))
+        assert torch.allclose(_down(result2)[0], torch.full(new_down_shapes[0], 2.0))
+        assert torch.allclose(_mid(result2), torch.full(new_mid_shape, 2.0))
 
     def test_install_resets_decay_state_but_keeps_setting(self):
         cn = _RampingCN()
@@ -382,7 +400,7 @@ class TestSetterAndReset:
 
         # attach_orchestrator requires a preprocessing orchestrator; install() only
         # touches it when _preprocessing_orchestrator is None.
-        module._preprocessing_orchestrator = object()
+        module._preprocessing_orchestrator = cast(Any, object())
         module.install(_MinimalStream())
 
         assert module._cn_ema_down is None
