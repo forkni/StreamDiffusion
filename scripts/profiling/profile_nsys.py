@@ -94,6 +94,15 @@ parser.add_argument(
     "Requires --cn-scale > 0.",
 )
 parser.add_argument(
+    "--cn-cache-decay",
+    type=float,
+    default=0.0,
+    metavar="F",
+    help="[benchmark] ControlNet residual decay (default 0.0 = legacy hold). "
+    ">0: the cache interval becomes authoritative and the applied residual is "
+    "EMA-smoothed toward the newest computed one. Requires --cn-scale > 0.",
+)
+parser.add_argument(
     "--config",
     default="",
     metavar="PATH",
@@ -296,6 +305,11 @@ if args.cn_scale > 0.0:
             cn_mod.set_cn_cache_interval(args.cn_cache_interval)
             print(
                 f"[profile] ControlNet residual cache: interval={args.cn_cache_interval} (CN forward every {args.cn_cache_interval} frames)"
+            )
+        if args.cn_cache_decay > 0.0:
+            cn_mod.set_cn_cache_decay(args.cn_cache_decay)
+            print(
+                f"[profile] ControlNet residual decay: {args.cn_cache_decay} (interval authoritative, applied residual EMA-smoothed)"
             )
     except Exception as _cn_err:
         print(f"[profile] WARNING: Could not activate ControlNet — {_cn_err}")
