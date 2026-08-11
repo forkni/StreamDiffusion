@@ -12,7 +12,7 @@ relative-import patches re-applied on every re-vendor) and the dependency seam w
 dishonest — `wrapper.py` hard-imported `cuda_link` while `setup.py` never declared it.
 
 We now **depend solely on the pip-installed `cuda-link`** (declared in `setup.py` as a direct
-wheel-URL pin — `cuda-link @ https://github.com/forkni/cuda-link/releases/download/v1.12.1/cuda_link-1.12.1-cp311-cp311-win_amd64.whl`
+wheel-URL pin — `cuda-link @ https://github.com/forkni/cuda-link/releases/download/v1.12.2/cuda_link-1.12.2-cp311-cp311-win_amd64.whl`
 — exposed via the `cuda_ipc` optional extra). The TouchDesigner side consumes the same installed package through
 `CUDALinkBootstrap`'s **library mode** (`CUDALINK_LIB_PATH` injects the venv onto TD's
 `sys.path` and aliases the 14 bare module names used by TD DATs), so the TD DAT mirror
@@ -35,9 +35,12 @@ inside the repo is no longer needed either.
 - IPC is an **optional feature**: `pip install -e .[cuda_ipc]`. The `wrapper.py` imports
   are lazy/in-method so the core package installs and runs without cuda-link.
 - The `github.com/forkni/cuda-link` release **must publish the exact wheel asset** the pin names
-  or clean installs fail. Current pin in `setup.py`: **`v1.12.1`**'s
-  `cuda_link-1.12.1-cp311-cp311-win_amd64.whl` (tagged 2026-07-12 —
-  https://github.com/forkni/cuda-link/releases/tag/v1.12.1).
+  or clean installs fail. Current pin in `setup.py`: **`v1.12.2`**'s
+  `cuda_link-1.12.2-cp311-cp311-win_amd64.whl` — **staged, not yet pushed**: this pin bump is
+  held locally until `forkni/cuda-link` actually publishes the `v1.12.2` release with that exact
+  wheel asset (as of this commit it does not exist yet — latest published release is `v1.12.1`,
+  tagged 2026-07-12). Verify with `gh release view v1.12.2 --repo forkni/cuda-link --json assets`
+  before pushing this commit.
 - **Pinned to the wheel URL, not the VCS tag.** An earlier draft of this pin used
   `cuda-link @ git+https://github.com/forkni/cuda-link@v1.12.1`, which looks equivalent but
   isn't: `cuda-link` builds via `scikit_build_core.build` (compiles `_native_waiter.cpp`), so a
