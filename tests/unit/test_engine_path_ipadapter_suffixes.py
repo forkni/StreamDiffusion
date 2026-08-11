@@ -124,3 +124,70 @@ class TestVaePathsIgnoreIpAdapterFlags:
         path_dec = em.get_engine_path(engine_type=EngineType.VAE_DECODER, is_faceid=True, **_BASE_KWARGS)
 
         assert path_enc != path_dec
+
+
+class TestFp8RecipeTagOrthogonalToIpAdapterSuffixes:
+    """fp8-round-8: the fp8 recipe tag (fp8_mha_qdq / fp8_scale_headroom /
+    fp8_exclude_attention) is appended to the same UNet ``prefix`` string as the
+    FaceID/token suffixes covered above, inside the same
+    ``if engine_type == EngineType.UNET:`` block in engine_manager.py. Guard that
+    toggling one axis doesn't silently cancel or alias the other's fork.
+    """
+
+    def test_fp8_recipe_forks_independently_of_faceid(self):
+        em = _make_engine_manager()
+        base = em.get_engine_path(engine_type=EngineType.UNET, is_faceid=True, fp8=True, **_BASE_KWARGS)
+        mhaq = em.get_engine_path(
+            engine_type=EngineType.UNET, is_faceid=True, fp8=True, fp8_mha_qdq=True, **_BASE_KWARGS
+        )
+        no_faceid = em.get_engine_path(engine_type=EngineType.UNET, is_faceid=False, fp8=True, **_BASE_KWARGS)
+        no_faceid_mhaq = em.get_engine_path(
+            engine_type=EngineType.UNET, is_faceid=False, fp8=True, fp8_mha_qdq=True, **_BASE_KWARGS
+        )
+
+        assert base != mhaq
+        assert no_faceid != no_faceid_mhaq
+        assert base != no_faceid
+        assert mhaq != no_faceid_mhaq
+
+    def test_fp8_exclude_ipadapter_forks_independently_of_faceid(self):
+        """fp8-round-9: the new -noip tag (fp8_exclude_ipadapter) must fork the UNet
+        cache key the same way -noattn does, independent of whether FaceID/IP-Adapter
+        is even enabled for this build."""
+        em = _make_engine_manager()
+        base = em.get_engine_path(engine_type=EngineType.UNET, is_faceid=True, fp8=True, **_BASE_KWARGS)
+        noip = em.get_engine_path(
+            engine_type=EngineType.UNET, is_faceid=True, fp8=True, fp8_exclude_ipadapter=True, **_BASE_KWARGS
+        )
+        no_faceid = em.get_engine_path(engine_type=EngineType.UNET, is_faceid=False, fp8=True, **_BASE_KWARGS)
+        no_faceid_noip = em.get_engine_path(
+            engine_type=EngineType.UNET, is_faceid=False, fp8=True, fp8_exclude_ipadapter=True, **_BASE_KWARGS
+        )
+
+        assert base != noip
+        assert no_faceid != no_faceid_noip
+        assert base != no_faceid
+        assert noip != no_faceid_noip
+
+    def test_fp8_exclude_ipadapter_forks_independently_of_exclude_attention(self):
+        """-noip and -noattn are independent levers (Fix 3's plan explicitly notes they
+        cover non-overlapping node sets) -- toggling one must not alias the other, and
+        both together must differ from either alone."""
+        em = _make_engine_manager()
+        neither = em.get_engine_path(engine_type=EngineType.UNET, is_faceid=True, fp8=True, **_BASE_KWARGS)
+        noattn = em.get_engine_path(
+            engine_type=EngineType.UNET, is_faceid=True, fp8=True, fp8_exclude_attention=True, **_BASE_KWARGS
+        )
+        noip = em.get_engine_path(
+            engine_type=EngineType.UNET, is_faceid=True, fp8=True, fp8_exclude_ipadapter=True, **_BASE_KWARGS
+        )
+        both = em.get_engine_path(
+            engine_type=EngineType.UNET,
+            is_faceid=True,
+            fp8=True,
+            fp8_exclude_attention=True,
+            fp8_exclude_ipadapter=True,
+            **_BASE_KWARGS,
+        )
+
+        assert len({neither, noattn, noip, both}) == 4
