@@ -36,11 +36,9 @@ inside the repo is no longer needed either.
   are lazy/in-method so the core package installs and runs without cuda-link.
 - The `github.com/forkni/cuda-link` release **must publish the exact wheel asset** the pin names
   or clean installs fail. Current pin in `setup.py`: **`v1.12.2`**'s
-  `cuda_link-1.12.2-cp311-cp311-win_amd64.whl` — **staged, not yet pushed**: this pin bump is
-  held locally until `forkni/cuda-link` actually publishes the `v1.12.2` release with that exact
-  wheel asset (as of this commit it does not exist yet — latest published release is `v1.12.1`,
-  tagged 2026-07-12). Verify with `gh release view v1.12.2 --repo forkni/cuda-link --json assets`
-  before pushing this commit.
+  `cuda_link-1.12.2-cp311-cp311-win_amd64.whl` — verified present in the `v1.12.2` release
+  (published 2026-08-11) via `gh release view v1.12.2 --repo forkni/cuda-link --json assets`
+  before this pin was pushed.
 - **Pinned to the wheel URL, not the VCS tag.** An earlier draft of this pin used
   `cuda-link @ git+https://github.com/forkni/cuda-link@v1.12.1`, which looks equivalent but
   isn't: `cuda-link` builds via `scikit_build_core.build` (compiles `_native_waiter.cpp`), so a
