@@ -119,6 +119,9 @@ def _make_pipeline(unet, *, prompt_tokens: int = 4) -> StreamDiffusion:
     sd.fio_cache: List[torch.Tensor] = []
     sd._fi_strength_tensor: Optional[torch.Tensor] = None
     sd._fi_threshold_tensor: Optional[torch.Tensor] = None
+    sd.use_feature_injection = False  # read by unet_step's FI-attenuation hot path
+    sd._fi_strength_base = 0.0
+    sd.fx_frame_transform = None
 
     sd.use_denoising_batch = True
     # scheduler_step_batch is orthogonal to this bug (it runs strictly after the UNet
@@ -162,8 +165,7 @@ class TestSd15Sd21UnetCallBackendGate:
         assert "kvo_cache" in recording_unet.last_kwargs
         for key in ("fio_cache", "fi_strength", "fi_threshold"):
             assert key not in recording_unet.last_kwargs, (
-                f"non-TRT UNet call must not receive {key!r}; got kwargs="
-                f"{sorted(recording_unet.last_kwargs)}"
+                f"non-TRT UNet call must not receive {key!r}; got kwargs={sorted(recording_unet.last_kwargs)}"
             )
 
     def test_tensorrt_engine_still_receives_feature_injection_kwargs(self):
@@ -172,11 +174,12 @@ class TestSd15Sd21UnetCallBackendGate:
         sd = _make_pipeline(fake_engine)
         sd._fi_strength_tensor = torch.tensor(0.5)
         sd._fi_threshold_tensor = torch.tensor(0.1)
+        sd.use_feature_injection = True
+        sd._fi_strength_base = 0.5
 
         _call_unet_step(sd)
 
         for key in ("kvo_cache", "fio_cache", "fi_strength", "fi_threshold"):
             assert key in fake_engine.last_kwargs, (
-                f"TRT engine call must still receive {key!r}; got kwargs="
-                f"{sorted(fake_engine.last_kwargs)}"
+                f"TRT engine call must still receive {key!r}; got kwargs={sorted(fake_engine.last_kwargs)}"
             )
