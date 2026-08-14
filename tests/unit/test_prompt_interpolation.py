@@ -237,9 +237,9 @@ class TestApplyPromptBlendingDispatch:
         e2 = _rand_embed(seed=21)
         e3 = _rand_embed(seed=22)
         self.upd._prompt_cache = {
-            0: {"embed": e1, "text": "cat"},
-            1: {"embed": e2, "text": "dog"},
-            2: {"embed": e3, "text": "bird"},
+            "cat": {"embed": e1},
+            "dog": {"embed": e2},
+            "bird": {"embed": e3},
         }
         self.upd._current_prompt_list = [("cat", 0.5), ("dog", 0.3), ("bird", 0.2)]
         self.upd._current_negative_prompt = ""
@@ -635,7 +635,7 @@ class TestStickyInterpolationMethods:
         self.upd = _make_updater()
         e1 = _rand_embed(seed=100)
         e2 = _rand_embed(seed=101)
-        self.upd._prompt_cache = {0: {"embed": e1, "text": "cat"}, 1: {"embed": e2, "text": "dog"}}
+        self.upd._prompt_cache = {"cat": {"embed": e1}, "dog": {"embed": e2}}
         self.upd._current_prompt_list = [("cat", 0.5), ("dog", 0.5)]
         self.upd._current_negative_prompt = ""
 
@@ -700,3 +700,71 @@ class TestStickyInterpolationMethods:
         assert fresh._last_seed_interpolation_method == "cosine_weighted"
         assert fresh.stream.prompt_embeds is None
         assert fresh.stream.init_noise is None
+
+
+# ---------------------------------------------------------------------------
+# Root cause B regression: _prompt_cache used to be keyed by list index with a
+# hard 32-entry FIFO cap, so any prompt_list past 32 blocks silently dropped
+# its earliest entries from the blend and re-encoded them every single frame
+# thereafter (see i-want-you-to-inherited-lerdorf.md, "Root cause B"). Keying
+# by prompt text with a cap of max(32, len(prompt_list)) fixes both defects
+# at once: every prompt in a >32-entry list is cached and blended, and an
+# unchanged list is a pure cache hit, not a re-encode storm.
+# ---------------------------------------------------------------------------
+
+
+class TestCacheScalesPastThirtyTwoPrompts:
+    def setup_method(self):
+        self.upd = _make_updater()
+        self.encode_calls = []
+
+        def fake_encode_prompt(prompt, **kwargs):
+            self.encode_calls.append(prompt)
+            # Deterministic, per-prompt-distinguishable constant embedding.
+            value = float(int(prompt.rsplit("_", 1)[-1]))
+            return (torch.full((1, 4, 8), value),)
+
+        self.upd.stream.pipe = types.SimpleNamespace(encode_prompt=fake_encode_prompt)
+        self.n = 40
+        self.prompt_list = [(f"prompt_{i}", 1.0) for i in range(self.n)]
+
+    def test_all_prompts_cached_and_blended(self):
+        """Pre-fix, the 33rd-through-40th prompts would evict the 1st-through-8th
+        out of the cache before the blend ever ran, and _apply_prompt_blending's
+        `if idx in self._prompt_cache` would silently drop them with no warning."""
+        self.upd._update_blended_prompts(self.prompt_list, negative_prompt="", prompt_interpolation_method="average")
+
+        assert len(self.upd._prompt_cache) == self.n, (
+            f"cache holds {len(self.upd._prompt_cache)} of {self.n} prompts -- the old "
+            "32-entry cap would have evicted the earliest ones"
+        )
+        assert set(self.upd._prompt_cache) == {text for text, _ in self.prompt_list}
+
+        # Equal weights, normalized -> plain mean of each prompt's constant value.
+        expected_value = sum(range(self.n)) / self.n
+        assert torch.allclose(
+            self.upd.stream.prompt_embeds,
+            torch.full_like(self.upd.stream.prompt_embeds, expected_value),
+            atol=1e-4,
+        ), "blended output does not reflect all 40 prompts -- some were dropped from the blend"
+
+    def test_unchanged_list_does_not_re_encode(self):
+        """Pre-fix, index-keyed caching meant every call past 32 prompts re-encoded
+        the evicted entries again -- 33+ synchronous CLIP forward passes per frame
+        on the render thread (the crash-report candidate, Root cause B)."""
+        self.upd._update_blended_prompts(self.prompt_list, negative_prompt="", prompt_interpolation_method="average")
+        assert len(self.encode_calls) == self.n
+        assert self.upd._prompt_cache_stats.misses == self.n
+        assert self.upd._prompt_cache_stats.hits == 0
+
+        # Same texts/weights, but a fresh list object (mirrors a per-frame OSC resend).
+        self.upd._update_blended_prompts(
+            list(self.prompt_list), negative_prompt="", prompt_interpolation_method="average"
+        )
+
+        assert len(self.encode_calls) == self.n, (
+            "a second call with an unchanged (copied) prompt list triggered a re-encode -- "
+            "text-keyed cache hits should make this a pure no-op"
+        )
+        assert self.upd._prompt_cache_stats.misses == self.n
+        assert self.upd._prompt_cache_stats.hits == self.n
