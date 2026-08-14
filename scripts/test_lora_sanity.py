@@ -13,7 +13,17 @@ Purpose: confirm a LoRA loads correctly on sdxl-turbo and is visibly effective a
 Usage:
     venv/Scripts/python scripts/test_lora_sanity.py
     venv/Scripts/python scripts/test_lora_sanity.py --lora nerijs/pixel-art-xl --weight 1.0
-    venv/Scripts/python scripts/test_lora_sanity.py --lora not/a-real-lora  # G1 error path test
+
+    # Two DISTINCT failure surfaces exist in the wrapper — this script only reliably
+    # exercises the first:
+    #   LOAD failure  (bad repo id / 404 / corrupt file): logged as ERROR, the run
+    #                  continues on the plain model, exit code 0. lora.png ends up
+    #                  pixel-identical to baseline.png. Confirmed via:
+    #                    scripts/test_lora_sanity.py --lora not/a-real-lora
+    #   FUSION failure (LoRA loads but targets the wrong model family, e.g. an SD1.5
+    #                  LoRA on an SDXL pipe): fatal RuntimeError, caught below,
+    #                  exit code 2. Not reproduced by a bad repo id — needs an
+    #                  architecture-mismatched LoRA file to trigger.
 """
 
 import argparse
@@ -63,6 +73,7 @@ def run_pass(
     seed: int,
     lora_dict: dict | None,
     label: str,
+    use_tiny_vae: bool = True,
 ) -> Image.Image:
     logger.info(f"--- [{label}] Building wrapper (acceleration=none) ---")
     if lora_dict:
@@ -80,7 +91,14 @@ def run_pass(
         use_denoising_batch=True,
         cfg_type="self",
         seed=seed,
-        use_tiny_vae=False,
+        # TinyVAE (taesd/taesdxl) has no attention blocks, so it never hits the
+        # diffusers_kvo_patch's global Attention.forward monkeypatch below. The full
+        # AutoencoderKL DOES have a self-attention mid-block, which receives the
+        # patch's (hidden_states, kvo_cache) tuple and crashes in resnet.py's norm1
+        # (`AttributeError: 'tuple' object has no attribute 'dim'`). This mirrors how
+        # the component actually runs (TinyVAE by default) — use --full-vae only to
+        # reproduce/debug the incompatibility itself, not for routine sanity checks.
+        use_tiny_vae=use_tiny_vae,
         lora_dict=lora_dict,
     )
 
@@ -123,7 +141,16 @@ def main() -> int:
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Directory for output PNGs")
+    parser.add_argument(
+        "--full-vae",
+        action="store_true",
+        help="Use the full AutoencoderKL instead of TinyVAE. KNOWN BROKEN under the "
+        "diffusers_kvo_patch attention monkeypatch (crashes with AttributeError: "
+        "'tuple' object has no attribute 'dim'). Only use to reproduce/debug that "
+        "incompatibility — the component itself always runs TinyVAE by default.",
+    )
     args = parser.parse_args()
+    use_tiny_vae = not args.full_vae
 
     # ------------------------------------------------------------------
     # Prepare output directory and input image
@@ -156,6 +183,7 @@ def main() -> int:
         seed=args.seed,
         lora_dict=None,
         label="baseline",
+        use_tiny_vae=use_tiny_vae,
     )
     baseline_path = output_dir / "baseline.png"
     baseline_img.save(baseline_path)
@@ -176,6 +204,7 @@ def main() -> int:
             seed=args.seed,
             lora_dict=lora_dict,
             label="lora",
+            use_tiny_vae=use_tiny_vae,
         )
     except RuntimeError as e:
         logger.error(f"LoRA run failed (expected for invalid LoRA ids): {e}")
