@@ -3,15 +3,21 @@ name: Claude Code Review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    # base-branch filter: PRs *into* SDTD_032_dev, or into any branch in the
-    # chained remediation-PR stack (2-5), so Claude also fires on chained PRs.
+    # base-branch filter: PRs *into* SDTD_032_dev or SDTD_040_beta_release, or into any
+    # branch in the chained remediation-PR stack (2-5), so Claude also fires on chained PRs.
+    # SDTD_040_beta_release added when this workflow was backported onto the release line
+    # (it previously only had release.yml, so forkni-internal PRs against it had no CI gate).
+    # fork-review/SDTD_040_beta_release added: a review-gate mirror of the upstream base used
+    # to pre-emptively run this action on topic branches before they're proposed upstream.
     branches:
       [
         SDTD_032_dev,
+        SDTD_040_beta_release,
         refactor/remediation-phases-1-4,
         perf/unet-step-subphase-5x,
         perf/trt-zero-copy-audit-hardening,
         refactor/param-schema-fp8-preflight,
+        fork-review/SDTD_040_beta_release,
       ]
 
 jobs:
