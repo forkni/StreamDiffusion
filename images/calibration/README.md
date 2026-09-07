@@ -1,4 +1,4 @@
-# FP8 IP-Adapter calibration images (fp8-round-9.1 §10)
+# FP8 IP-Adapter calibration images
 
 `td_config.yaml`'s `fp8_calibration_style_image` points at this directory. At build time
 `wrapper.py`'s `_resolve_fp8_calibration_dir` redirects it to a subfolder keyed on the live
@@ -16,3 +16,7 @@ at encode time is skipped individually — see `_encode_fp8_calibration_images` 
 Recognized extensions: `.png .jpg .jpeg .bmp .webp` (`fp8_quantize._CALIBRATION_IMAGE_EXTENSIONS`).
 This file isn't one of them, so it's neither loaded nor hashed into the `--ci<hash>` cache tag.
 Directory listing is one level deep only — nested subfolders are invisible to the loader/hasher.
+
+This repo intentionally ships no sample images here — drop your own `general/` and `faces/`
+calibration references locally; both subfolders are gitignored by default (`*.png` etc.) so
+your images stay local-only.

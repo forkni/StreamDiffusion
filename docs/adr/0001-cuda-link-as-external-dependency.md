@@ -140,6 +140,25 @@ inside the repo is no longer needed either.
     `phase4b`/`phase4c` and confirming the vars they declare are sufficient on their own).
     `CUDALINK_WAIT_BACKEND` is intentionally left unset — its default `"auto"` already selects the
     native path.
+- **1.12.2 migration (2026-08-11 pin bump; bugfix-only, no consumer API change):** per the
+  [cuda-link 1.12.2 release notes](https://github.com/forkni/cuda-link/releases/tag/v1.12.2):
+  - Fixes an undersized `cudaPointerAttributes` ctypes binding (`cuda_runtime_types.py`) — CUDA
+    13.x's `driver_types.h` grew a `reserved[8]` field the 12.x-era struct didn't account for,
+    and the loader probes 13.x cudart candidates before 12.x ones, so a 13.x runtime on the host
+    could receive an undersized out-parameter on the per-frame `pointer_get_attributes()` path.
+  - Fixes `cudaDevAttrAsyncEngineCount` being mislabeled as attribute index `4` (the real
+    `cudaDevAttrMaxBlockDimZ`) in `cuda_ipc_wrapper.py` — per the release notes this was latent,
+    with no production caller querying it yet.
+  - Fixes the new `check_ipc_capability()` IPC probe (added earlier in this release) hard-failing
+    `Exporter.open()` on a CUDA 11.x runtime instead of degrading gracefully — relevant here
+    because the release notes call out that TouchDesigner ships `cudart64_110.dll`, which the
+    loader also probes.
+  - Adds `check_ipc_capability()` itself to the `CudaPort` protocol/adapters, called once from
+    `Exporter.open()` before minting an IPC handle; logs an informational note on a driver-support
+    gap rather than hard-failing, raising only if the driver reports IPC flatly unsupported.
+  - This entry summarizes the published release notes; unlike the 1.10.x–1.12.1 entries above, it
+    was not re-verified against SD's own exporter/importer code paths with a live reproduction
+    test this pass — worth a follow-up pass if any of these prove reachable in practice.
 - The `CUDALINK_LIB_PATH` env var enables `CUDALinkBootstrap`'s library mode (`sys.path`
   injection of the installed `cuda_link` package + the 14 bare-name DAT aliases); without it,
   `CUDALinkBootstrap` falls back to classic Text-DAT module discovery (still works, but requires

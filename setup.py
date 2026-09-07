@@ -52,7 +52,7 @@ _deps = [
     f"cuda-python{get_cuda_constraint()}",
     "xformers==0.0.30",
     "diffusers @ git+https://github.com/varshith15/diffusers.git@3e3b72f557e91546894340edabc845e894f00922",
-    "cuda-link @ https://github.com/forkni/cuda-link/releases/download/v1.12.2/cuda_link-1.12.2-cp311-cp311-win_amd64.whl",
+    "cuda-link @ https://github.com/forkni/cuda-link/releases/download/v1.12.2/cuda_link-1.12.2-cp311-cp311-win_amd64.whl ; sys_platform == 'win32' and python_version == \"3.11\"",
     "transformers==4.56.0",
     "accelerate==1.13.0",
     "huggingface_hub==0.35.0",
@@ -61,6 +61,9 @@ _deps = [
     # bump, verified 2026-07-15 deps-audit
     "fire==0.7.1",
     "omegaconf==2.3.0",
+    "requests",  # hf_download.py imports this at module scope (wrapper.py imports hf_download
+    # at module scope too), already resolved transitively via huggingface_hub, declared directly
+    # now that it's on the core import path
     "onnx==1.19.1",  # IR 11; modelopt FLOAT4E2M1 (1.18+); 1.21.0 breaks FP8 quant (external-data loading → negative QDQ scale); 6 path-traversal CVEs accepted: require untrusted model loading
     "onnxruntime-gpu==1.24.4",  # TRT EP, supports IR 11; never co-install CPU onnxruntime — shared files conflict
     "onnxoptimizer==0.4.2",
@@ -110,6 +113,7 @@ extras["dev"] = extras["xformers"] + extras["torch"] + extras["tensorrt"] + extr
 install_requires = [
     deps["fire"],
     deps["omegaconf"],
+    deps["requests"],
     deps["diffusers"],
     deps["transformers"],
     deps["accelerate"],
