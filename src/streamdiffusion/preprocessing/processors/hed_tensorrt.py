@@ -38,6 +38,13 @@ try:
 except ImportError:
     CONTROLNET_AUX_AVAILABLE = False
 
+#: Default post-process knobs, tuned on images/inputs/input.png at 640x384 against
+#: SargeZT/controlnet-sd-xl-1.0-softedge-dexined: 0.3 drops the low-probability
+#: texture haze (hair/cloth interiors) while keeping the soft outline values; a
+#: light post-blur matches the DexiNed-style soft edges the ControlNet was trained on.
+DEFAULT_EDGE_THRESHOLD = 0.3
+DEFAULT_HED_SMOOTHNESS = 0.15
+
 
 # ---------------------------------------------------------------------------
 # ONNX export wrapper — fused multi-scale sigmoid edge map
@@ -110,7 +117,7 @@ class HEDTensorrtPreprocessor(SelfBuildingTRTPreprocessor):
             "parameters": {
                 "edge_threshold": {
                     "type": "float",
-                    "default": 0.0,
+                    "default": DEFAULT_EDGE_THRESHOLD,
                     "range": [0.0, 1.0],
                     "description": (
                         "Zero out edge probabilities below this value (thins the map, keeps the "
@@ -119,6 +126,7 @@ class HEDTensorrtPreprocessor(SelfBuildingTRTPreprocessor):
                 },
                 "smoothness": {
                     **EDGE_SMOOTHNESS_PARAM["smoothness"],
+                    "default": DEFAULT_HED_SMOOTHNESS,
                     "description": (
                         "Gaussian post-blur of the edge map, applied after the threshold "
                         "(0 = sharp; 1 = σ≈2, ~13×13 kernel)."
@@ -225,11 +233,11 @@ class HEDTensorrtPreprocessor(SelfBuildingTRTPreprocessor):
 
         out = out.clamp(0.0, 1.0)
 
-        threshold = float(self.params.get("edge_threshold", 0.0))
+        threshold = float(self.params.get("edge_threshold", DEFAULT_EDGE_THRESHOLD))
         if threshold > 0.0:
             out = torch.where(out >= threshold, out, torch.zeros_like(out))
 
-        smoothness = float(self.params.get("smoothness", 0.0))
+        smoothness = float(self.params.get("smoothness", DEFAULT_HED_SMOOTHNESS))
         if smoothness > 0.0:
             out = apply_edge_smoothness(out, smoothness)  # (H, W) in, (H, W) out
 

@@ -20,7 +20,12 @@ import torch
 torch.manual_seed(0)
 
 from streamdiffusion.preprocessing.processors.category_params import apply_edge_smoothness
-from streamdiffusion.preprocessing.processors.hed_tensorrt import HEDExportWrapper, HEDTensorrtPreprocessor
+from streamdiffusion.preprocessing.processors.hed_tensorrt import (
+    DEFAULT_EDGE_THRESHOLD,
+    DEFAULT_HED_SMOOTHNESS,
+    HEDExportWrapper,
+    HEDTensorrtPreprocessor,
+)
 from streamdiffusion.preprocessing.processors.scribble_tensorrt import (
     DEFAULT_SCRIBBLE_THRESHOLD,
     ScribbleTensorrtPreprocessor,
@@ -198,7 +203,7 @@ def test_hed_postprocess_threshold_keeps_values_not_binary():
     edge[0, 0, 1, 1] = 0.2
     edge[0, 0, 3, 3] = 0.6
     edge[0, 0, 5, 5] = 0.9
-    out = _hed_proc(edge_threshold=0.5)._postprocess({"edge_map": edge})
+    out = _hed_proc(edge_threshold=0.5, smoothness=0.0)._postprocess({"edge_map": edge})
     assert out.shape == (3, 8, 8)
     assert out[0, 1, 1] == 0.0  # below threshold -> dropped
     assert out[0, 3, 3] == pytest.approx(0.6)  # survivors keep their soft value
@@ -206,10 +211,21 @@ def test_hed_postprocess_threshold_keeps_values_not_binary():
     assert torch.equal(out[0], out[1]) and torch.equal(out[0], out[2])
 
 
-def test_hed_postprocess_default_is_raw_map():
+def test_hed_postprocess_zero_knobs_is_raw_map():
     edge = torch.rand(1, 1, 8, 8)
-    out = _hed_proc()._postprocess({"edge_map": edge})
+    out = _hed_proc(edge_threshold=0.0, smoothness=0.0)._postprocess({"edge_map": edge})
     assert torch.allclose(out[0], edge[0, 0])
+
+
+def test_hed_postprocess_missing_params_use_metadata_defaults():
+    # A processor built without params must behave like one built with the advertised defaults.
+    edge = torch.rand(1, 1, 16, 16)
+    implicit = _hed_proc()._postprocess({"edge_map": edge})
+    explicit = _hed_proc(edge_threshold=DEFAULT_EDGE_THRESHOLD, smoothness=DEFAULT_HED_SMOOTHNESS)._postprocess(
+        {"edge_map": edge}
+    )
+    assert torch.equal(implicit, explicit)
+    assert not torch.allclose(implicit[0], edge[0, 0])  # defaults are not a no-op
 
 
 def test_hed_postprocess_smoothness_post_blurs():
@@ -230,7 +246,9 @@ def test_hed_metadata_exposes_threshold_and_smoothness():
     for name in ("edge_threshold", "smoothness"):
         assert hed_params[name]["type"] == "float"
         assert hed_params[name]["range"] == [0.0, 1.0]
-        assert hed_params[name]["default"] == 0.0
+    assert hed_params["edge_threshold"]["default"] == pytest.approx(DEFAULT_EDGE_THRESHOLD)
+    assert hed_params["smoothness"]["default"] == pytest.approx(DEFAULT_HED_SMOOTHNESS)
+    assert 0.0 < DEFAULT_EDGE_THRESHOLD < 1.0 and 0.0 < DEFAULT_HED_SMOOTHNESS < 1.0
     scribble_params = ScribbleTensorrtPreprocessor.get_preprocessor_metadata()["parameters"]
     assert "edge_threshold" not in scribble_params
     assert set(scribble_params) == {"scribble_threshold", "smoothness"}
