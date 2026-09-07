@@ -333,6 +333,18 @@ class TestDeforumParityReorder:
                 f"is {spec['default']!r} — metadata and __init__ drifted apart"
             )
 
+    def test_inject_radius_range_allows_full_frame(self):
+        """inject_radius metadata range must reach 1.0 — the discovery-metadata cap
+        used to stop at 0.5 even though the ctor/runtime clamp (max(0.05, min(1.0, ...)))
+        already permitted the full range. A processor constructed at the new range
+        ceiling must retain the value unclamped."""
+        proc, _ = _make_processor()
+        meta = proc.get_preprocessor_metadata()
+        assert meta["parameters"]["inject_radius"]["range"] == [0.05, 1.0]
+
+        proc_full, _ = _make_processor(inject_radius=1.0)
+        assert proc_full.inject_radius == 1.0
+
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="fp16 long-run needs CUDA")
     def test_fp16_long_run_stays_finite(self):
         pipeline_ref = types.SimpleNamespace(prev_image_result=None)
