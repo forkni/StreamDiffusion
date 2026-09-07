@@ -64,21 +64,26 @@ fork-internal tooling decisions — see the status note at the end.
 
 ## Consequences
 
-- **Drift is expected and bounded to one layer.** Measured 2026-07-13: `td_osc_handler.py`
-  and `install_tensorrt.py` (deployed vs. `Scripts/` mirror) are byte-identical; `td_main.py`
-  differs only in a cosmetic banner/tagline string; `td_manager.py` differs only by the
-  presence of the inference error-report hook (added directly to the deployed copy). No
-  other drift exists across the four layers.
+- **Drift is now actively guarded, not just measured.** As of 2026-09-06,
+  `scripts\sync_td_mirror.py --check` enforces byte-identity between deployed and `Scripts/`
+  mirror for all four core files (`td_main.py`, `syphon_utils.py`, `td_osc_handler.py`,
+  `td_manager.py`); all four currently pass. This supersedes the 2026-07-13 snapshot below,
+  which recorded ad hoc drift before the guard existed: `td_main.py` differed only in a
+  cosmetic banner/tagline string, and `td_manager.py` differed only by the presence of the
+  inference error-report hook (added directly to the deployed copy) — both gaps have since
+  been closed by promoting the deployed-only changes into `Scripts/` and re-verifying via
+  `diff`.
 - **A deployed-only hand-edit is invisible to the DAT, `.tox`, and git until promoted.**
-  Example: the `td_manager.py` error-report hook (imports of `write_error_report` /
-  `report_error`, the `_last_error_report_sig` debounce field, and the debounced except-block
-  in `_streaming_loop`) exists **only** in the gitignored deployed file — confirmed via
-  call-graph analysis (both functions have exactly one TD-side caller, and it resolves to
-  the deployed file, not the `Scripts/` mirror). If that deployed file is ever deleted or
-  regenerated, the hook is lost. This is an accepted tradeoff of the independent-edit
-  capability, not a bug — capturing the hook durably (deployed → `Scripts/` → reload DAT →
-  save `.tox` → eventually upstream `StreamDiffusionTD`) is deferred to the merge phase of
-  the wider PR-stack work, not fixed here.
+  This was true of the `td_manager.py` error-report hook (imports of `write_error_report` /
+  `report_error`, the `ErrorReporter` dedup state, and the debounced except-block in
+  `_streaming_loop`), which at one point existed **only** in the gitignored deployed file.
+  It has since been promoted into the `Scripts/` mirror (see above) and both layers are
+  byte-identical today. The risk described here is still real for *future* deployed-only
+  edits to any of the four guarded files — `sync_td_mirror.py --check` is what surfaces that
+  drift going forward, rather than requiring a manual `diff` — and remains unmitigated for
+  the two Text-DAT authoring surfaces not yet in `PAIRS`
+  (`StreamDiffusionExt__td.py`, `AsyncIOManager__td.py`), which have no deployed/canonical
+  counterpart to drift from in the first place.
 - **A future coordinated routine has a concrete, minimal shape:** to promote a deployed-only
   change durably, write it to the matching `Scripts\…__td.py` file, pulse the DAT's
   `par.loadonstartpulse` (or restart TD) to pull it back into the live DAT, save the `.toe`
