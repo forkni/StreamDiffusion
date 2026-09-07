@@ -5,6 +5,11 @@ Regression context: the original HEDExportWrapper fed the network [0, 1] pixels
 dropped four of the five VGG blocks and the scribble map looked like a
 texture/contour response.  These tests pin the export contract and the
 controlnet_aux-faithful scribble post-process without needing a GPU or TRT.
+
+Also covered: the HED post-process knobs (``edge_threshold`` keeps values soft,
+``smoothness`` post-blurs) and the cuDNN-benchmark guard in
+``apply_edge_smoothness`` (a strength-dependent kernel size must never trigger
+a per-size autotune while the pipeline runs with cudnn.benchmark=True).
 """
 
 import types
@@ -14,6 +19,7 @@ import torch
 
 torch.manual_seed(0)
 
+from streamdiffusion.preprocessing.processors.category_params import apply_edge_smoothness
 from streamdiffusion.preprocessing.processors.hed_tensorrt import HEDExportWrapper, HEDTensorrtPreprocessor
 from streamdiffusion.preprocessing.processors.scribble_tensorrt import (
     DEFAULT_SCRIBBLE_THRESHOLD,
@@ -174,3 +180,95 @@ def test_scribble_nms_matches_controlnet_aux_reference():
     ours = _scribble_nms_gpu(field).numpy()
     agree = (ours == ref).mean()
     assert agree > 0.98, f"only {agree:.3%} pixel agreement with controlnet_aux"
+
+
+# ---------------------------------------------------------------------------
+# HED post-process knobs
+# ---------------------------------------------------------------------------
+
+
+def _hed_proc(**params):
+    proc = HEDTensorrtPreprocessor.__new__(HEDTensorrtPreprocessor)
+    proc.params = dict(params)
+    return proc
+
+
+def test_hed_postprocess_threshold_keeps_values_not_binary():
+    edge = torch.zeros(1, 1, 8, 8)
+    edge[0, 0, 1, 1] = 0.2
+    edge[0, 0, 3, 3] = 0.6
+    edge[0, 0, 5, 5] = 0.9
+    out = _hed_proc(edge_threshold=0.5)._postprocess({"edge_map": edge})
+    assert out.shape == (3, 8, 8)
+    assert out[0, 1, 1] == 0.0  # below threshold -> dropped
+    assert out[0, 3, 3] == pytest.approx(0.6)  # survivors keep their soft value
+    assert out[0, 5, 5] == pytest.approx(0.9)
+    assert torch.equal(out[0], out[1]) and torch.equal(out[0], out[2])
+
+
+def test_hed_postprocess_default_is_raw_map():
+    edge = torch.rand(1, 1, 8, 8)
+    out = _hed_proc()._postprocess({"edge_map": edge})
+    assert torch.allclose(out[0], edge[0, 0])
+
+
+def test_hed_postprocess_smoothness_post_blurs():
+    edge = torch.zeros(1, 1, 16, 16)
+    edge[0, 0, 8, 8] = 1.0
+    sharp = _hed_proc(smoothness=0.0)._postprocess({"edge_map": edge})[0]
+    soft = _hed_proc(smoothness=0.5)._postprocess({"edge_map": edge})[0]
+    assert torch.equal(sharp, edge[0, 0])
+    assert soft[8, 8] < 1.0
+    assert soft[8, 9] > 0.0 and soft[9, 8] > 0.0 and soft[7, 8] > 0.0 and soft[8, 7] > 0.0
+    assert soft.min() >= 0.0 and soft.max() <= 1.0
+    assert abs(soft.sum().item() - 1.0) < 1e-4  # blur preserves mass away from the border
+
+
+def test_hed_metadata_exposes_threshold_and_smoothness():
+    hed_params = HEDTensorrtPreprocessor.get_preprocessor_metadata()["parameters"]
+    assert set(hed_params) == {"edge_threshold", "smoothness"}
+    for name in ("edge_threshold", "smoothness"):
+        assert hed_params[name]["type"] == "float"
+        assert hed_params[name]["range"] == [0.0, 1.0]
+        assert hed_params[name]["default"] == 0.0
+    scribble_params = ScribbleTensorrtPreprocessor.get_preprocessor_metadata()["parameters"]
+    assert "edge_threshold" not in scribble_params
+    assert set(scribble_params) == {"scribble_threshold", "smoothness"}
+
+
+# ---------------------------------------------------------------------------
+# apply_edge_smoothness: cuDNN benchmark guard
+# ---------------------------------------------------------------------------
+
+
+def test_edge_smoothness_leaves_global_cudnn_benchmark_untouched():
+    prev = torch.backends.cudnn.benchmark
+    try:
+        torch.backends.cudnn.benchmark = True
+        x = torch.rand(32, 48)
+        y = apply_edge_smoothness(x, 0.7)
+        assert y.shape == x.shape and y.dtype == x.dtype
+        assert torch.backends.cudnn.benchmark is True
+    finally:
+        torch.backends.cudnn.benchmark = prev
+
+
+def test_edge_smoothness_disables_benchmark_inside_conv(monkeypatch):
+    import torch.nn.functional as F
+
+    real_conv2d = F.conv2d
+    seen = []
+
+    def recording_conv2d(*args, **kwargs):
+        seen.append(torch.backends.cudnn.benchmark)
+        return real_conv2d(*args, **kwargs)
+
+    monkeypatch.setattr(F, "conv2d", recording_conv2d)
+    prev = torch.backends.cudnn.benchmark
+    try:
+        torch.backends.cudnn.benchmark = True
+        apply_edge_smoothness(torch.rand(1, 16, 16), 0.4)
+    finally:
+        torch.backends.cudnn.benchmark = prev
+    assert len(seen) == 2  # separable: one horizontal + one vertical pass
+    assert seen == [False, False]

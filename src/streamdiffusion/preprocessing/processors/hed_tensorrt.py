@@ -26,6 +26,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
+from .category_params import EDGE_SMOOTHNESS_PARAM, apply_edge_smoothness
 from .trt_base import SelfBuildingTRTPreprocessor, _first_output
 
 logger = logging.getLogger(__name__)
@@ -99,13 +100,31 @@ class HEDTensorrtPreprocessor(SelfBuildingTRTPreprocessor):
     @classmethod
     def get_preprocessor_metadata(cls):
         return {
-            "display_name": "HED Edge Detection (TensorRT)",
+            "display_name": "HED Soft Edges (TensorRT)",
             "description": (
-                "GPU-native HED (Holistically-Nested Edge Detection) via TensorRT. "
-                "Self-builds its engine from the controlnet_aux model on first run. "
-                "No CPU/PIL round-trips — satisfies the GPU-residency constraint."
+                "GPU-native HED (Holistically-Nested Edge Detection) via TensorRT: the soft "
+                "white-on-black edge map expected by HED ControlNets. Self-builds hed.engine "
+                "from the controlnet_aux model on first run; the Scribble preprocessor runs "
+                "the same engine and only differs in post-processing. No CPU/PIL round-trips."
             ),
-            "parameters": {},
+            "parameters": {
+                "edge_threshold": {
+                    "type": "float",
+                    "default": 0.0,
+                    "range": [0.0, 1.0],
+                    "description": (
+                        "Zero out edge probabilities below this value (thins the map, keeps the "
+                        "surviving values soft). 0 = raw HED output."
+                    ),
+                },
+                "smoothness": {
+                    **EDGE_SMOOTHNESS_PARAM["smoothness"],
+                    "description": (
+                        "Gaussian post-blur of the edge map, applied after the threshold "
+                        "(0 = sharp; 1 = σ≈2, ~13×13 kernel)."
+                    ),
+                },
+            },
             "use_cases": [
                 "HED ControlNet conditioning",
                 "Structured edge maps (real-time)",
@@ -190,6 +209,11 @@ class HEDTensorrtPreprocessor(SelfBuildingTRTPreprocessor):
         The engine output is already a sigmoid probability, so no min/max
         normalisation is applied (it would amplify noise on flat frames and
         break the absolute threshold semantics of the scribble post-process).
+
+        Optional knobs (``self.params``, live-updatable from TD):
+          * ``edge_threshold`` — probabilities below it become 0, the rest keep
+            their value (thins the map without binarising it).
+          * ``smoothness``     — Gaussian post-blur of the result.
         """
         out = _first_output(engine_outputs).float()
 
@@ -200,6 +224,14 @@ class HEDTensorrtPreprocessor(SelfBuildingTRTPreprocessor):
             out = out.squeeze(0)  # (H, W)
 
         out = out.clamp(0.0, 1.0)
+
+        threshold = float(self.params.get("edge_threshold", 0.0))
+        if threshold > 0.0:
+            out = torch.where(out >= threshold, out, torch.zeros_like(out))
+
+        smoothness = float(self.params.get("smoothness", 0.0))
+        if smoothness > 0.0:
+            out = apply_edge_smoothness(out, smoothness)  # (H, W) in, (H, W) out
 
         # Expand to 3-channel RGB  →  (3, H, W)
         return out.unsqueeze(0).repeat(3, 1, 1)

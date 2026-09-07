@@ -130,11 +130,12 @@ class ScribbleTensorrtPreprocessor(HEDTensorrtPreprocessor):
     @classmethod
     def get_preprocessor_metadata(cls):
         return {
-            "display_name": "Scribble Edge Detection (TensorRT)",
+            "display_name": "Scribble Strokes (HED + NMS, TensorRT)",
             "description": (
-                "GPU-native scribble-style edge maps. Uses the HED TRT engine with "
-                "GPU NMS + binarization post-processing (no CPU round-trips). "
-                "Compatible with scribble ControlNets."
+                "GPU-native scribble strokes for scribble ControlNets. Runs the same "
+                "hed.engine as the HED preprocessor and applies the controlnet_aux "
+                "scribble=True post-process on the GPU: NMS thinning, binarisation at "
+                "scribble_threshold, then stroke thickening (no CPU round-trips)."
             ),
             "parameters": {
                 "scribble_threshold": {
