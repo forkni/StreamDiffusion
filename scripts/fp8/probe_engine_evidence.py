@@ -95,6 +95,16 @@ logger = logging.getLogger("probe_engine_evidence")
 # if builder.py's pattern ever changes, update this one too.
 _MHA_RE = re.compile(r"mha|fmha|MultiHead|FlashAttn", re.IGNORECASE)
 
+# Strips the trailing `_myl<N>_<M>` Myelin-partition/kernel-index suffix off an
+# MHA layer name (e.g. "_gemm_mha_v2_myl21_21" -> "_gemm_mha_v2") so kernels
+# implementing the *same* fused pattern group together regardless of which
+# partition/index TRT assigned them. Added for the MHA-fusion-regression
+# investigation (2026-09-06): the builder.py warning compares raw MHA kernel
+# counts across builds with no visibility into *which* pattern(s) those
+# kernels are, so two builds with different counts could not be told apart as
+# "more attention sites fused" vs. "each site fused into more kernels."
+_MHA_NAME_SUFFIX_RE = re.compile(r"_myl\d+_\d+$")
+
 _DEFAULT_ENGINES_ROOT = _REPO_ROOT / "engines" / "td" / "stabilityai"
 
 
@@ -145,10 +155,22 @@ def _inspect_engine(engine_path: Path) -> dict:
     partitions = {m.group(1) for n in mha_names for m in [_MYL_PARTITION_RE.search(n)] if m}
     layer_type_hist = collections.Counter(layer.get("LayerType", "?") for layer in layers)
 
+    # Normalized MHA name histogram + per-partition kernel counts (2026-09-06
+    # MHA-fusion-regression investigation). The raw mha_fused_kernels count
+    # alone can't distinguish "N attention sites each fused into 1 kernel"
+    # from "N/2 sites each fused into 2 kernels" -- these two views can.
+    mha_name_histogram = dict(collections.Counter(_MHA_NAME_SUFFIX_RE.sub("", n) for n in mha_names))
+    partition_kernel_counts = collections.Counter()
+    for n in mha_names:
+        m = _MYL_PARTITION_RE.search(n)
+        partition_kernel_counts[m.group(1) if m else "no-partition"] += 1
+
     return {
         "total_layers": len(layers),
         "mha_fused_kernels": len(mha_names),
         "mha_myelin_partitions": len(partitions),
+        "mha_name_histogram": mha_name_histogram,
+        "mha_partition_kernel_counts": dict(partition_kernel_counts),
         "layer_type_histogram": dict(layer_type_hist),
         "io_tensor_count": len(io_names),
         "kvo_cache_in_count": sum(1 for n in io_names if n.startswith("kvo_cache_in_")),
@@ -334,6 +356,8 @@ def main() -> None:
         )
         top_types = sorted(inspected["layer_type_histogram"].items(), key=lambda kv: -kv[1])
         print(f"  layer_type_histogram: {dict(top_types)}")
+        print(f"  mha_name_histogram (suffix-stripped): {inspected['mha_name_histogram']}")
+        print(f"  mha_partition_kernel_counts (by _myl<N>_): {inspected['mha_partition_kernel_counts']}")
         if bmm_result is not None:
             print(f"  attn_bmm_dq_fed: {bmm_result[0]}/{bmm_result[1]} DQ-fed")
         elif fp8_onnx.exists():

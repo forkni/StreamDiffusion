@@ -24,7 +24,11 @@ import json
 
 import numpy as np
 
-from streamdiffusion.acceleration.tensorrt.builder import _cleanup_intermediates, _write_build_stats
+from streamdiffusion.acceleration.tensorrt.builder import (
+    _cleanup_intermediates,
+    _find_best_sibling_mha_ratio,
+    _write_build_stats,
+)
 from streamdiffusion.acceleration.tensorrt.fp8_quantize import (
     _build_calib_provenance,
     _write_calib_provenance_sidecar,
@@ -302,3 +306,122 @@ class TestWriteBuildStatsAppendGlobal:
         lines = jsonl_path.read_text().strip().splitlines()
         assert len(lines) == 1
         assert json.loads(lines[0])["total_elapsed_s"] == 123.4
+
+
+class TestFindBestSiblingMhaRatio:
+    """Regression tests for the 2026-09-06 MHA-fusion-regression investigation.
+
+    The original `_find_best_sibling_mha_ratio` returned the historical *maximum*
+    ratio and the gate warned when a build fell *below* it -- backwards, since lower
+    mha_kernels_per_attn_block means more complete fusion (see the function's own
+    docstring for the full empirical argument: every sibling engine's fused-MHA layer
+    names normalize to the single kernel pattern `_gemm_mha_v2`, so a higher ratio
+    means the same attention sites needed *more* kernels each, not that more sites got
+    fused). `test_returns_lowest_ratio_not_highest` is the test that would have caught
+    that bug directly. The all-time-extremum baseline was also unbounded (`_ratio >
+    best` could never clear once a single anomalous build existed anywhere in
+    history), fixed here by the `window` parameter.
+    """
+
+    def _make_current_and_root(self, tmp_path):
+        """Mirrors the real call site: builder.py passes the *current* build's own
+        (not-yet-written) engine dir -- the function only ever reads `.parent`."""
+        engines_root = tmp_path / "engines" / "td" / "stabilityai"
+        engines_root.mkdir(parents=True)
+        current_engine_dir = engines_root / "sdxl-turbo--current--res-384x640"
+        return str(current_engine_dir), engines_root
+
+    def _write_sibling(self, engines_root, name, stats):
+        sibling_dir = engines_root / name
+        sibling_dir.mkdir(parents=True)
+        (sibling_dir / "build_stats.json").write_text(json.dumps(stats))
+
+    def test_none_when_no_sibling_dirs(self, tmp_path):
+        current_engine_dir, _engines_root = self._make_current_and_root(tmp_path)
+        assert _find_best_sibling_mha_ratio(current_engine_dir, "fp16") is None
+
+    def test_none_when_siblings_have_no_stats_file(self, tmp_path):
+        current_engine_dir, engines_root = self._make_current_and_root(tmp_path)
+        (engines_root / "sibling-no-stats").mkdir(parents=True)
+        assert _find_best_sibling_mha_ratio(current_engine_dir, "fp16") is None
+
+    def test_skips_sibling_missing_precision_key(self, tmp_path):
+        current_engine_dir, engines_root = self._make_current_and_root(tmp_path)
+        self._write_sibling(engines_root, "vae", {"mha_kernels_per_attn_block": 2.0})
+        assert _find_best_sibling_mha_ratio(current_engine_dir, "fp16") is None
+
+    def test_skips_sibling_with_different_precision(self, tmp_path):
+        current_engine_dir, engines_root = self._make_current_and_root(tmp_path)
+        self._write_sibling(engines_root, "fp8-sibling", {"precision": "fp8", "mha_kernels_per_attn_block": 1.0})
+        assert _find_best_sibling_mha_ratio(current_engine_dir, "fp16") is None
+
+    def test_skips_sibling_missing_ratio_key(self, tmp_path):
+        current_engine_dir, engines_root = self._make_current_and_root(tmp_path)
+        self._write_sibling(engines_root, "pre-round11", {"precision": "fp16"})
+        assert _find_best_sibling_mha_ratio(current_engine_dir, "fp16") is None
+
+    def test_returns_lowest_ratio_not_highest(self, tmp_path):
+        """The polarity regression test: a fully-fused sibling (2.0, one kernel per
+        attention module) and a worse-fused sibling (3.0, some modules needing two
+        kernels) coexist -- "best" must be the 2.0, not the 3.0."""
+        current_engine_dir, engines_root = self._make_current_and_root(tmp_path)
+        self._write_sibling(
+            engines_root,
+            "well-fused",
+            {"precision": "fp16", "mha_kernels_per_attn_block": 2.0, "build_end": "2026-08-16T00:00:00+00:00"},
+        )
+        self._write_sibling(
+            engines_root,
+            "worse-fused-outlier",
+            {"precision": "fp16", "mha_kernels_per_attn_block": 3.0, "build_end": "2026-08-22T00:00:00+00:00"},
+        )
+
+        best = _find_best_sibling_mha_ratio(current_engine_dir, "fp16")
+
+        assert best == 2.0
+
+    def test_window_ages_out_old_outlier(self, tmp_path):
+        """With window=2 and three siblings ordered oldest -> newest (outlier, then
+        two well-fused builds), only the two most recent are considered -- the
+        all-time-worst outlier must not pin the gate once enough newer builds exist."""
+        current_engine_dir, engines_root = self._make_current_and_root(tmp_path)
+        self._write_sibling(
+            engines_root,
+            "oldest-outlier",
+            {"precision": "fp16", "mha_kernels_per_attn_block": 3.0, "build_end": "2026-08-22T00:00:00+00:00"},
+        )
+        self._write_sibling(
+            engines_root,
+            "recent-a",
+            {"precision": "fp16", "mha_kernels_per_attn_block": 2.5, "build_end": "2026-09-04T00:00:00+00:00"},
+        )
+        self._write_sibling(
+            engines_root,
+            "recent-b",
+            {"precision": "fp16", "mha_kernels_per_attn_block": 2.0, "build_end": "2026-09-06T00:00:00+00:00"},
+        )
+
+        best_windowed = _find_best_sibling_mha_ratio(current_engine_dir, "fp16", window=2)
+        best_unwindowed = _find_best_sibling_mha_ratio(current_engine_dir, "fp16", window=3)
+
+        assert best_windowed == 2.0  # min(2.5, 2.0) -- the 3.0 outlier aged out
+        assert best_unwindowed == 2.0  # min(3.0, 2.5, 2.0) -- still 2.0, but for a different reason
+
+    def test_falls_back_to_build_start_when_build_end_absent(self, tmp_path):
+        """A build that crashed before reaching the end-of-build write only has
+        `build_start` (fp8-round-13's mid-build flush) -- ordering must still work."""
+        current_engine_dir, engines_root = self._make_current_and_root(tmp_path)
+        self._write_sibling(
+            engines_root,
+            "crashed-mid-build",
+            {"precision": "fp16", "mha_kernels_per_attn_block": 3.0, "build_start": "2026-08-22T00:00:00+00:00"},
+        )
+        self._write_sibling(
+            engines_root,
+            "completed",
+            {"precision": "fp16", "mha_kernels_per_attn_block": 2.0, "build_start": "2026-09-06T00:00:00+00:00"},
+        )
+
+        best = _find_best_sibling_mha_ratio(current_engine_dir, "fp16", window=1)
+
+        assert best == 2.0  # only "completed" (the newer build_start) is in the window
