@@ -224,7 +224,6 @@ class TestWriteErrorReport:
         except ValueError as exc:
             report_path = diagnostics.write_error_report(exc, stage="inference", out_dir=tmp_path)
 
-        assert report_path is not None
         assert report_path.exists()
         assert report_path.parent == tmp_path
         assert report_path.name.startswith("inference_error_report_")
@@ -249,7 +248,6 @@ class TestWriteErrorReport:
         monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
         monkeypatch.setenv("SDTD_BASE_FOLDER_PATH", str(tmp_path))
         report_path = diagnostics.write_error_report(RuntimeError("boom"), stage="inference")
-        assert report_path is not None
         assert report_path.parent == tmp_path / "error_reports"
 
     def test_falls_back_to_module_relative_repo_root_when_env_var_unset(self, tmp_path, monkeypatch):
@@ -261,7 +259,6 @@ class TestWriteErrorReport:
         fake_file = tmp_path / "src" / "streamdiffusion" / "utils" / "diagnostics.py"
         monkeypatch.setattr(diagnostics, "__file__", str(fake_file))
         report_path = diagnostics.write_error_report(RuntimeError("boom"), stage="inference")
-        assert report_path is not None
         assert report_path.parent == tmp_path / "error_reports"
 
     def test_stream_config_dumped_when_provided(self, tmp_path, monkeypatch):
