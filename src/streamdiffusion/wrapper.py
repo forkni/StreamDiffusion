@@ -150,10 +150,13 @@ def _load_vae_config(vae_id: str) -> Tuple[Dict[str, Any], Optional[str]]:
             return cfg, subfolder
         except Exception as e:
             last_error = e
-            if is_network_error(e):
+            if is_network_error(e) and not is_missing_hub_file(e):
                 # A timeout/connection failure is not "no config.json here, try
                 # elsewhere" - retrying the vae/ subfolder would just repeat the
-                # same failure. Surface it immediately as the real cause.
+                # same failure. Surface it immediately as the real cause. A hub 404
+                # (EntryNotFoundError, which subclasses HfHubHTTPError and so also
+                # matches is_network_error) is the opposite: the hub answered and the
+                # file is simply not at this location, so the vae/ retry must run.
                 raise _vae_resolution_error(vae_id, f"network error fetching config.json: {e}", e) from e
             continue
     raise _vae_resolution_error(
@@ -250,7 +253,7 @@ def _harden_vae_attention(vae: Any) -> None:
     vae.set_attn_processor(AttnProcessor())
 
 
-def _load_custom_vae(vae_id: str, *, device: torch.device, dtype: torch.dtype) -> torch.nn.Module:
+def _load_custom_vae(vae_id: str, *, device: Union[str, torch.device], dtype: torch.dtype) -> torch.nn.Module:
     """Load and fully validate a `vae_id` into a ready-to-use VAE module: detect its
     architecture, structurally validate it, load real weights, swap attention
     processor if required, and move to device/dtype - raising a VaeResolutionError
@@ -321,16 +324,19 @@ def _resolve_vae(
     vae_id: Optional[str],
     use_tiny_vae: bool,
     is_sdxl: bool,
-    device: torch.device,
+    device: Union[str, torch.device],
     dtype: torch.dtype,
+    pipe_vae: Optional[torch.nn.Module] = None,
 ) -> Tuple[torch.nn.Module, str, str]:
     """Resolve the VAE to use for `stream.vae`, replacing the previous hardcoded
     `AutoencoderTiny.from_pretrained(vae_id)` dispatch (the reported bug: any
     `vae_id` was force-loaded as AutoencoderTiny regardless of its actual
     architecture).
 
-    `use_tiny_vae` now only selects the *default* (TAESD) when no `vae_id` is given;
-    an explicit `vae_id` always wins and is auto-detected. This deliberately drops
+    `use_tiny_vae` now only matters when no `vae_id` is given: True selects the
+    default TAESD, False keeps the base model's own VAE (`pipe_vae`, what the pipeline
+    loaded), exactly as the pre-dispatch code did. An explicit `vae_id` always wins
+    and is auto-detected. This deliberately drops
     `acceleration` from the decision - the previous `elif acceleration != "tensorrt"`
     branch both dropped `vae_id` on the floor under TensorRT and skipped the device
     move, which this function always performs regardless of acceleration backend
@@ -341,6 +347,12 @@ def _resolve_vae(
     if vae_id is not None:
         vae = _load_custom_vae(vae_id, device=device, dtype=dtype)
         return vae, type(vae).__name__, f"'{vae_id}' (detected via config.json)"
+
+    if not use_tiny_vae:
+        if pipe_vae is not None:
+            vae = pipe_vae.to(device=device, dtype=dtype)
+            return vae, type(vae).__name__, "the base model (use_tiny_vae=False)"
+        logger.warning("use_tiny_vae=False but the pipeline has no VAE to keep; falling back to TAESD")
 
     taesd_model = "madebyollin/taesdxl" if is_sdxl else "madebyollin/taesd"
     vae = AutoencoderTiny.from_pretrained(taesd_model).to(device=device, dtype=dtype)
@@ -2716,11 +2728,13 @@ class StreamDiffusionWrapper:
         # docstring for why that must not depend on `acceleration` (the F2 device-move
         # trap: nothing else moves a PyTorch VAE to device once the TensorRT VAE-engine
         # build, which incidentally used to do this, is skipped below for a full VAE).
-        stream.vae, _vae_class_name, _vae_source = _resolve_vae(vae_id, use_tiny_vae, is_sdxl, self.device, self.dtype)
+        stream.vae, _vae_class_name, _vae_source = _resolve_vae(
+            vae_id, use_tiny_vae, is_sdxl, self.device, self.dtype, pipe_vae=getattr(pipe, "vae", None)
+        )
         _skip_trt_vae_for_full = _should_skip_trt_vae(_vae_class_name, acceleration)
         if _skip_trt_vae_for_full:
             logger.warning(
-                f"Custom VAE {_vae_source} is a full AutoencoderKL — running it in PyTorch "
+                f"VAE from {_vae_source} is a full AutoencoderKL — running it in PyTorch "
                 f"(TensorRT VAE engines support TAESD only). UNet remains TensorRT-accelerated; "
                 f"expect a few ms/frame extra at {self.width}x{self.height}. Its encode is also "
                 f"stochastic per frame (Gaussian posterior sampling), unlike TAESD's deterministic "

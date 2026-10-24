@@ -201,6 +201,62 @@ class TestDefaultVaeWhenIdIsNone:
         assert "madebyollin/taesd" in source
         assert "default" in source
 
+    def test_use_tiny_vae_false_keeps_the_pipe_vae(self):
+        """Regression (agy review of PR 35): the pre-dispatch code kept `pipe.vae` when
+        use_tiny_vae=False and no vae_id was given; the first dispatch rewrite silently
+        replaced it with TAESD."""
+        pipe_vae = _FakeKL()
+        to_calls = []
+        original_to = pipe_vae.to
+
+        def recording_to(*args, **kwargs):
+            to_calls.append((args, kwargs))
+            return original_to(*args, **kwargs)
+
+        pipe_vae.to = recording_to
+
+        def fake_tiny_from_pretrained(model_id, **kwargs):
+            raise AssertionError("AutoencoderTiny.from_pretrained must not be called when use_tiny_vae=False")
+
+        with patch.object(wrapper_module.AutoencoderTiny, "from_pretrained", staticmethod(fake_tiny_from_pretrained)):
+            vae, class_name, source = _resolve_vae(
+                None,
+                use_tiny_vae=False,
+                is_sdxl=False,
+                device=torch.device("cpu"),
+                dtype=torch.float32,
+                pipe_vae=pipe_vae,
+            )
+
+        assert vae is pipe_vae
+        assert class_name == _FakeKL.__name__
+        assert "use_tiny_vae=False" in source
+        assert to_calls == [((), {"device": torch.device("cpu"), "dtype": torch.float32})]
+
+    def test_use_tiny_vae_false_without_a_pipe_vae_falls_back_to_taesd(self, caplog):
+        calls = []
+
+        def fake_from_pretrained(model_id, **kwargs):
+            calls.append(model_id)
+            return _FakeTiny()
+
+        with (
+            caplog.at_level(logging.WARNING, logger=wrapper_module.__name__),
+            patch.object(wrapper_module.AutoencoderTiny, "from_pretrained", staticmethod(fake_from_pretrained)),
+        ):
+            _vae, class_name, _source = _resolve_vae(
+                None,
+                use_tiny_vae=False,
+                is_sdxl=False,
+                device=torch.device("cpu"),
+                dtype=torch.float32,
+                pipe_vae=None,
+            )
+
+        assert calls == ["madebyollin/taesd"]
+        assert class_name == "AutoencoderTiny"
+        assert any("use_tiny_vae=False" in record.getMessage() for record in caplog.records)
+
     def test_no_vae_id_and_sdxl_uses_taesdxl(self):
         calls = []
 
@@ -270,6 +326,38 @@ class TestModelRepoSubfolderRetry:
             )
 
         assert class_name == _FakeKL.__name__
+
+    def test_hub_404_at_root_falls_back_to_vae_subfolder(self):
+        """Regression (agy review of PR 35): diffusers reports a missing root config.json
+        as an OSError raised inside `except EntryNotFoundError:`, and EntryNotFoundError
+        subclasses HfHubHTTPError, so is_network_error() matches it. That must not abort
+        the vae/ retry - it is the exact stabilityai/sd-turbo case this loop exists for."""
+        from huggingface_hub.utils import EntryNotFoundError
+
+        try:
+            try:
+                raise EntryNotFoundError("404 Client Error: Entry Not Found for url: .../config.json")
+            except EntryNotFoundError:
+                # Bare re-raise on purpose: diffusers' ConfigMixin.load_config does exactly this,
+                # so the 404 reaches us as __context__, not __cause__.
+                raise OSError("stabilityai/sd-turbo does not appear to have a file named config.json.")  # noqa: B904
+        except OSError as chained:
+            root_error = chained
+        assert isinstance(root_error.__context__, EntryNotFoundError)
+        subfolder_calls = []
+
+        def fake_load_config(vae_id, subfolder=None, **kwargs):
+            subfolder_calls.append(subfolder)
+            if subfolder is None:
+                raise root_error
+            return _KL_CONFIG
+
+        with patch.object(wrapper_module.AutoencoderKL, "load_config", staticmethod(fake_load_config)):
+            vae_cls, _cfg, subfolder = _resolve_vae_class("stabilityai/sd-turbo")
+
+        assert subfolder_calls == [None, "vae"]
+        assert vae_cls is wrapper_module.AutoencoderKL
+        assert subfolder == "vae"
 
     def test_network_error_at_root_is_not_retried(self):
         """A network failure is not 'try the vae/ subfolder' - retrying would just
