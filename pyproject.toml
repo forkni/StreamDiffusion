@@ -57,13 +57,15 @@ docstring-code-format = true
 project-includes = ["src", "StreamDiffusionTD", "tests", "custom_processors", "scripts", "tools", "utils"]
 project-excludes = ["tests/manual/**", "tests/quality/**", "demo/**", "examples/**"]
 search-path = ["src"]
-python-version = "3.10"
+python-version = "3.11"
 python-interpreter-path = "venv/Scripts/python.exe"
 # Pre-existing errors are frozen in the baseline; only new errors fail the check.
 # Refresh after intentional fixes: pyrefly check --update-baseline
 baseline = "pyrefly-baseline.json"
+
+[tool.pyrefly.errors]
 # Warn-severity GPU anti-pattern lints (.item() sync stalls, hard-coded .cuda(), print(tensor)).
-pytorch-efficiency-lints = true
+pytorch-efficiency-lints = "warn"
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10
