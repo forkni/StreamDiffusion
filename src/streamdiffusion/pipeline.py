@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import logging
 import math
 import time
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 import PIL.Image
@@ -11,7 +13,9 @@ from diffusers.image_processor import VaeImageProcessor
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img import (
     retrieve_latents,
 )
+from torch import Tensor
 
+from streamdiffusion._shapes import B, C, H, Hl, W, Wl
 from streamdiffusion.hooks import (
     EmbeddingHook,
     EmbedsCtx,
@@ -37,7 +41,9 @@ from streamdiffusion.stream_parameter_updater import StreamParameterUpdater
 from streamdiffusion.tools.gpu_profiler import profiler
 from streamdiffusion.utils.nan_guard import NanGuard
 
-logging.basicConfig(level=logging.INFO)
+if TYPE_CHECKING:
+    from typing import assert_type
+
 logger = logging.getLogger(__name__)
 
 
@@ -1059,19 +1065,23 @@ class StreamDiffusion:
 
     def add_noise(
         self,
-        original_samples: torch.Tensor,
-        noise: torch.Tensor,
+        original_samples: Tensor[[B, C, H, W]],
+        noise: Tensor,
         t_index: int,
-    ) -> torch.Tensor:
-        noisy_samples = self.alpha_prod_t_sqrt[t_index] * original_samples + self.beta_prod_t_sqrt[t_index] * noise
+    ) -> Tensor[[B, C, H, W]]:
+        # ``noise`` stays unshaped: the caller passes ``init_noise[0]`` (3-D, broadcast over B).
+        # The schedule tensors are untyped attributes, so the result is pinned by annotation.
+        noisy_samples: Tensor[[B, C, H, W]] = (
+            self.alpha_prod_t_sqrt[t_index] * original_samples + self.beta_prod_t_sqrt[t_index] * noise
+        )
         return noisy_samples
 
     def scheduler_step_batch(
         self,
-        model_pred_batch: torch.Tensor,
-        x_t_latent_batch: torch.Tensor,
+        model_pred_batch: Tensor[[B, 4, Hl, Wl]],
+        x_t_latent_batch: Tensor[[B, 4, Hl, Wl]],
         idx: Optional[int] = None,
-    ) -> torch.Tensor:
+    ) -> Tensor[[B, 4, Hl, Wl]]:
         with profiler.region("sched.step_batch"):
             if idx is None:
                 # Upcast division to fp32 — alpha_prod_t_sqrt can be small at early timesteps,
@@ -1080,7 +1090,7 @@ class StreamDiffusion:
                     (x_t_latent_batch - self.beta_prod_t_sqrt * model_pred_batch).float()
                     / self.alpha_prod_t_sqrt.float()
                 ).to(x_t_latent_batch.dtype)
-                denoised_batch = self.c_out * F_theta + self.c_skip * x_t_latent_batch
+                denoised_batch: Tensor[[B, 4, Hl, Wl]] = self.c_out * F_theta + self.c_skip * x_t_latent_batch
             else:
                 F_theta = (
                     (x_t_latent_batch - self.beta_prod_t_sqrt[idx] * model_pred_batch).float()
@@ -1124,10 +1134,10 @@ class StreamDiffusion:
 
     def unet_step(
         self,
-        x_t_latent: torch.Tensor,
+        x_t_latent: Tensor[[B, 4, Hl, Wl]],
         t_list: Union[torch.Tensor, list[int]],
         idx: Optional[int] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[Tensor[[B, 4, Hl, Wl]], Tensor[[B, 4, Hl, Wl]]]:
         with profiler.region("unet_step.fi_attenuation"):
             if self.use_feature_injection and self._fi_strength_tensor is not None:
                 self._fi_strength_tensor.fill_(self._fi_strength_base * self._fi_warp_attenuation())
@@ -1451,7 +1461,7 @@ class StreamDiffusion:
             for i, new_fi in enumerate(fio_cache_out):
                 self.fio_cache[i][write_slot].copy_(new_fi.squeeze(0))
 
-    def encode_image(self, image_tensors: torch.Tensor) -> torch.Tensor:
+    def encode_image(self, image_tensors: Tensor[[B, 3, H, W]]) -> Tensor[[B, 4, Hl, Wl]]:
         with profiler.region("encode_image"):
             image_tensors = image_tensors.to(
                 device=self.device,
@@ -1459,21 +1469,23 @@ class StreamDiffusion:
                 non_blocking=True,
             )
             with torch.autocast("cuda", dtype=self.dtype):
-                img_latent = retrieve_latents(self.vae.encode(image_tensors), self.generator)
+                # The diffusers VAE is untracked by the shape checker: pin the latent contract here.
+                img_latent: Tensor[[B, 4, Hl, Wl]] = retrieve_latents(self.vae.encode(image_tensors), self.generator)
 
             img_latent = img_latent * self.vae.config.scaling_factor
 
             x_t_latent = self.add_noise(img_latent, self.init_noise[0], 0)
             return x_t_latent
 
-    def decode_image(self, x_0_pred_out: torch.Tensor) -> torch.Tensor:
+    def decode_image(self, x_0_pred_out: Tensor[[B, 4, Hl, Wl]]) -> Tensor[[B, 3, H, W]]:
         with profiler.region("decode_image"):
             scaled_latent = x_0_pred_out / self.vae.config.scaling_factor
             with torch.autocast("cuda", dtype=self.dtype):
-                output_latent = self.vae.decode(scaled_latent, return_dict=False)[0]
-            return output_latent
+                # Untracked diffusers call: the image contract is pinned by annotation.
+                output_image: Tensor[[B, 3, H, W]] = self.vae.decode(scaled_latent, return_dict=False)[0]
+            return output_image
 
-    def predict_x0_batch(self, x_t_latent: torch.Tensor) -> torch.Tensor:
+    def predict_x0_batch(self, x_t_latent: Tensor[[B, 4, Hl, Wl]]) -> Tensor[[int, 4, Hl, Wl]]:
         with profiler.region("predict_x0_batch"):
             prev_latent_batch = self.x_t_latent_buffer
 
@@ -1507,6 +1519,9 @@ class StreamDiffusion:
 
                 if self.denoising_steps_num > 1:
                     x_0_pred_out = x_0_pred_batch[-1].unsqueeze(0)
+                    if TYPE_CHECKING:
+                        # Shape receipt: the last denoised latent of the batch, re-batched.
+                        assert_type(x_0_pred_out, Tensor[[1, 4, Hl, Wl]])
                     with profiler.region("sched.rebuild"):
                         if self.do_add_noise:
                             self.x_t_latent_buffer = (
@@ -1766,7 +1781,7 @@ class StreamDiffusion:
         return latent_ctx.latent
 
     @torch.inference_mode()
-    def txt2img(self, batch_size: int = 1) -> torch.Tensor:
+    def txt2img(self, batch_size: int = 1) -> Tensor[[int, 3, int, int]]:
         x_0_pred_out = self.predict_x0_batch(
             torch.randn((batch_size, 4, self.latent_height, self.latent_width)).to(
                 device=self.device, dtype=self.dtype

@@ -313,8 +313,7 @@ def parse_audit_json(data: dict, osv_data: dict | None = None) -> dict:
             skipped.append(
                 {
                     "name": pkg_name,
-                    "version": dep.get("version")
-                    or _extract_skip_version(dep["skip_reason"]),
+                    "version": dep.get("version") or _extract_skip_version(dep["skip_reason"]),
                     "reason": dep["skip_reason"],
                     "osv_covered": osv_dep is not None,
                 }
@@ -326,11 +325,7 @@ def parse_audit_json(data: dict, osv_data: dict | None = None) -> dict:
                     if vuln_id in seen_ids:
                         continue
                     seen_ids.add(vuln_id)
-                    vuln_packages[pkg_name].append(
-                        _vuln_entry(
-                            osv_dep.get("version", dep.get("version", "?")), vuln
-                        )
-                    )
+                    vuln_packages[pkg_name].append(_vuln_entry(osv_dep.get("version", dep.get("version", "?")), vuln))
                     severity_counts[_severity_bucket(vuln)] += 1
             continue
 
@@ -575,9 +570,7 @@ def generate_sbom(output_path: Path, python_override: Path | None = None) -> boo
 
     cmd = [runner, "-m", "pip_audit", "-f", "cyclonedx-json"]
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=180, env=env
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=env)
     except (subprocess.SubprocessError, FileNotFoundError, OSError):
         return False
 
@@ -766,11 +759,7 @@ def get_pip_check(python_override: Path | None = None) -> dict | None:
         match = _PIP_CHECK_LINE_RE.match(raw_line)
         requiring = match.group("requiring") if match else None
         required_raw = match.group("required") if match else None
-        required_name = (
-            _normalize_package_name(re.split(r"[<>=!~\[; ]", required_raw)[0])
-            if required_raw
-            else None
-        )
+        required_name = _normalize_package_name(re.split(r"[<>=!~\[; ]", required_raw)[0]) if required_raw else None
         note = PIP_CHECK_ACCEPTED.get(required_name) if required_name else None
 
         issues.append(
@@ -876,9 +865,7 @@ def get_direct_dependencies(project_root: Path | None = None) -> set[str]:
             deps.add(_normalize_package_name(name))
 
         # Optional dependencies (dev, test, etc.)
-        for group_deps in (
-            data.get("project", {}).get("optional-dependencies", {}).values()
-        ):
+        for group_deps in data.get("project", {}).get("optional-dependencies", {}).values():
             for dep in group_deps:
                 name = re.split(r"[<>=!~\[]", dep)[0].strip()
                 deps.add(_normalize_package_name(name))
@@ -934,9 +921,7 @@ def _ensure_deptry_installed(venv_python: str) -> bool:
         return False
 
 
-def get_deptry_findings(
-    python_override: Path | None = None, project_root: Path | None = None
-) -> dict | None:
+def get_deptry_findings(python_override: Path | None = None, project_root: Path | None = None) -> dict | None:
     """Run deptry against the project source tree and return findings grouped by issue code.
 
     deptry reads PEP 621/requirements.txt-style dependency declarations, not setup.py's
@@ -986,9 +971,7 @@ def get_deptry_findings(
             cmd += ["--requirements-files-dev", str(dev_req)]
 
         try:
-            subprocess.run(
-                cmd, capture_output=True, text=True, timeout=120, cwd=project_root
-            )
+            subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=project_root)
         except (subprocess.SubprocessError, FileNotFoundError, OSError):
             return None
 
@@ -1095,8 +1078,7 @@ def categorize_outdated_packages(
 
         # Check if package has strict version constraints
         has_strict_constraint = any(
-            "==" in constraint or "<=" in constraint or "<" in constraint
-            for _, constraint in blocking
+            "==" in constraint or "<=" in constraint or "<" in constraint for _, constraint in blocking
         )
 
         if ecosystem_reason:
@@ -1181,9 +1163,7 @@ def get_ecosystem_constraints(ml_info: dict | None = None) -> dict[str, str]:
     return constraints
 
 
-def find_orphan_packages(
-    tree_data: list, direct_deps: set, project_name: str | None = None
-) -> dict:
+def find_orphan_packages(tree_data: list, direct_deps: set, project_name: str | None = None) -> dict:
     """Find packages not in direct deps and categorize them.
 
     Uses tiered classification:
@@ -1354,12 +1334,7 @@ def print_summary(summary: dict) -> None:
     print()
 
     # Generate actionable recommendations
-    fixable = [
-        (pkg, v)
-        for pkg, vulns in summary["vulnerabilities"].items()
-        for v in vulns
-        if v["fix_versions"]
-    ]
+    fixable = [(pkg, v) for pkg, vulns in summary["vulnerabilities"].items() for v in vulns if v["fix_versions"]]
 
     if fixable:
         print("[FIXES] Packages with available fixes:")
@@ -1368,12 +1343,7 @@ def print_summary(summary: dict) -> None:
             print(f"   pip install --upgrade {pkg}=={fix_version}")
         print()
 
-    unfixable = [
-        (pkg, v)
-        for pkg, vulns in summary["vulnerabilities"].items()
-        for v in vulns
-        if not v["fix_versions"]
-    ]
+    unfixable = [(pkg, v) for pkg, vulns in summary["vulnerabilities"].items() for v in vulns if not v["fix_versions"]]
 
     if unfixable:
         print("[MONITOR] Packages without fixes (monitor for updates):")
@@ -1389,9 +1359,7 @@ def print_summary(summary: dict) -> None:
     print()
 
 
-def print_dependency_tree(
-    pkg_name: str, pkg_data: dict, indent: int = 0, visited: set | None = None
-) -> None:
+def print_dependency_tree(pkg_name: str, pkg_data: dict, indent: int = 0, visited: set | None = None) -> None:
     """Recursively print ASCII dependency tree."""
     if visited is None:
         visited = set()
@@ -1410,9 +1378,7 @@ def print_dependency_tree(
         is_last = i == len(deps) - 1
         branch = "+-- " if is_last else "|-- "  # ASCII-safe for Windows console
 
-        safe_print(
-            f"{prefix}{branch}{dep_name} [required: {required}, installed: {installed}]"
-        )
+        safe_print(f"{prefix}{branch}{dep_name} [required: {required}, installed: {installed}]")
 
         # Prevent infinite loops from circular dependencies
         if dep_key not in visited:
@@ -1435,9 +1401,7 @@ def print_dependency_tree(
 def print_dependency_analysis(tree_data: list, direct_deps: set) -> None:
     """Print complete dependency analysis section."""
     if not tree_data:
-        safe_print(
-            "\n[WARN] pipdeptree not available - skipping dependency tree analysis"
-        )
+        safe_print("\n[WARN] pipdeptree not available - skipping dependency tree analysis")
         safe_print("       Install with: pip install pipdeptree")
         return
 
@@ -1466,16 +1430,12 @@ def print_dependency_analysis(tree_data: list, direct_deps: set) -> None:
 
     # Find and categorize orphans
     project_info = get_project_info()
-    project_name = (
-        project_info.get("name") if project_info["name"] != "Unknown" else None
-    )
+    project_name = project_info.get("name") if project_info["name"] != "Unknown" else None
     orphan_data = find_orphan_packages(tree_data, direct_deps, project_name)
     total_orphans = sum(len(v) for v in orphan_data.values())
 
     if total_orphans:
-        safe_print(
-            f"[PACKAGES] {total_orphans} packages not tracked in pyproject.toml:"
-        )
+        safe_print(f"[PACKAGES] {total_orphans} packages not tracked in pyproject.toml:")
         safe_print("-" * 70)
 
         for category, packages in orphan_data.items():
@@ -1513,9 +1473,7 @@ def print_outdated_analysis(
     # Get dependency constraints
     constraints = get_dependency_constraints(tree_data)
     ecosystem_constraints = get_ecosystem_constraints(ml_info)
-    categories = categorize_outdated_packages(
-        outdated, constraints, ecosystem_constraints
-    )
+    categories = categorize_outdated_packages(outdated, constraints, ecosystem_constraints)
 
     safe_print("\n" + "=" * 70)
     safe_print("OUTDATED PACKAGES ANALYSIS".center(70))
@@ -1595,9 +1553,7 @@ def print_consistency_check(pip_check: dict | None) -> None:
         safe_print("")
 
     if accepted:
-        safe_print(
-            f"[OK] {len(accepted)} known-benign issue(s) (accepted, package-variant naming):"
-        )
+        safe_print(f"[OK] {len(accepted)} known-benign issue(s) (accepted, package-variant naming):")
         for issue in accepted:
             safe_print(f"  - {issue['raw']}")
             safe_print(f"    -> {issue['note']}")
@@ -1675,11 +1631,7 @@ def get_project_info() -> dict:
             return {"name": "Unknown", "version": "Unknown"}
 
         for node in ast.walk(tree):
-            if not (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "setup"
-            ):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "setup"):
                 continue
             name = version = "Unknown"
             for kw in node.keywords:
@@ -1719,9 +1671,7 @@ def generate_markdown_report(
         f"**Total Dependencies**: {total_installed} packages "
         f"({len(direct_deps)} direct + {transitive_count} transitive)"
     )
-    lines.append(
-        f"**Audit Report**: `audit_reports/{now.strftime('%Y-%m-%d-%H%M')}-audit-summary.md`"
-    )
+    lines.append(f"**Audit Report**: `audit_reports/{now.strftime('%Y-%m-%d-%H%M')}-audit-summary.md`")
     lines.append("")
 
     # --- Security Status ---
@@ -1775,9 +1725,7 @@ def generate_markdown_report(
                     if pkg["name"].lower() == "torch":
                         pytorch_notes = f"Latest: {pkg['latest_version']}"
                         break
-            lines.append(
-                f"| PyTorch | {ml_info['pytorch_version']} | {pytorch_status} | {pytorch_notes} |"
-            )
+            lines.append(f"| PyTorch | {ml_info['pytorch_version']} | {pytorch_status} | {pytorch_notes} |")
         else:
             lines.append("| PyTorch | Not installed | ⚪ N/A | |")
 
@@ -1792,29 +1740,21 @@ def generate_markdown_report(
 
         # GPU
         if ml_info.get("gpu_name"):
-            lines.append(
-                f"| GPU | {ml_info['gpu_name']} | ✅ Active | {ml_info.get('gpu_count', 1)} device(s) |"
-            )
+            lines.append(f"| GPU | {ml_info['gpu_name']} | ✅ Active | {ml_info.get('gpu_count', 1)} device(s) |")
         else:
             lines.append("| GPU | None | ⚪ N/A | |")
 
         # transformers
         if ml_info.get("transformers_version"):
-            lines.append(
-                f"| transformers | {ml_info['transformers_version']} | ✅ Current | |"
-            )
+            lines.append(f"| transformers | {ml_info['transformers_version']} | ✅ Current | |")
 
         # FAISS
         if ml_info.get("faiss_version"):
-            lines.append(
-                f"| FAISS | {ml_info['faiss_version']} | ✅ Current | CPU version |"
-            )
+            lines.append(f"| FAISS | {ml_info['faiss_version']} | ✅ Current | CPU version |")
 
         # sentence-transformers
         if ml_info.get("sentence_transformers_version"):
-            lines.append(
-                f"| sentence-transformers | {ml_info['sentence_transformers_version']} | ✅ Current | |"
-            )
+            lines.append(f"| sentence-transformers | {ml_info['sentence_transformers_version']} | ✅ Current | |")
 
         lines.append("")
 
@@ -1862,30 +1802,20 @@ def generate_markdown_report(
         lines.append("### Recommended Actions")
         lines.append("")
 
-        fixable = [
-            (pkg, v)
-            for pkg, vulns in summary["vulnerabilities"].items()
-            for v in vulns
-            if v["fix_versions"]
-        ]
+        fixable = [(pkg, v) for pkg, vulns in summary["vulnerabilities"].items() for v in vulns if v["fix_versions"]]
 
         if fixable:
             lines.append("**Packages with available fixes:**")
             lines.append("")
             lines.append("```bash")
             for pkg, vuln in fixable:
-                fix_version = (
-                    vuln["fix_versions"][0] if vuln["fix_versions"] else "latest"
-                )
+                fix_version = vuln["fix_versions"][0] if vuln["fix_versions"] else "latest"
                 lines.append(f"pip install --upgrade {pkg}=={fix_version}")
             lines.append("```")
             lines.append("")
 
         unfixable = [
-            (pkg, v)
-            for pkg, vulns in summary["vulnerabilities"].items()
-            for v in vulns
-            if not v["fix_versions"]
+            (pkg, v) for pkg, vulns in summary["vulnerabilities"].items() for v in vulns if not v["fix_versions"]
         ]
 
         if unfixable:
@@ -1912,84 +1842,59 @@ def generate_markdown_report(
         lines.append("| Package | Version | Reason | Status |")
         lines.append("|---------|---------|--------|--------|")
         for entry in summary["skipped"]:
-            status = (
-                "✅ Recovered via OSV fallback"
-                if entry["osv_covered"]
-                else "⚠️ Not audited"
-            )
-            lines.append(
-                f"| {entry['name']} | {entry['version']} | {entry['reason']} | {status} |"
-            )
+            status = "✅ Recovered via OSV fallback" if entry["osv_covered"] else "⚠️ Not audited"
+            lines.append(f"| {entry['name']} | {entry['version']} | {entry['reason']} | {status} |")
         lines.append("")
 
     # --- Outdated Packages Analysis ---
     if outdated:
         constraints = get_dependency_constraints(tree_data) if tree_data else {}
         ecosystem_constraints = get_ecosystem_constraints(ml_info)
-        categories = categorize_outdated_packages(
-            outdated, constraints, ecosystem_constraints
-        )
+        categories = categorize_outdated_packages(outdated, constraints, ecosystem_constraints)
 
         lines.append("---")
         lines.append("")
         lines.append("## 📦 Outdated Packages Analysis")
         lines.append("")
-        lines.append(
-            f"**Total Outdated**: {len(outdated)} packages (prioritized by risk)"
-        )
+        lines.append(f"**Total Outdated**: {len(outdated)} packages (prioritized by risk)")
         lines.append("")
 
         # High Priority - ML Core
         if categories["ml_core"]:
             lines.append("### 🔴 High Priority (ML Core - Test Thoroughly)")
             lines.append("")
-            lines.append(
-                "⚠️ **DO NOT auto-update these packages** - CUDA compatibility and model behavior may change."
-            )
+            lines.append("⚠️ **DO NOT auto-update these packages** - CUDA compatibility and model behavior may change.")
             lines.append("")
             lines.append("| Package | Current | Latest | Priority | Reason |")
             lines.append("|---------|---------|--------|----------|--------|")
             for pkg in categories["ml_core"]:
                 priority = "🔴 High" if pkg["is_major_jump"] else "🟡 Medium"
-                reason = (
-                    "Major version change"
-                    if pkg["is_major_jump"]
-                    else "ML core package"
-                )
-                lines.append(
-                    f"| **{pkg['name']}** | {pkg['current']} | {pkg['latest']} | {priority} | {reason} |"
-                )
+                reason = "Major version change" if pkg["is_major_jump"] else "ML core package"
+                lines.append(f"| **{pkg['name']}** | {pkg['current']} | {pkg['latest']} | {priority} | {reason} |")
             lines.append("")
 
         # Major Version Jumps
         if categories["major_jump"]:
             lines.append("### 🟡 Medium Priority (Major Version Changes)")
             lines.append("")
-            lines.append(
-                "Review breaking changes before updating. Check release notes."
-            )
+            lines.append("Review breaking changes before updating. Check release notes.")
             lines.append("")
             lines.append("| Package | Current | Latest | Type |")
             lines.append("|---------|---------|--------|------|")
             for pkg in categories["major_jump"]:
                 pkg_type = (
                     "Dev tool"
-                    if pkg["name"].lower()
-                    in {"pytest", "black", "isort", "ruff", "mypy", "pyrefly"}
+                    if pkg["name"].lower() in {"pytest", "black", "isort", "ruff", "mypy", "pyrefly"}
                     else "Library"
                 )
-                lines.append(
-                    f"| {pkg['name']} | {pkg['current']} | {pkg['latest']} | {pkg_type} |"
-                )
+                lines.append(f"| {pkg['name']} | {pkg['current']} | {pkg['latest']} | {pkg_type} |")
             lines.append("")
 
         # Blocked packages
         if categories.get("blocked"):
             lines.append("### 🔒 Blocked (Cannot Update)")
             lines.append("")
-            lines.append(
-                "These packages have newer versions but cannot be updated due to dependency constraints."
-            )
+            lines.append("These packages have newer versions but cannot be updated due to dependency constraints.")
             lines.append("")
             lines.append("| Package | Current | Latest | Blocked By |")
             lines.append("|---------|---------|--------|------------|")
@@ -1999,9 +1904,7 @@ def generate_markdown_report(
                 for blocker, constraint in pkg.get("blocked_by", []):
                     blockers.append(f"`{blocker}` requires `{constraint}`")
                 blockers_str = "<br>".join(blockers) if blockers else "Unknown"
-                lines.append(
-                    f"| **{pkg['name']}** | {pkg['current']} | {pkg['latest']} | {blockers_str} |"
-                )
+                lines.append(f"| **{pkg['name']}** | {pkg['current']} | {pkg['latest']} | {blockers_str} |")
             lines.append("")
 
         # Ecosystem-locked packages
@@ -2017,9 +1920,7 @@ def generate_markdown_report(
             lines.append("|---------|---------|--------|--------|")
             for pkg in categories["ecosystem_blocked"]:
                 reason = pkg.get("blocked_by", [("Unknown", "")][0])[0]
-                lines.append(
-                    f"| {pkg['name']} | {pkg['current']} | {pkg['latest']} | {reason} |"
-                )
+                lines.append(f"| {pkg['name']} | {pkg['current']} | {pkg['latest']} | {reason} |")
             lines.append("")
 
         # Safe Updates
@@ -2043,17 +1944,11 @@ def generate_markdown_report(
         lines.append("")
         lines.append("## 🌳 Dependency Tree Analysis")
         lines.append("")
-        lines.append(
-            f"- **Direct Dependencies**: {len(direct_deps)} (from pyproject.toml)"
-        )
-        lines.append(
-            f"- **Transitive Dependencies**: {len(transitive)} (pulled in automatically)"
-        )
+        lines.append(f"- **Direct Dependencies**: {len(direct_deps)} (from pyproject.toml)")
+        lines.append(f"- **Transitive Dependencies**: {len(transitive)} (pulled in automatically)")
         lines.append(f"- **Total Installed**: {len(all_installed)}")
         dep_ratio = len(all_installed) / len(direct_deps) if direct_deps else 0
-        lines.append(
-            f"- **Dependency Ratio**: {dep_ratio:.2f}:1 (each direct dep pulls ~{dep_ratio:.1f} transitive)"
-        )
+        lines.append(f"- **Dependency Ratio**: {dep_ratio:.2f}:1 (each direct dep pulls ~{dep_ratio:.1f} transitive)")
         lines.append("")
 
         # Build trees for direct deps
@@ -2076,9 +1971,7 @@ def generate_markdown_report(
                         dep_name = dep["package_name"]
                         required = dep.get("required_version", "Any")
                         installed = dep.get("installed_version", "?")
-                        lines.append(
-                            f"|-- {dep_name} [required: {required}, installed: {installed}]"
-                        )
+                        lines.append(f"|-- {dep_name} [required: {required}, installed: {installed}]")
                         # Add nested deps if present
                         for nested in dep.get("dependencies", [])[:3]:
                             n_name = nested["package_name"]
@@ -2091,18 +1984,14 @@ def generate_markdown_report(
             lines.append("")
 
         # Orphan packages (categorized)
-        project_name = (
-            project_info.get("name") if project_info["name"] != "Unknown" else None
-        )
+        project_name = project_info.get("name") if project_info["name"] != "Unknown" else None
         orphan_data = find_orphan_packages(tree_data, direct_deps, project_name)
         total_orphans = sum(len(v) for v in orphan_data.values())
 
         if total_orphans:
             lines.append("### 🧹 Orphan Packages")
             lines.append("")
-            lines.append(
-                f"Found **{total_orphans}** packages not in pyproject.toml with no dependents."
-            )
+            lines.append(f"Found **{total_orphans}** packages not in pyproject.toml with no dependents.")
             lines.append("")
 
             # Display categories using CATEGORY_LABELS
@@ -2129,12 +2018,8 @@ def generate_markdown_report(
                 lines.append("**Safe to Keep (Development Tools)**:")
                 for category in safe_categories:
                     if orphan_data.get(category):
-                        tag, description = CATEGORY_LABELS.get(
-                            category, ("[?]", category)
-                        )
-                        for pkg in sorted(
-                            orphan_data[category], key=lambda x: x["name"]
-                        ):
+                        tag, description = CATEGORY_LABELS.get(category, ("[?]", category))
+                        for pkg in sorted(orphan_data[category], key=lambda x: x["name"]):
                             lines.append(f"- `{pkg['name']}` ({pkg['version']})")
                 lines.append("")
 
@@ -2144,13 +2029,9 @@ def generate_markdown_report(
                 lines.append("**Domain-Specific Packages (Auto-Detected)**:")
                 for category in domain_categories:
                     if orphan_data.get(category):
-                        tag, description = CATEGORY_LABELS.get(
-                            category, ("[?]", category)
-                        )
+                        tag, description = CATEGORY_LABELS.get(category, ("[?]", category))
                         lines.append(f"- {description}:")
-                        for pkg in sorted(
-                            orphan_data[category], key=lambda x: x["name"]
-                        ):
+                        for pkg in sorted(orphan_data[category], key=lambda x: x["name"]):
                             lines.append(f"  - `{pkg['name']}` ({pkg['version']})")
                 lines.append("")
 
@@ -2186,24 +2067,18 @@ def generate_markdown_report(
     else:
         accepted = [i for i in pip_check["issues"] if i["accepted"]]
         unaccepted = [i for i in pip_check["issues"] if not i["accepted"]]
-        status = (
-            "**ACTION NEEDED**" if unaccepted else "**CLEAN (accepted findings only)**"
-        )
+        status = "**ACTION NEEDED**" if unaccepted else "**CLEAN (accepted findings only)**"
         icon = "⚠️" if unaccepted else "✅"
         lines.append(f"## {icon} Dependency Consistency Check: {status}")
         lines.append("")
         if unaccepted:
-            lines.append(
-                f"`pip check` found **{len(unaccepted)}** unresolved issue(s):"
-            )
+            lines.append(f"`pip check` found **{len(unaccepted)}** unresolved issue(s):")
             lines.append("")
             for issue in unaccepted:
                 lines.append(f"- `{issue['raw']}`")
             lines.append("")
         if accepted:
-            lines.append(
-                f"**Accepted (package-variant naming, benign)** — {len(accepted)} finding(s):"
-            )
+            lines.append(f"**Accepted (package-variant naming, benign)** — {len(accepted)} finding(s):")
             lines.append("")
             for issue in accepted:
                 lines.append(f"- `{issue['raw']}`")
@@ -2216,23 +2091,17 @@ def generate_markdown_report(
     if deptry_data is None:
         lines.append("## 🧪 Deptry Dependency Usage Check")
         lines.append("")
-        lines.append(
-            "_deptry not available or could not run against the project venv._"
-        )
+        lines.append("_deptry not available or could not run against the project venv._")
         lines.append("")
     else:
         total_deptry = sum(len(v) for v in deptry_data.values())
         if not total_deptry:
             lines.append("## ✅ Deptry Dependency Usage Check: **CLEAN**")
             lines.append("")
-            lines.append(
-                "No missing, unused, transitive, or misplaced-dev dependency issues found."
-            )
+            lines.append("No missing, unused, transitive, or misplaced-dev dependency issues found.")
             lines.append("")
         else:
-            lines.append(
-                f"## 🧪 Deptry Dependency Usage Check: {total_deptry} finding(s)"
-            )
+            lines.append(f"## 🧪 Deptry Dependency Usage Check: {total_deptry} finding(s)")
             lines.append("")
             for code in sorted(deptry_data):
                 items = deptry_data[code]
@@ -2269,9 +2138,7 @@ def generate_markdown_report(
     total_pkgs = total_installed
     lines.append(f"| Total Packages | {total_pkgs} | ✅ Reasonable |")
     lines.append(f"| Direct Dependencies | {len(direct_deps)} | ✅ Manageable |")
-    lines.append(
-        f"| Transitive Dependencies | {transitive_count} | ✅ Expected for ML project |"
-    )
+    lines.append(f"| Transitive Dependencies | {transitive_count} | ✅ Expected for ML project |")
 
     if direct_deps:
         dep_ratio = total_pkgs / len(direct_deps)
@@ -2308,9 +2175,7 @@ def generate_markdown_report(
     if summary["total_cves"] == 0:
         lines.append("### Immediate Actions (This Week)")
         lines.append("")
-        lines.append(
-            "✅ **No immediate security updates required** - All packages are vulnerability-free."
-        )
+        lines.append("✅ **No immediate security updates required** - All packages are vulnerability-free.")
         lines.append("")
     else:
         lines.append("### 🔴 Immediate Actions (This Week)")
@@ -2344,9 +2209,7 @@ def generate_markdown_report(
                 f"also update these {len(ecosystem_pkgs)} ecosystem packages:"
             )
         else:
-            lines.append(
-                f"When upgrading PyTorch/CUDA, also update these {len(ecosystem_pkgs)} ecosystem packages:"
-            )
+            lines.append(f"When upgrading PyTorch/CUDA, also update these {len(ecosystem_pkgs)} ecosystem packages:")
         lines.append("")
 
         for pkg in ecosystem_pkgs[:5]:  # Show first 5
@@ -2379,18 +2242,14 @@ def generate_markdown_report(
     lines.append("")
 
     overall_status = "EXCELLENT" if summary["total_cves"] == 0 else "ACTION REQUIRED"
-    lines.append(
-        f"**Overall Health**: {'✅' if summary['total_cves'] == 0 else '⚠️'} **{overall_status}**"
-    )
+    lines.append(f"**Overall Health**: {'✅' if summary['total_cves'] == 0 else '⚠️'} **{overall_status}**")
     lines.append("")
 
     checklist = []
     if summary["total_cves"] == 0:
         checklist.append("✅ **Zero security vulnerabilities** - All packages clean")
     else:
-        checklist.append(
-            f"⚠️ **{summary['total_cves']} security vulnerabilities** - Action required"
-        )
+        checklist.append(f"⚠️ **{summary['total_cves']} security vulnerabilities** - Action required")
 
     if ml_info and ml_info.get("cuda_available"):
         checklist.append(
@@ -2400,14 +2259,10 @@ def generate_markdown_report(
     elif ml_info and ml_info.get("pytorch_version"):
         checklist.append("⚠️ **ML stack CPU-only** - No CUDA available")
 
-    checklist.append(
-        f"✅ **Dependencies manageable** - {total_pkgs} packages with good organization"
-    )
+    checklist.append(f"✅ **Dependencies manageable** - {total_pkgs} packages with good organization")
 
     if outdated:
-        checklist.append(
-            f"🟡 **{len(outdated)} packages outdated** - Review when convenient"
-        )
+        checklist.append(f"🟡 **{len(outdated)} packages outdated** - Review when convenient")
 
     for item in checklist:
         lines.append(f"- {item}")
@@ -2605,18 +2460,14 @@ Examples:
         if generate_sbom(sbom_path, args.python):
             safe_print(f"\n[OK] CycloneDX SBOM saved to: {sbom_path}")
         else:
-            safe_print(
-                "\n[WARN] Could not generate CycloneDX SBOM (pip-audit unavailable?)"
-            )
+            safe_print("\n[WARN] Could not generate CycloneDX SBOM (pip-audit unavailable?)")
     elif args.sbom:
         ts = datetime.now().strftime("%Y-%m-%d-%H%M")
         sbom_path = Path("audit_reports") / f"{ts}-sbom.cdx.json"
         if generate_sbom(sbom_path, args.python):
             safe_print(f"\n[OK] CycloneDX SBOM saved to: {sbom_path}")
         else:
-            safe_print(
-                "\n[WARN] Could not generate CycloneDX SBOM (pip-audit unavailable?)"
-            )
+            safe_print("\n[WARN] Could not generate CycloneDX SBOM (pip-audit unavailable?)")
 
 
 if __name__ == "__main__":

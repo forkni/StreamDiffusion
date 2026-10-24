@@ -2,3 +2,12 @@
 lpips>=0.1.4
 scikit-image>=0.21
 PyYAML>=6.0
+
+# Static typing: pyrefly + experimental tensor-shape stubs (see tests/typing/README.md).
+# The three pyrefly packages move in lockstep; bump all of them together.
+pyrefly==1.4.0
+pyrefly-shape-extensions==1.4.0
+pre-commit>=4.0
+# pyrefly-torch-stubs declares torch as a dependency. Install it separately with
+# --no-deps so pip never pulls a second (CPU) torch into the CUDA venv:
+#   venv/Scripts/python.exe -m pip install --no-deps pyrefly-torch-stubs==1.4.0
