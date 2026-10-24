@@ -95,8 +95,13 @@ How the runner reproduces the local result:
   same way on Linux (without it, `os.add_dll_directory` reads as a missing attribute there).
 - Packages the runner does not install (TensorRT, polygraphy, ONNX, OpenCV, mediapipe,
   insightface, xformers, modelopt, ...) are listed in `ignore-missing-imports` and type as `Any`.
-  A venv that has them is checked against the real package, so CI errors are a subset of local
-  errors, never a superset.
+  A venv that has them is checked against the real package. `Any` is not always more lenient:
+  pyrefly does not narrow an attribute after assigning it an `Any` value, so a lazy-loading
+  pattern such as `if self._x is None: self._x = Pkg.load(); return self._x` types as
+  `X` locally but as `X | None` on the runner. Keep the loaded object in a local and return
+  that (see `preprocessing/processors/lineart.py`). Reproduce the runner's view locally with
+  `pyrefly check --replace-imports-with-any controlnet_aux --replace-imports-with-any mediapipe`
+  (one flag per package you want to blank out).
 - `pyrefly-baseline.json` stores no line numbers and uses repository-relative forward-slash
   paths, so it is valid on both operating systems and survives unrelated line shifts.
 

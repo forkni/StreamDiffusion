@@ -75,14 +75,16 @@ class OpenPosePreprocessor(BasePreprocessor):
     @property
     def detector(self):
         """Lazy loading of the OpenPose detector"""
-        if self._detector is None:
+        detector = self._detector
+        if detector is None:
             if CONTROLNET_AUX_AVAILABLE:
                 print("Loading OpenPose detector from controlnet_aux")
-                self._detector = OpenposeDetector.from_pretrained("lllyasviel/Annotators")
+                detector = OpenposeDetector.from_pretrained("lllyasviel/Annotators")
             else:
                 print("Warning: controlnet_aux not available, using fallback OpenPose implementation")
-                self._detector = self._create_fallback_detector()
-        return self._detector
+                detector = self._create_fallback_detector()
+            self._detector = detector
+        return detector
 
     def _create_fallback_detector(self):
         """Create a simple fallback detector if controlnet_aux is not available"""

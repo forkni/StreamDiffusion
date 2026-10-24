@@ -79,19 +79,21 @@ class LineartPreprocessor(BasePreprocessor):
     @property
     def detector(self):
         """Lazy loading of the line art detector - controlnet_aux only"""
-        if self._detector is None:
+        detector = self._detector
+        if detector is None:
             start_time = time.time()
             anime_style = self.params.get("anime_style", False)
 
             if anime_style:
-                self._detector = LineartAnimeDetector.from_pretrained("lllyasviel/Annotators")
+                detector = LineartAnimeDetector.from_pretrained("lllyasviel/Annotators")
             else:
-                self._detector = LineartDetector.from_pretrained("lllyasviel/Annotators")
+                detector = LineartDetector.from_pretrained("lllyasviel/Annotators")
+            self._detector = detector
 
             load_time = time.time() - start_time
             logger.info(f"Lineart detector loaded in {load_time:.3f}s")
 
-        return self._detector
+        return detector
 
     def _process_core(self, image: Image.Image) -> Image.Image:
         """
