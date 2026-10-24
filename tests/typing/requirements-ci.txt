@@ -1,0 +1,31 @@
+# CI mirror of the development venv for the pyrefly job in .github/workflows/typecheck.yml.
+#
+# Pinned to the versions installed in venv/ on 2026-10-24 so the committed pyrefly-baseline.json
+# means the same thing on a developer machine and on the Linux runner. When the venv moves, move
+# these pins with it and regenerate the baseline in the same commit (tests/typing/README.md).
+#
+# Not installed here: torch and torchvision (the workflow installs the CPU wheels from the PyTorch
+# index first), pyrefly-torch-stubs (installed with --no-deps afterwards), and the GPU-only or
+# heavyweight packages (TensorRT, polygraphy, OpenCV, mediapipe, insightface, ...). Those are
+# listed in [tool.pyrefly] ignore-missing-imports in pyproject.toml and type as Any when absent.
+
+# The three pyrefly packages move in lockstep (the stubs are installed separately, see above).
+pyrefly==1.4.0
+pyrefly-shape-extensions==1.4.0
+
+# Model stack: the exact diffusers fork commit the venv runs, and the matching library versions.
+diffusers @ git+https://github.com/varshith15/diffusers.git@3e3b72f557e91546894340edabc845e894f00922
+transformers==4.56.0
+accelerate==1.13.0
+peft==0.17.1
+huggingface-hub==0.35.0
+safetensors==0.8.0
+numpy==1.26.4
+pillow==12.3.0
+omegaconf==2.3.0
+fire==0.7.1
+requests==2.34.2
+tqdm==4.69.1
+PyYAML==6.0.3
+packaging==26.3
+pytest==9.1.1

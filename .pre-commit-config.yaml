@@ -1,0 +1,32 @@
+# Portable local quality gate: ruff (lint + format) and pyrefly (types + tensor shapes).
+#
+# Run it by hand from the repository root:
+#     venv\Scripts\pre-commit.exe run --all-files
+#
+# This checkout's .git/hooks/pre-commit is the CGW hook (scripts/git/*.sh), which already runs
+# ruff and the venv's pyrefly through .cgw.conf. `pre-commit install` would replace that hook, so
+# install it only on a checkout that does not use the CGW wrappers.
+#
+# Version lockstep: `rev` below must match the ruff pinned in the venv (0.17.0), and the pyrefly
+# version must match requirements-dev.txt. The pyrefly hook runs in pre-commit's own environment
+# but resolves the torch stubs through pyproject's python-interpreter-path (the project venv).
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.0
+    hooks:
+      - id: ruff-check
+      - id: ruff-format
+        args: [--check]
+        # ruff 0.17 also formats code blocks in Markdown; the project's format gate (CGW,
+        # .cgw.conf) covers Python only, so keep this hook to the same file set.
+        types_or: [python, pyi]
+
+  - repo: local
+    hooks:
+      - id: pyrefly
+        name: pyrefly (baseline-gated type check)
+        language: python
+        additional_dependencies: ["pyrefly==1.4.0"]
+        entry: pyrefly check --baseline pyrefly-baseline.json
+        pass_filenames: false
+        types_or: [python, pyi, toml]

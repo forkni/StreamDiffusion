@@ -70,3 +70,36 @@ CGW_TYPECHECK_EXCLUDES=""
 ```
 
 The baseline path comes from `pyproject.toml`, so no `--baseline` flag is needed.
+
+## pre-commit and CI
+
+Two portable gates run the same `pyrefly check --baseline pyrefly-baseline.json` as the venv:
+
+- `.pre-commit-config.yaml`: ruff (lint + format check) and pyrefly. Run it by hand with
+  `venv\Scripts\pre-commit.exe run --all-files`. Do **not** run `pre-commit install` on a checkout
+  that uses the CGW wrappers: it would replace the CGW `.git/hooks/pre-commit` described above.
+  The pyrefly hook installs `pyrefly==1.4.0` into pre-commit's own environment (so a different
+  global `pyrefly` on `PATH` is never used) and resolves the torch stubs through
+  `python-interpreter-path` in `pyproject.toml`, i.e. the project venv.
+- `.github/workflows/typecheck.yml`: job `pyrefly` on Ubuntu with Python 3.11. It installs CPU
+  torch/torchvision from the PyTorch index, the pins in `tests/typing/requirements-ci.txt`
+  (the exact versions in the development venv, including the diffusers fork commit) and
+  `pyrefly-torch-stubs` with `--no-deps`, then runs the check with
+  `--python-interpreter-path "$(which python)"` because the venv path in `pyproject.toml` does
+  not exist on the runner. Pull requests into `SDTD_040_beta_release` / `SDTD_032_dev` and
+  pushes to `SDTD_040_beta_release` trigger it.
+
+How the runner reproduces the local result:
+
+- `python-platform = "windows"` in `pyproject.toml` makes `sys.platform` branches resolve the
+  same way on Linux (without it, `os.add_dll_directory` reads as a missing attribute there).
+- Packages the runner does not install (TensorRT, polygraphy, ONNX, OpenCV, mediapipe,
+  insightface, xformers, modelopt, ...) are listed in `ignore-missing-imports` and type as `Any`.
+  A venv that has them is checked against the real package, so CI errors are a subset of local
+  errors, never a superset.
+- `pyrefly-baseline.json` stores no line numbers and uses repository-relative forward-slash
+  paths, so it is valid on both operating systems and survives unrelated line shifts.
+
+When the venv moves (torch, diffusers, transformers, pyrefly), update `requirements-ci.txt`
+and `requirements-dev.txt` together, re-run `pyrefly check --update-baseline`, and commit the
+pins and the baseline in the same change.

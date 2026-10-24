@@ -58,10 +58,23 @@ project-includes = ["src", "StreamDiffusionTD", "tests", "custom_processors", "s
 project-excludes = ["tests/manual/**", "tests/quality/**", "demo/**", "examples/**"]
 search-path = ["src"]
 python-version = "3.11"
+# The project targets Windows (TouchDesigner). Pinning the platform makes `sys.platform` checks
+# resolve the same way on the Linux CI runner (otherwise os.add_dll_directory reads as missing).
+python-platform = "windows"
 python-interpreter-path = "venv/Scripts/python.exe"
 # Pre-existing errors are frozen in the baseline; only new errors fail the check.
 # Refresh after intentional fixes: pyrefly check --update-baseline
 baseline = "pyrefly-baseline.json"
+# GPU-only or heavyweight packages the CI runner does not install (tests/typing/requirements-ci.txt).
+# They type as Any when absent; a venv that has them is checked against the real package.
+ignore-missing-imports = [
+    "tensorrt", "tensorrt.*", "polygraphy", "polygraphy.*", "onnx", "onnx.*", "onnxruntime", "onnxruntime.*",
+    "onnx_graphsurgeon", "cv2", "controlnet_aux", "controlnet_aux.*", "mediapipe", "mediapipe.*",
+    "insightface", "insightface.*", "modelopt", "modelopt.*", "xformers", "xformers.*", "triton", "triton.*",
+    "cuda", "cuda.*", "cuda_link", "cuda_link.*", "cuda_ipc", "sfast", "sfast.*", "spandrel", "faiss",
+    "sentence_transformers", "pythonosc", "pythonosc.*", "diffusers_ipadapter", "diffusers_ipadapter.*",
+    "skimage", "skimage.*", "lpips", "scipy", "scipy.*",
+]
 
 [tool.pyrefly.errors]
 # Warn-severity GPU anti-pattern lints (.item() sync stalls, hard-coded .cuda(), print(tensor)).
