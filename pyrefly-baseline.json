@@ -533,20 +533,6 @@
       "severity": "error"
     },
     {
-      "column": 1,
-      "path": "src/streamdiffusion/acceleration/sfast/__init__.py",
-      "name": "missing-import",
-      "concise_description": "Cannot find module `sfast.compilers.stable_diffusion_pipeline_compiler`",
-      "severity": "error"
-    },
-    {
-      "column": 20,
-      "path": "src/streamdiffusion/acceleration/sfast/__init__.py",
-      "name": "missing-import",
-      "concise_description": "Cannot find module `xformers`",
-      "severity": "error"
-    },
-    {
       "column": 9,
       "path": "src/streamdiffusion/acceleration/tensorrt/__init__.py",
       "name": "bad-override",
@@ -1842,13 +1828,6 @@
       "severity": "error"
     },
     {
-      "column": 44,
-      "path": "src/streamdiffusion/acceleration/tensorrt/models/models.py",
-      "name": "missing-module-attribute",
-      "concise_description": "Could not import `fold_constants` from `polygraphy.backend.onnx.loader`",
-      "severity": "error"
-    },
-    {
       "column": 9,
       "path": "src/streamdiffusion/acceleration/tensorrt/models/models.py",
       "name": "bad-override",
@@ -2175,20 +2154,6 @@
       "path": "src/streamdiffusion/acceleration/tensorrt/runtime_engines/controlnet_engine.py",
       "name": "bad-return",
       "concise_description": "Returned type `tuple[list[Tensor], Tensor | None]` is not assignable to declared return type `tuple[list[Tensor], Tensor]`",
-      "severity": "error"
-    },
-    {
-      "column": 39,
-      "path": "src/streamdiffusion/acceleration/tensorrt/utilities.py",
-      "name": "missing-module-attribute",
-      "concise_description": "Could not import `bytes_from_path` from `polygraphy.backend.common`",
-      "severity": "error"
-    },
-    {
-      "column": 36,
-      "path": "src/streamdiffusion/acceleration/tensorrt/utilities.py",
-      "name": "missing-module-attribute",
-      "concise_description": "Could not import `engine_from_bytes` from `polygraphy.backend.trt`",
       "severity": "error"
     },
     {
@@ -3728,7 +3693,7 @@
       "column": 36,
       "path": "src/streamdiffusion/pipeline.py",
       "name": "bad-argument-type",
-      "concise_description": "Argument `Tensor | Unknown | None` is not assignable to parameter `x_t_latent` with type `Tensor` in function `streamdiffusion.hooks.StepCtx.__init__`",
+      "concise_description": "Argument `Tensor[[B, 4, Hl, Wl]] | Unknown | None` is not assignable to parameter `x_t_latent` with type `Tensor` in function `streamdiffusion.hooks.StepCtx.__init__`",
       "severity": "error"
     },
     {
@@ -3749,21 +3714,21 @@
       "column": 27,
       "path": "src/streamdiffusion/pipeline.py",
       "name": "unsupported-operation",
-      "concise_description": "`*` is not supported between `None` and `Tensor`",
+      "concise_description": "`*` is not supported between `None` and `Tensor[[int, 4, int, int]]`",
       "severity": "error"
     },
     {
       "column": 27,
       "path": "src/streamdiffusion/pipeline.py",
       "name": "unsupported-operation",
-      "concise_description": "`/` is not supported between `Tensor` and `None`",
+      "concise_description": "`/` is not supported between `Tensor[[int, 4, int, int]]` and `None`",
       "severity": "error"
     },
     {
       "column": 36,
       "path": "src/streamdiffusion/pipeline.py",
       "name": "unsupported-operation",
-      "concise_description": "`+` is not supported between `None` and `Tensor`",
+      "concise_description": "`+` is not supported between `None` and `Tensor[[int, 4, int, int]]`",
       "severity": "error"
     },
     {
@@ -3791,7 +3756,7 @@
       "column": 34,
       "path": "src/streamdiffusion/pipeline.py",
       "name": "bad-assignment",
-      "concise_description": "`Unknown | None` is not assignable to variable `x_t_latent` with type `Tensor`",
+      "concise_description": "`Unknown | None` is not assignable to variable `x_t_latent` with type `Tensor[[B, 4, Hl, Wl]]`",
       "severity": "error"
     },
     {
@@ -4320,13 +4285,6 @@
       "severity": "error"
     },
     {
-      "column": 5,
-      "path": "src/streamdiffusion/preprocessing/processors/realesrgan_trt.py",
-      "name": "missing-import",
-      "concise_description": "Cannot find module `spandrel`",
-      "severity": "error"
-    },
-    {
       "column": 23,
       "path": "src/streamdiffusion/preprocessing/processors/realesrgan_trt.py",
       "name": "missing-attribute",
@@ -4492,20 +4450,6 @@
       "path": "src/streamdiffusion/preprocessing/processors/soft_edge.py",
       "name": "not-callable",
       "concise_description": "Expected a callable, got `None`",
-      "severity": "error"
-    },
-    {
-      "column": 43,
-      "path": "src/streamdiffusion/preprocessing/processors/temporal_net_tensorrt.py",
-      "name": "missing-module-attribute",
-      "concise_description": "Could not import `bytes_from_path` from `polygraphy.backend.common`",
-      "severity": "error"
-    },
-    {
-      "column": 40,
-      "path": "src/streamdiffusion/preprocessing/processors/temporal_net_tensorrt.py",
-      "name": "missing-module-attribute",
-      "concise_description": "Could not import `engine_from_bytes` from `polygraphy.backend.trt`",
       "severity": "error"
     },
     {
@@ -4688,20 +4632,6 @@
       "path": "src/streamdiffusion/preprocessing/processors/temporal_net_tensorrt.py",
       "name": "bad-function-definition",
       "concise_description": "Default `None` is not assignable to parameter `engine_path` with type `str`",
-      "severity": "error"
-    },
-    {
-      "column": 43,
-      "path": "src/streamdiffusion/preprocessing/processors/trt_base.py",
-      "name": "missing-module-attribute",
-      "concise_description": "Could not import `bytes_from_path` from `polygraphy.backend.common`",
-      "severity": "error"
-    },
-    {
-      "column": 40,
-      "path": "src/streamdiffusion/preprocessing/processors/trt_base.py",
-      "name": "missing-module-attribute",
-      "concise_description": "Could not import `engine_from_bytes` from `polygraphy.backend.trt`",
       "severity": "error"
     },
     {
@@ -5430,13 +5360,6 @@
       "path": "src/streamdiffusion/wrapper.py",
       "name": "missing-attribute",
       "concise_description": "Object of class `StableDiffusionPipeline` has no attribute `set_adapters`",
-      "severity": "error"
-    },
-    {
-      "column": 96,
-      "path": "src/streamdiffusion/wrapper.py",
-      "name": "bad-argument-type",
-      "concise_description": "Argument `Literal['cpu', 'cuda']` is not assignable to parameter `device` with type `device` in function `_resolve_vae`",
       "severity": "error"
     },
     {
