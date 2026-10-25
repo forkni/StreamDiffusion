@@ -12,11 +12,13 @@ relative-import patches re-applied on every re-vendor) and the dependency seam w
 dishonest — `wrapper.py` hard-imported `cuda_link` while `setup.py` never declared it.
 
 We now **depend solely on the pip-installed `cuda-link`** (declared in `setup.py` as a direct
-wheel-URL pin — `cuda-link @ https://github.com/forkni/cuda-link/releases/download/v1.12.2/cuda_link-1.12.2-cp311-cp311-win_amd64.whl`
+wheel-URL pin — `cuda-link @ https://github.com/forkni/cuda-link/releases/download/v1.13.0/cuda_link-1.13.0-cp311-cp311-win_amd64.whl`
 — exposed via the `cuda_ipc` optional extra). The TouchDesigner side consumes the same installed package through
-`CUDALinkBootstrap`'s **library mode** (`CUDALINK_LIB_PATH` injects the venv onto TD's
-`sys.path` and aliases the 14 bare module names used by TD DATs), so the TD DAT mirror
-inside the repo is no longer needed either.
+`CUDALinkBootstrap`'s **library mode** (since cuda-link 1.13.0 a layered resolver: the
+Base Folder passed by `StreamDiffusionExt._prepare_cuda_link`, then `<project.folder>`, then
+`CUDALINK_LIB_PATH`, then `sys.path` — it injects the matching venv onto TD's `sys.path` and
+aliases the 14 bare module names used by TD DATs), so the TD DAT mirror inside the repo is
+no longer needed either.
 
 ## Considered Options
 
@@ -35,9 +37,9 @@ inside the repo is no longer needed either.
 - IPC is an **optional feature**: `pip install -e .[cuda_ipc]`. The `wrapper.py` imports
   are lazy/in-method so the core package installs and runs without cuda-link.
 - The `github.com/forkni/cuda-link` release **must publish the exact wheel asset** the pin names
-  or clean installs fail. Current pin in `setup.py`: **`v1.12.2`**'s
-  `cuda_link-1.12.2-cp311-cp311-win_amd64.whl` — verified present in the `v1.12.2` release
-  (published 2026-08-11) via `gh release view v1.12.2 --repo forkni/cuda-link --json assets`
+  or clean installs fail. Current pin in `setup.py`: **`v1.13.0`**'s
+  `cuda_link-1.13.0-cp311-cp311-win_amd64.whl` — verified present in the `v1.13.0` release
+  (published 2026-09-26) via `gh release view v1.13.0 --repo forkni/cuda-link --json assets`
   before this pin was pushed.
 - **Pinned to the wheel URL, not the VCS tag.** An earlier draft of this pin used
   `cuda-link @ git+https://github.com/forkni/cuda-link@v1.12.1`, which looks equivalent but
@@ -159,14 +161,37 @@ inside the repo is no longer needed either.
   - This entry summarizes the published release notes; unlike the 1.10.x–1.12.1 entries above, it
     was not re-verified against SD's own exporter/importer code paths with a live reproduction
     test this pass — worth a follow-up pass if any of these prove reachable in practice.
-- The `CUDALINK_LIB_PATH` env var enables `CUDALinkBootstrap`'s library mode (`sys.path`
-  injection of the installed `cuda_link` package + the 14 bare-name DAT aliases); without it,
-  `CUDALinkBootstrap` falls back to classic Text-DAT module discovery (still works, but requires
-  the mirror DATs to be present in the COMP). As of the installer's `phase4c_cuda_link_env`
-  step, `CUDALINK_LIB_PATH` and `CUDALINK_DOORBELL` are both set automatically
-  (`setx CUDALINK_LIB_PATH <venv>\Lib\site-packages`, `setx CUDALINK_DOORBELL 1`) at the end
-  of a fresh install — no manual step required. TouchDesigner must be (re)started after
-  installation for the persisted variables to take effect.
+- **1.13.0 migration (2026-09-27 pin bump; TD-side resolver change, no server-side API change):**
+  per the [cuda-link 1.13.0 release notes](https://github.com/forkni/cuda-link/releases/tag/v1.13.0)
+  and its ADR-0014 ("project-anchored install resolution"):
+  - `CUDALinkBootstrap` is now a layered resolver: `_bootstrap(basefolder)` probes
+    `<basefolder>/{cuda_link,StreamDiffusion,src,.}` (venv layout included), then
+    `<project.folder>`, then `CUDALINK_LIB_PATH`, then `sys.path`, and activates only an install
+    whose on-disk `__version__` **strictly equals** the component's `MIRROR_VERSION` (`1.13.0`).
+    A non-matching venv is reported as `failure_kind="mismatch"`; a different `cuda_link`
+    already imported into the TD process is `"rival"` (fix: restart TD); no candidate at all is
+    `"missing"`. Degraded mode always compiles, so the COMP loads even when the library is absent.
+  - `CUDAIPCExtension` reads `failure_kind`/`MIRROR_VERSION` to show cause-specific status text
+    and de-duplicates the library-unavailable notice per process.
+  - `TDHost` compares the managed node colour with a float32 tolerance instead of exact equality
+    (the previous compare re-tinted nodes every cook on some builds).
+  - SDTD consequences: the local 255-line `CUDALinkBootstrap` fork in the `Scripts/` mirrors
+    (Base-Folder-par walk-up + APPDATA config layer) is retired; the four shmem replicas now
+    carry the canonical 1.13.0 `CUDALinkBootstrap`/`CUDAIPCExtension`/`TDHost` byte-for-byte.
+    `StreamDiffusionExt._prepare_cuda_link` already passes the Base Folder explicitly, so no
+    extension change was needed. Because of the strict version stamp, **the venv's `cuda-link`
+    must be 1.13.0 too** (this pin) and TouchDesigner must be restarted once after upgrading so
+    the previously loaded 1.12.2 module is dropped. `wrapper.py`, `td_manager.py` and the IPC
+    unit tests are unchanged — the `Exporter`/`Importer`/`FrameSpec` API did not move.
+- Library mode no longer depends on an environment variable. Since cuda-link 1.13.0 the
+  bootstrap resolves the install from the Base Folder the operator passes in (falling back to
+  the project folder, then `CUDALINK_LIB_PATH` for legacy setups, then `sys.path`), injects it
+  onto `sys.path` and registers the 14 bare-name DAT aliases; without any matching install it
+  stays in degraded mode with an actionable `last_error`. The installer's
+  `phase4c_cuda_link_env` step therefore persists only `CUDALINK_DOORBELL=1` (`setx`);
+  `CUDALINK_LIB_PATH` is retired. TouchDesigner must be restarted once for the doorbell variable
+  to be visible, and whenever a *newer* `cuda_link` is installed into a venv a running TD
+  process already imported from.
 - Do **not** re-suggest re-vendoring in future architecture reviews — this is a deliberate
   reversal of the previous approach, made after confirming that the mirror trees had zero
   runtime consumers in the Python import graph.

@@ -57,10 +57,74 @@ docstring-code-format = true
 project-includes = ["src", "StreamDiffusionTD", "tests", "custom_processors", "scripts", "tools", "utils"]
 project-excludes = ["tests/manual/**", "tests/quality/**", "demo/**", "examples/**"]
 search-path = ["src"]
-python-version = "3.10"
+python-version = "3.11"
+# The project targets Windows (TouchDesigner). Pinning the platform makes `sys.platform` checks
+# resolve the same way on the Linux CI runner (otherwise os.add_dll_directory reads as missing).
+python-platform = "windows"
 python-interpreter-path = "venv/Scripts/python.exe"
 # Pre-existing errors are frozen in the baseline; only new errors fail the check.
 # Refresh after intentional fixes: pyrefly check --update-baseline
 baseline = "pyrefly-baseline.json"
+# GPU-only or heavyweight packages the CI runner does not install (tests/typing/requirements-ci.txt).
+# They type as Any when absent; a venv that has them is checked against the real package.
+ignore-missing-imports = [
+    "tensorrt", "tensorrt.*", "polygraphy", "polygraphy.*", "onnx", "onnx.*", "onnxruntime", "onnxruntime.*",
+    "onnx_graphsurgeon", "cv2", "controlnet_aux", "controlnet_aux.*", "mediapipe", "mediapipe.*",
+    "insightface", "insightface.*", "modelopt", "modelopt.*", "xformers", "xformers.*", "triton", "triton.*",
+    "cuda", "cuda.*", "cuda_link", "cuda_link.*", "cuda_ipc", "sfast", "sfast.*", "spandrel", "faiss",
+    "sentence_transformers", "pythonosc", "pythonosc.*", "diffusers_ipadapter", "diffusers_ipadapter.*",
+    "skimage", "skimage.*", "lpips", "scipy", "scipy.*",
+]
+
+[tool.pyrefly.errors]
 # Warn-severity GPU anti-pattern lints (.item() sync stalls, hard-coded .cuda(), print(tensor)).
-pytorch-efficiency-lints = true
+pytorch-efficiency-lints = "warn"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-ra",
+    "--tb=short",
+    "--strict-markers",
+    "--import-mode=importlib",
+]
+pythonpath = ["src", "tests", "tests/unit"]
+markers = [
+    "unit: fast isolated unit tests (< 1 s)",
+    "integration: integration tests with subsystems or dependencies",
+    "slow: slow-running tests (>= 5 s)",
+    "gpu: tests requiring CUDA GPU device",
+    "quality: golden-file and calibration tests",
+]
+filterwarnings = [
+    "ignore:.*gaussian_filter.*:DeprecationWarning",
+    "ignore:.*torch.jit.script.*:DeprecationWarning",
+    "ignore:.*Importing from timm.*:FutureWarning",
+    "ignore:.*estimate.*deprecated.*:FutureWarning",
+    "ignore:.*Overwriting.*in registry.*:UserWarning",
+    "ignore:.*To copy construct from a tensor.*:UserWarning",
+]
+
+[tool.coverage.run]
+branch = true
+relative_files = true
+source = ["src/streamdiffusion"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 30  # honest baseline from clean run (ratchet upward only)
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+[tool.scan_test_smells]
+baseline = ".smell-baseline.json"

@@ -1,3 +1,4 @@
+import inspect
 import logging
 import os
 from pathlib import Path
@@ -5,7 +6,14 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from diffusers import AutoencoderTiny, AutoPipelineForText2Image, StableDiffusionPipeline, StableDiffusionXLPipeline
+from diffusers import (
+    AutoencoderKL,
+    AutoencoderTiny,
+    AutoPipelineForText2Image,
+    StableDiffusionPipeline,
+    StableDiffusionXLPipeline,
+)
+from diffusers.models.attention_processor import AttnProcessor
 from PIL import Image
 
 from .image_utils import postprocess_image
@@ -21,9 +29,70 @@ from .pipeline import StreamDiffusion
 from .tools.gpu_profiler import configure as _configure_profiler
 from .tools.gpu_profiler import profiler
 from .utils.diagnostics import write_error_report as _write_error_report_util
-from .utils.hf_download import NETWORK_HINT, is_network_error
+from .utils.hf_download import (
+    NETWORK_HINT,
+    PAGEFILE_HINT,
+    is_missing_hub_file,
+    is_network_error,
+    is_pagefile_error,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_init_guidance_scale(cfg_type: str, configured: Optional[float]) -> float:
+    """Guidance scale for the wrapper's warm-up ``prepare()``.
+
+    A configured value wins, with two exceptions. ``none`` always returns 1.0 (the pipeline forces
+    it). ``full`` and ``initialize`` raise values <= 1.0 to 1.2: their TRT UNet batch is sized for
+    CFG doubling, which only runs when guidance > 1.0 (the TD fork's OSC-update clamp mirrors this
+    for ``initialize``). A configured 1.0 with ``self`` deliberately leaves RCFG off. Unconfigured
+    keeps the historical 1.1/1.0 cfg_type default.
+    """
+    if cfg_type == "none":
+        return 1.0
+    if configured is None:
+        return 1.1 if cfg_type in ("full", "self", "initialize") else 1.0
+    if cfg_type in ("full", "initialize") and configured <= 1.0:
+        logger.warning(
+            f"StreamDiffusionWrapper: guidance_scale={configured} is not usable with cfg_type="
+            f"'{cfg_type}' (its static batch assumes CFG doubling); using 1.2"
+        )
+        return 1.2
+    return float(configured)
+
+
+def _from_pretrained_lowmem(loader, path, dtype):
+    """`loader(path)` that prefers the fp16 weight variant and the requested dtype.
+
+    A bare `from_pretrained(path)` picks the fp32 `diffusion_pytorch_model.safetensors`
+    (10.3 GB for SDXL) even when only fp16 is wanted; on Windows that file is mapped
+    copy-on-write and charged in full against RAM + paging file (peak commit 25 GB vs 13.5 GB
+    for the fp16 variant), so small-pagefile hosts died with `OSError 1455` -> `MemoryError`.
+    Falls back to the unqualified load when the repo/dir has no fp16 variant (including the hub's
+    404 "no file named ...fp16..." error, which is not a network failure). Pagefile and
+    network failures re-raise instead: a retry would not help the former and would start a
+    second (fp32) download after the latter. A plain file path has no variant to pick, so it
+    skips the variant attempt.
+    """
+    if dtype != torch.float16 or os.path.isfile(path):
+        return loader(path, torch_dtype=dtype)
+    try:
+        # No use_safetensors=True: a repo shipping only fp16 `.bin` weights should still
+        # resolve its fp16 variant rather than failing and falling back to fp32.
+        pipe = loader(path, torch_dtype=dtype, variant="fp16")
+        logger.info(f"_load_model: loaded '{path}' with the fp16 weight variant")
+        return pipe
+    except Exception as e:
+        if is_pagefile_error(e) or (is_network_error(e) and not is_missing_hub_file(e)):
+            raise
+        text = str(e).lower()
+        if "variant" not in text and ".fp16." not in text:
+            raise
+        logger.info(f"_load_model: no fp16 variant for '{path}' ({e}); retrying without variant")
+        pipe = loader(path, torch_dtype=dtype)
+        logger.info(f"_load_model: loaded '{path}' without a variant (fp16 variant unavailable)")
+        return pipe
 
 
 def _is_oom_error(exc: BaseException) -> bool:
@@ -36,6 +105,258 @@ def _is_oom_error(exc: BaseException) -> bool:
     return (
         "out of memory" in error_msg or "outofmemory" in error_msg or "oom" in error_msg or "cuda error" in error_msg
     )
+
+
+class VaeResolutionError(RuntimeError):
+    """Raised when a `Customvae`/`vae_id` value cannot be resolved to a usable VAE.
+
+    Always carries the original exception (network failure, missing config.json, ...)
+    as `__cause__`, matching the convention `_load_model` already uses for its
+    HF-download error path (see the `raise RuntimeError(error_msg) from chosen_error`
+    a few hundred lines below)."""
+
+
+_SUPPORTED_VAE_CLASS_NAMES = ("AutoencoderTiny", "AutoencoderKL")
+
+_VAE_HELP = (
+    "Expected a diffusers VAE repo, a model repo with a vae/ subfolder, or a local "
+    "folder/.safetensors file containing config.json with _class_name AutoencoderKL "
+    "or AutoencoderTiny (e.g. stabilityai/sd-vae-ft-mse, madebyollin/taesd). "
+    "Set Custom VAE back to 'auto' to use the default TAESD."
+)
+
+
+def _vae_resolution_error(vae_id: str, reason: str, cause: Optional[BaseException] = None) -> VaeResolutionError:
+    hint = NETWORK_HINT if cause is not None and is_network_error(cause) else ""
+    err = VaeResolutionError(f"Custom VAE '{vae_id}' could not be loaded as a VAE: {reason}.{hint} {_VAE_HELP}")
+    if cause is not None:
+        raise err from cause
+    return err
+
+
+def _load_vae_config(vae_id: str) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Fetch only `config.json` (never the weights) and return `(config, subfolder)`.
+
+    Tries the repo root first, then a `vae/` subfolder — the latter is what makes a
+    *model* repo id (e.g. "stabilityai/sd-turbo", which has no root config.json) work
+    as a `Customvae` value, matching how `subfolder="vae"` is used everywhere else a
+    VAE is loaded off a base-model repo.
+    """
+    last_error: Optional[BaseException] = None
+    for subfolder in (None, "vae"):
+        try:
+            kwargs = {"subfolder": subfolder} if subfolder else {}
+            cfg = AutoencoderKL.load_config(vae_id, **kwargs)  # ConfigMixin: same for both classes
+            return cfg, subfolder
+        except Exception as e:
+            last_error = e
+            if is_network_error(e) and not is_missing_hub_file(e):
+                # A timeout/connection failure is not "no config.json here, try
+                # elsewhere" - retrying the vae/ subfolder would just repeat the
+                # same failure. Surface it immediately as the real cause. A hub 404
+                # (EntryNotFoundError, which subclasses HfHubHTTPError and so also
+                # matches is_network_error) is the opposite: the hub answered and the
+                # file is simply not at this location, so the vae/ retry must run.
+                raise _vae_resolution_error(vae_id, f"network error fetching config.json: {e}", e) from e
+            continue
+    raise _vae_resolution_error(
+        vae_id, f"no config.json found (tried '{vae_id}' and '{vae_id}/vae'): {last_error}", last_error
+    )
+
+
+def _resolve_vae_class(vae_id: str) -> Tuple[type, Dict[str, Any], Optional[str]]:
+    """Return `(vae_class, config, subfolder)` for `vae_id`, dispatching purely on the
+    downloaded config's `_class_name` — never on file size, extension, or a guess.
+    Never falls back to AutoencoderTiny: an unrecognised/unreadable config is a hard
+    error (Step 2 of the plan), not a silent default.
+    """
+    cfg, subfolder = _load_vae_config(vae_id)
+    cls_name = cfg.get("_class_name")
+    if cls_name == "AutoencoderTiny":
+        return AutoencoderTiny, cfg, subfolder
+    if cls_name == "AutoencoderKL":
+        return AutoencoderKL, cfg, subfolder
+    if cls_name is None:
+        raise _vae_resolution_error(vae_id, "config.json has no _class_name and its keys match neither architecture")
+    raise _vae_resolution_error(
+        vae_id,
+        f"config.json declares _class_name '{cls_name}', which this build does not support "
+        f"(supported: {', '.join(_SUPPORTED_VAE_CLASS_NAMES)})",
+    )
+
+
+def _validate_vae_config(vae_id: str, vae_cls: type, cfg: Dict[str, Any], dtype: torch.dtype) -> None:
+    """Cheap, pre-load structural checks that turn a downstream shape crash or a
+    silent quality bug into an actionable Step-7 error at the point `Customvae` is
+    resolved, instead of far away inside the TensorRT model builder or the pipeline.
+    """
+    latent_channels = cfg.get("latent_channels")
+    if latent_channels is not None and latent_channels != 4:
+        raise _vae_resolution_error(
+            vae_id,
+            f"reports latent_channels={latent_channels}; this build only supports 4-channel "
+            f"latents (the TensorRT VAE models and pipeline hardcode 4)",
+        )
+
+    if vae_cls is AutoencoderKL:
+        block_out_channels = cfg.get("block_out_channels")
+        if block_out_channels:
+            scale = 2 ** (len(block_out_channels) - 1)
+            if scale != 8:
+                raise _vae_resolution_error(
+                    vae_id,
+                    f"implies a {scale}x spatial downscale (block_out_channels={block_out_channels}); "
+                    f"this build only supports 8x",
+                )
+        if cfg.get("force_upcast") and dtype == torch.float16:
+            logger.warning(
+                f"Custom VAE '{vae_id}' sets force_upcast=True (numerically unstable in fp16) and the "
+                f"pipeline dtype is float16. Consider an fp16-safe VAE such as stabilityai/sd-vae-ft-mse "
+                f"(SD1.5) or madebyollin/sdxl-vae-fp16-fix (SDXL) if you see NaN/black frames."
+            )
+
+
+def _fork_returns_kvo_tuple() -> bool:
+    """True if the installed diffusers' AttnProcessor2_0.__call__ returns a
+    (hidden_states, kvo_cache) 2-tuple (varshith15/diffusers@3e3b72f's KV-offload
+    fork, pinned at setup.py:54) rather than plain hidden_states.
+
+    UNetMidBlock2D.forward (unet_2d_blocks.py) does not unpack that tuple, so a full
+    AutoencoderKL's mid-block attention crashes with "'tuple' object has no attribute
+    'dim'" under this fork. TAESD has no attention blocks, so it never surfaces there.
+
+    Reflection, not a version-string check, so this self-disarms the moment the pin
+    moves to an upstream diffusers where AttnProcessor2_0 no longer takes kvo_cache -
+    mirrors how Attention.forward itself decides what to pass to its processor
+    (attention_processor.py: inspect.signature(self.processor.__call__).parameters).
+    """
+    try:
+        from diffusers.models.attention_processor import AttnProcessor2_0
+
+        return "kvo_cache" in inspect.signature(AttnProcessor2_0.__call__).parameters
+    except Exception:
+        return False
+
+
+def _harden_vae_attention(vae: Any) -> None:
+    """Swap a full AutoencoderKL's attention processor to the legacy (non-tuple-
+    returning) AttnProcessor when the installed diffusers fork's AttnProcessor2_0
+    would otherwise crash the VAE's mid-block (see _fork_returns_kvo_tuple). No-op
+    for AutoencoderTiny (no attention blocks, no set_attn_processor method at all)
+    and a no-op once/if the fork is fixed upstream."""
+    if not _fork_returns_kvo_tuple():
+        return
+    if not hasattr(vae, "set_attn_processor"):
+        return
+    if not getattr(vae, "attn_processors", None):
+        return
+    vae.set_attn_processor(AttnProcessor())
+
+
+def _load_custom_vae(vae_id: str, *, device: Union[str, torch.device], dtype: torch.dtype) -> torch.nn.Module:
+    """Load and fully validate a `vae_id` into a ready-to-use VAE module: detect its
+    architecture, structurally validate it, load real weights, swap attention
+    processor if required, and move to device/dtype - raising a VaeResolutionError
+    with the original exception preserved as __cause__ at the first point anything
+    looks wrong, rather than letting a mismatch surface many frames later as a
+    meta-tensor crash or silent noise.
+    """
+    vae_cls, cfg, subfolder = _resolve_vae_class(vae_id)
+    _validate_vae_config(vae_id, vae_cls, cfg, dtype)
+
+    kwargs = {"subfolder": subfolder} if subfolder else {}
+    try:
+        vae = vae_cls.from_pretrained(vae_id, **kwargs)
+    except Exception as e:
+        raise _vae_resolution_error(vae_id, f"from_pretrained failed: {e}", e) from e
+
+    # Meta-tensor guard: diffusers' low_cpu_mem_usage=True default (accelerate
+    # init_empty_weights()) leaves every parameter on the meta device when the
+    # checkpoint's keys don't match the constructed class - which used to surface
+    # far downstream as "NotImplementedError: Cannot copy out of meta tensor" on the
+    # .to() call. Checking parameters directly (not just catching that exception)
+    # also catches a *partial* key mismatch, which would otherwise silently load a
+    # half-initialized module. Do NOT "fix" this with low_cpu_mem_usage=False - that
+    # loads non-strictly and yields a silently random VAE emitting noise, which is
+    # strictly worse than today's loud crash.
+    meta_params = sum(1 for p in vae.parameters() if p.is_meta)
+    if meta_params:
+        raise _vae_resolution_error(
+            vae_id,
+            f"loaded as {vae_cls.__name__}, but {meta_params} parameter(s) stayed on the meta "
+            f"device - the checkpoint's keys do not match the {vae_cls.__name__} skeleton, so "
+            f"'{vae_id}' is almost certainly not a {vae_cls.__name__} (this is the 'Cannot copy "
+            f"out of meta tensor' crash, caught early)",
+        )
+
+    if vae_cls is AutoencoderKL:
+        _harden_vae_attention(vae)
+
+    try:
+        vae = vae.to(device=device, dtype=dtype)
+    except NotImplementedError as e:
+        # Backstop for the same meta-tensor failure mode, in case some future
+        # checkpoint slips past the explicit parameter scan above.
+        raise _vae_resolution_error(vae_id, f"failed moving to device (meta tensor): {e}", e) from e
+
+    return vae
+
+
+def _should_skip_trt_vae(vae_class_name: str, acceleration: str) -> bool:
+    """True when the resolved VAE must stay on PyTorch rather than get a TensorRT
+    engine build (Step 4 of the plan): a full AutoencoderKL's ONNX export/engine has
+    not been validated against this codebase's VAE model wrappers, and — more
+    importantly — its encode is stochastic (latent_dist.sample), which an ONNX trace
+    would silently freeze to whichever of sample()/mode() diffusers happens to pick.
+    TAESD is unaffected either way.
+
+    `SDTD_FULL_VAE_TRT=1` is an escape hatch for measuring the (currently untested,
+    unsupported) TRT-VAE-engine-with-a-full-VAE path without adding a new UI knob.
+    """
+    return (
+        vae_class_name == "AutoencoderKL"
+        and acceleration == "tensorrt"
+        and os.environ.get("SDTD_FULL_VAE_TRT", "") != "1"
+    )
+
+
+def _resolve_vae(
+    vae_id: Optional[str],
+    use_tiny_vae: bool,
+    is_sdxl: bool,
+    device: Union[str, torch.device],
+    dtype: torch.dtype,
+    pipe_vae: Optional[torch.nn.Module] = None,
+) -> Tuple[torch.nn.Module, str, str]:
+    """Resolve the VAE to use for `stream.vae`, replacing the previous hardcoded
+    `AutoencoderTiny.from_pretrained(vae_id)` dispatch (the reported bug: any
+    `vae_id` was force-loaded as AutoencoderTiny regardless of its actual
+    architecture).
+
+    `use_tiny_vae` now only matters when no `vae_id` is given: True selects the
+    default TAESD, False keeps the base model's own VAE (`pipe_vae`, what the pipeline
+    loaded), exactly as the pre-dispatch code did. An explicit `vae_id` always wins
+    and is auto-detected. This deliberately drops
+    `acceleration` from the decision - the previous `elif acceleration != "tensorrt"`
+    branch both dropped `vae_id` on the floor under TensorRT and skipped the device
+    move, which this function always performs regardless of acceleration backend
+    (the caller decides whether to additionally build TensorRT VAE engines).
+
+    Returns `(vae, class_name, source)` for the Step 6 INFO log line.
+    """
+    if vae_id is not None:
+        vae = _load_custom_vae(vae_id, device=device, dtype=dtype)
+        return vae, type(vae).__name__, f"'{vae_id}' (detected via config.json)"
+
+    if not use_tiny_vae:
+        if pipe_vae is not None:
+            vae = pipe_vae.to(device=device, dtype=dtype)
+            return vae, type(vae).__name__, "the base model (use_tiny_vae=False)"
+        logger.warning("use_tiny_vae=False but the pipeline has no VAE to keep; falling back to TAESD")
+
+    taesd_model = "madebyollin/taesdxl" if is_sdxl else "madebyollin/taesd"
+    vae = AutoencoderTiny.from_pretrained(taesd_model).to(device=device, dtype=dtype)
+    return vae, "AutoencoderTiny", f"'{taesd_model}' (default)"
 
 
 def _encode_fp8_calibration_images(ipa: Any, images: List[Any]) -> Tuple[Optional[torch.Tensor], int, int]:
@@ -403,6 +724,10 @@ class StreamDiffusionWrapper:
         # below; set it from config so a non-default deployment step count still
         # calibrates the timestep region inference actually visits.
         num_inference_steps: int = 50,
+        # Initial guidance scale for the warm-up prepare(). None keeps the cfg_type default
+        # (1.1 for full/self/initialize, else 1.0). Needed because hosts that build the wrapper
+        # via create_wrapper_from_config (TouchDesigner) never call wrapper.prepare().
+        guidance_scale: Optional[float] = None,
         static_shapes: bool = False,
         fp8_allow_fp16_fallback: bool = False,
         # Experimental: include attention BMM1/BMM2 in FP8 Q/DQ (modelopt disable_mha_qdq=False).
@@ -757,11 +1082,16 @@ class StreamDiffusionWrapper:
         if seed < 0:  # Random seed
             seed = int(np.random.default_rng().integers(0, 1000000))
 
+        init_guidance_scale = _resolve_init_guidance_scale(self.stream.cfg_type, guidance_scale)
+        logger.info(
+            f"StreamDiffusionWrapper: initial guidance_scale={init_guidance_scale} "
+            f"({'config' if guidance_scale is not None else 'cfg_type default'}, cfg_type={self.stream.cfg_type})"
+        )
         self.stream.prepare(
             "",
             "",
             num_inference_steps=50,
-            guidance_scale=1.1 if self.stream.cfg_type in ["full", "self", "initialize"] else 1.0,
+            guidance_scale=init_guidance_scale,
             generator=torch.manual_seed(seed),
             seed=seed,
         )
@@ -2062,7 +2392,11 @@ class StreamDiffusionWrapper:
         for method, method_name in loading_methods:
             try:
                 logger.info(f"_load_model: Attempting to load with {method_name}...")
-                pipe = method(model_id_or_path).to(dtype=self.dtype)
+                if "from_pretrained" in method_name:
+                    pipe = _from_pretrained_lowmem(method, model_id_or_path, self.dtype)
+                else:
+                    pipe = method(model_id_or_path)
+                pipe = pipe.to(dtype=self.dtype)
                 logger.info(f"_load_model: Successfully loaded using {method_name}")
                 loaded_via_single_file = "from_single_file" in method_name
 
@@ -2084,7 +2418,9 @@ class StreamDiffusionWrapper:
                             pipe = StableDiffusionXLPipeline.from_single_file(model_id_or_path).to(dtype=self.dtype)
                             loaded_via_single_file = True
                         else:
-                            pipe = StableDiffusionXLPipeline.from_pretrained(model_id_or_path).to(dtype=self.dtype)
+                            pipe = _from_pretrained_lowmem(
+                                StableDiffusionXLPipeline.from_pretrained, model_id_or_path, self.dtype
+                            ).to(dtype=self.dtype)
                             loaded_via_single_file = False
                         logger.info("_load_model: Successfully loaded using SDXL pipeline on retry")
                     except Exception as retry_error:
@@ -2114,11 +2450,18 @@ class StreamDiffusionWrapper:
                     chosen_name, chosen_error = name, err
                     break
 
-            hint = NETWORK_HINT if is_network_error(chosen_error) else ""
-            attempts_summary = "; ".join(f"{name}: {err}" for name, err in load_errors)
+            if is_network_error(chosen_error):
+                hint = NETWORK_HINT
+            elif any(is_pagefile_error(err) for _, err in load_errors):
+                hint = PAGEFILE_HINT
+            else:
+                hint = ""
+            # type name first: str(MemoryError()) is "", which made the field report blank.
+            attempts_summary = "; ".join(f"{name}: {type(err).__name__}: {err}" for name, err in load_errors)
             error_msg = (
                 f"_load_model: All loading methods failed for model '{model_id_or_path}'. "
-                f"Reporting error from {chosen_name}: {chosen_error}.{hint} All attempts: {attempts_summary}"
+                f"Reporting error from {chosen_name}: {type(chosen_error).__name__}: {chosen_error}.{hint} "
+                f"All attempts: {attempts_summary}"
             )
             logger.error(error_msg, exc_info=chosen_error)
             raise RuntimeError(error_msg) from chosen_error
@@ -2379,17 +2722,28 @@ class StreamDiffusionWrapper:
             }
             lora_dict = fused_lora_dict if fused_lora_dict else None
 
-        if use_tiny_vae:
-            if vae_id is not None:
-                stream.vae = AutoencoderTiny.from_pretrained(vae_id).to(device=self.device, dtype=self.dtype)
-            else:
-                # Use TAESD XL for SDXL models, regular TAESD for SD 1.5
-                taesd_model = "madebyollin/taesdxl" if is_sdxl else "madebyollin/taesd"
-                stream.vae = AutoencoderTiny.from_pretrained(taesd_model).to(device=self.device, dtype=self.dtype)
-        elif acceleration != "tensorrt":
-            # For non-TensorRT acceleration, ensure VAE is on device if it wasn't moved earlier
-            if hasattr(pipe, "vae") and pipe.vae is not None:
-                pipe.vae = pipe.vae.to(device=self.device)
+        # _resolve_vae replaces the old hardcoded-AutoencoderTiny dispatch (the reported
+        # bug: any vae_id was force-loaded as AutoencoderTiny regardless of its actual
+        # architecture). It always moves the result to device/dtype itself — see its
+        # docstring for why that must not depend on `acceleration` (the F2 device-move
+        # trap: nothing else moves a PyTorch VAE to device once the TensorRT VAE-engine
+        # build, which incidentally used to do this, is skipped below for a full VAE).
+        stream.vae, _vae_class_name, _vae_source = _resolve_vae(
+            vae_id, use_tiny_vae, is_sdxl, self.device, self.dtype, pipe_vae=getattr(pipe, "vae", None)
+        )
+        _skip_trt_vae_for_full = _should_skip_trt_vae(_vae_class_name, acceleration)
+        if _skip_trt_vae_for_full:
+            logger.warning(
+                f"VAE from {_vae_source} is a full AutoencoderKL — running it in PyTorch "
+                f"(TensorRT VAE engines support TAESD only). UNet remains TensorRT-accelerated; "
+                f"expect a few ms/frame extra at {self.width}x{self.height}. Its encode is also "
+                f"stochastic per frame (Gaussian posterior sampling), unlike TAESD's deterministic "
+                f"encode — this can read as faint per-frame shimmer on static input."
+            )
+        logger.info(
+            f"VAE: {_vae_class_name} from {_vae_source} — "
+            f"{'PyTorch' if (acceleration != 'tensorrt' or _skip_trt_vae_for_full) else 'TensorRT'}"
+        )
 
         try:
             if acceleration == "xformers":
@@ -2600,6 +2954,7 @@ class StreamDiffusionWrapper:
                     min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
                     mode=self.mode,
                     use_tiny_vae=use_tiny_vae,
+                    vae_id=vae_id,
                     lora_dict=lora_dict,
                     ipadapter_scale=ipadapter_scale,
                     ipadapter_tokens=ipadapter_tokens,
@@ -2614,6 +2969,7 @@ class StreamDiffusionWrapper:
                     min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
                     mode=self.mode,
                     use_tiny_vae=use_tiny_vae,
+                    vae_id=vae_id,
                     lora_dict=lora_dict,
                     ipadapter_scale=ipadapter_scale,
                     ipadapter_tokens=ipadapter_tokens,
@@ -2622,14 +2978,18 @@ class StreamDiffusionWrapper:
                     builder_optimization_level=_vae_optlvl,
                 )
 
-                # Check if all required engines exist
+                # Check if all required engines exist. A full VAE never gets a TRT engine
+                # built (see _skip_trt_vae_for_full above) so its absence here is expected,
+                # not a missing-engine condition that should block a launch or trigger a
+                # doomed build attempt.
                 missing_engines = []
                 if not unet_path.exists():
                     missing_engines.append(f"UNet engine: {unet_path}")
-                if not vae_decoder_path.exists():
-                    missing_engines.append(f"VAE decoder engine: {vae_decoder_path}")
-                if not vae_encoder_path.exists():
-                    missing_engines.append(f"VAE encoder engine: {vae_encoder_path}")
+                if not _skip_trt_vae_for_full:
+                    if not vae_decoder_path.exists():
+                        missing_engines.append(f"VAE decoder engine: {vae_decoder_path}")
+                    if not vae_encoder_path.exists():
+                        missing_engines.append(f"VAE encoder engine: {vae_encoder_path}")
 
                 if missing_engines:
                     if build_engines_if_missing:
@@ -2883,75 +3243,90 @@ class StreamDiffusionWrapper:
                     else self.builder_optimization_level
                 )
 
-                # Compile VAE decoder engine using EngineManager
-                vae_decoder_model = VAE(
-                    device=self.device,
-                    max_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
-                    min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
-                )
+                # A full AutoencoderKL is never TRT-compiled (see _skip_trt_vae_for_full
+                # above): TorchVAEEncoder/VAE(...) below assume the TAESD-shaped forward
+                # signature the ONNX export was validated against, and — more importantly
+                # — an untraced full-VAE encode is stochastic (latent_dist.sample), which
+                # ONNX export would silently freeze to whichever of sample()/mode()
+                # diffusers happens to trace.
+                if not _skip_trt_vae_for_full:
+                    # Compile VAE decoder engine using EngineManager
+                    vae_decoder_model = VAE(
+                        device=self.device,
+                        max_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                        min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                    )
 
-                engine_manager.compile_and_load_engine(
-                    EngineType.VAE_DECODER,
-                    vae_decoder_path,
-                    load_engine=False,
-                    model=stream.vae,
-                    model_config=vae_decoder_model,
-                    batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
-                    cuda_stream=None,
-                    stream_vae=stream.vae,
-                    engine_build_options={
-                        "opt_image_height": self.height,
-                        "opt_image_width": self.width,
-                        "build_dynamic_shape": not self.static_shapes,
-                        "build_static_batch": self.static_shapes,
-                        # NOTE: this used to also set build_all_tactics=True — that knob
-                        # was dead (never forwarded) and has been replaced by the
-                        # profile-driven max_num_tactics computed centrally in
-                        # build_engine() (utilities.py), which already applies a wider
-                        # tactic budget (128) to dynamic/Flexible builds like this one.
-                        **(
-                            {"min_image_resolution": 384, "max_image_resolution": 1024}
-                            if not self.static_shapes
-                            else {}
-                        ),
-                        **({"builder_optimization_level": _vae_build_optlvl} if _vae_build_optlvl is not None else {}),
-                    },
-                )
+                    engine_manager.compile_and_load_engine(
+                        EngineType.VAE_DECODER,
+                        vae_decoder_path,
+                        load_engine=False,
+                        model=stream.vae,
+                        model_config=vae_decoder_model,
+                        batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                        cuda_stream=None,
+                        stream_vae=stream.vae,
+                        engine_build_options={
+                            "opt_image_height": self.height,
+                            "opt_image_width": self.width,
+                            "build_dynamic_shape": not self.static_shapes,
+                            "build_static_batch": self.static_shapes,
+                            # NOTE: this used to also set build_all_tactics=True — that knob
+                            # was dead (never forwarded) and has been replaced by the
+                            # profile-driven max_num_tactics computed centrally in
+                            # build_engine() (utilities.py), which already applies a wider
+                            # tactic budget (128) to dynamic/Flexible builds like this one.
+                            **(
+                                {"min_image_resolution": 384, "max_image_resolution": 1024}
+                                if not self.static_shapes
+                                else {}
+                            ),
+                            **(
+                                {"builder_optimization_level": _vae_build_optlvl}
+                                if _vae_build_optlvl is not None
+                                else {}
+                            ),
+                        },
+                    )
 
-                # Compile VAE encoder engine using EngineManager
-                vae_encoder = TorchVAEEncoder(stream.vae)
-                vae_encoder_model = VAEEncoder(
-                    device=self.device,
-                    max_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
-                    min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
-                )
+                    # Compile VAE encoder engine using EngineManager
+                    vae_encoder = TorchVAEEncoder(stream.vae)
+                    vae_encoder_model = VAEEncoder(
+                        device=self.device,
+                        max_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                        min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                    )
 
-                engine_manager.compile_and_load_engine(
-                    EngineType.VAE_ENCODER,
-                    vae_encoder_path,
-                    load_engine=False,
-                    model=vae_encoder,
-                    model_config=vae_encoder_model,
-                    batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
-                    cuda_stream=None,
-                    engine_build_options={
-                        "opt_image_height": self.height,
-                        "opt_image_width": self.width,
-                        "build_dynamic_shape": not self.static_shapes,
-                        "build_static_batch": self.static_shapes,
-                        # NOTE: this used to also set build_all_tactics=True — that knob
-                        # was dead (never forwarded) and has been replaced by the
-                        # profile-driven max_num_tactics computed centrally in
-                        # build_engine() (utilities.py), which already applies a wider
-                        # tactic budget (128) to dynamic/Flexible builds like this one.
-                        **(
-                            {"min_image_resolution": 384, "max_image_resolution": 1024}
-                            if not self.static_shapes
-                            else {}
-                        ),
-                        **({"builder_optimization_level": _vae_build_optlvl} if _vae_build_optlvl is not None else {}),
-                    },
-                )
+                    engine_manager.compile_and_load_engine(
+                        EngineType.VAE_ENCODER,
+                        vae_encoder_path,
+                        load_engine=False,
+                        model=vae_encoder,
+                        model_config=vae_encoder_model,
+                        batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                        cuda_stream=None,
+                        engine_build_options={
+                            "opt_image_height": self.height,
+                            "opt_image_width": self.width,
+                            "build_dynamic_shape": not self.static_shapes,
+                            "build_static_batch": self.static_shapes,
+                            # NOTE: this used to also set build_all_tactics=True — that knob
+                            # was dead (never forwarded) and has been replaced by the
+                            # profile-driven max_num_tactics computed centrally in
+                            # build_engine() (utilities.py), which already applies a wider
+                            # tactic budget (128) to dynamic/Flexible builds like this one.
+                            **(
+                                {"min_image_resolution": 384, "max_image_resolution": 1024}
+                                if not self.static_shapes
+                                else {}
+                            ),
+                            **(
+                                {"builder_optimization_level": _vae_build_optlvl}
+                                if _vae_build_optlvl is not None
+                                else {}
+                            ),
+                        },
+                    )
 
                 # A NonBlocking engine stream used to produce black/zero output frames
                 # here, because it skips the legacy/per-thread NULL-stream auto-sync
@@ -2989,6 +3364,7 @@ class StreamDiffusionWrapper:
                         "opt_image_width": self.width,
                         "build_dynamic_shape": False,
                         "build_static_batch": self.static_shapes,
+                        "model_id": model_id_or_path,
                     }
                     if self.builder_optimization_level is not None:
                         _unet_build_opts["builder_optimization_level"] = self.builder_optimization_level
@@ -3255,7 +3631,7 @@ class StreamDiffusionWrapper:
                         logger.error(f"TensorRT UNet engine loading failed (non-OOM): {e}")
                         raise e
 
-                if load_engine:
+                if load_engine and not _skip_trt_vae_for_full:
                     try:
                         logger.info(
                             f"Loading TensorRT VAE engines vae_encoder_path: {vae_encoder_path}, vae_decoder_path: {vae_decoder_path}"

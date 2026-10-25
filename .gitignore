@@ -274,3 +274,7 @@ logs/
 
 # LoRA/FaceID validation-script artifacts (engine weights, PNGs, JSON summaries)
 outputs/
+
+# Local tooling artifacts (stale pyrefly baseline copy; Antigravity guardrail hooks/skills)
+.pyrefly-baseline.json
+.agents/

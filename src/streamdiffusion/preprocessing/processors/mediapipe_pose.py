@@ -278,9 +278,10 @@ class MediaPipePosePreprocessor(BasePreprocessor):
         }
 
         # Initialize or update detector if needed
-        if self._detector is None or self._current_options != new_options:
-            if self._detector is not None:
-                self._detector.close()
+        detector = self._detector
+        if detector is None or self._current_options != new_options:
+            if detector is not None:
+                detector.close()
 
             # OPTIMIZATION: Try GPU delegate first, fallback to CPU
             try:
@@ -298,7 +299,7 @@ class MediaPipePosePreprocessor(BasePreprocessor):
                 print(
                     f"MediaPipePosePreprocessor.detector: Initializing MediaPipe Holistic (video_mode={not new_options['static_image_mode']})"
                 )
-                self._detector = mp.solutions.holistic.Holistic(
+                detector = mp.solutions.holistic.Holistic(
                     static_image_mode=new_options["static_image_mode"],
                     model_complexity=new_options["model_complexity"],
                     enable_segmentation=False,
@@ -310,7 +311,7 @@ class MediaPipePosePreprocessor(BasePreprocessor):
             except Exception as e:
                 print(f"MediaPipePosePreprocessor.detector: Advanced options failed ({e}), using basic setup")
                 # Fallback to basic setup
-                self._detector = mp.solutions.holistic.Holistic(
+                detector = mp.solutions.holistic.Holistic(
                     static_image_mode=new_options["static_image_mode"],
                     model_complexity=new_options["model_complexity"],
                     enable_segmentation=False,
@@ -319,9 +320,10 @@ class MediaPipePosePreprocessor(BasePreprocessor):
                     min_tracking_confidence=new_options["min_tracking_confidence"],
                 )
 
+            self._detector = detector
             self._current_options = new_options
 
-        return self._detector
+        return detector
 
     def _apply_smoothing(self, keypoints: List[List[float]], pose_id: str = "default") -> List[List[float]]:
         """
